@@ -22,6 +22,7 @@
 #include "dm.h"
 #include "front.h"
 #include "dm_input.h"
+#include "hle_haptics.h"
 #include "overlay_layout.h"
 #include "motion_map.h"
 #include "pad_map.h"
@@ -121,7 +122,7 @@ void dm_pad_prefs(int shown, int opacity) {
     atomic_store(&g_set_overlay, shown != 0);
     atomic_store(&g_set_opacity, opacity < OV_OPACITY_MIN ? OV_OPACITY_MIN : opacity > OV_OPACITY_MAX ? OV_OPACITY_MAX : opacity);
 }
-void dm_haptics_android_start(JNIEnv *E, JavaVM *vm, jobject actctx, int on); void dm_haptics_android_tap(void); void dm_haptics_android_device(int id); void dm_haptics_android_set(int on);
+void dm_haptics_android_start(JNIEnv *E, JavaVM *vm, jobject actctx, int on); void dm_haptics_android_tap(void); void dm_haptics_android_device_player(int player, int id); void dm_haptics_android_set(int on);
 void dm_haptics_suspend(unsigned reason, int suspended);
 __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents the last frame again (nothing is drawn in the player, but the calls stay)
 
@@ -164,6 +165,7 @@ static uint64_t key_bit(int device, int32_t scan, int32_t k) {
 static int32_t axis(float v) { return (int32_t)(v * DM_STICK_MAX); }   // the dead zone is applied per device, when the event comes in
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static uint32_t g_mask = 1;    // the players with a controller (bit p = player p + 1; player 1 always)
+static int g_hap_dev[DM_PLAYERS]; static uint32_t g_hap_known;   // the controller whose motor plays each player (-1: the device's own body)
 
 // The players the controllers play: the table says which player each controller is, and a controller the table
 // does not know plays player 1 (as it always did).
@@ -175,14 +177,43 @@ static uint32_t players_mask(void) {
     }
     return m;
 }
+
+// The motor of a player: the controller that last moved it, else the table's one for that player.
+static void haptics_device(int player, int device) {
+    if (player < 0 || player >= DM_PLAYERS) return;
+    if ((g_hap_known >> player & 1) && g_hap_dev[player] == device) return;
+    g_hap_known |= 1u << player; g_hap_dev[player] = device;
+    dm_haptics_android_device_player(player, device);
+}
+
+// The motors after the table changed: the controller that last moved a player keeps that player's motor (as it always
+// did), and a player whose controller went away falls back to the device's own body.
+static void haptics_devices(void) {
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        int cur = g_hap_known >> p & 1 ? g_hap_dev[p] : -1, first = -1, kept = 0;
+        for (int i = 0; i < g_map.n; i++) if (g_map.devices[i].player == p) {
+            if (first < 0) first = g_map.devices[i].device;
+            if (g_map.devices[i].device == cur) kept = 1;
+        }
+        haptics_device(p, kept ? cur : first);
+    }
+}
 static void pad_publish(void) {
     uint32_t m = players_mask();
     if (m != g_mask) {   // a player left (their controller went away or was moved): nothing stays pressed for them
-        uint32_t gone = g_mask & ~m;
+        uint32_t old = g_mask, gone = old & ~m;
         for (int p = 0; p < DM_PLAYERS; p++) if (gone >> p & 1) {
             g_btn[p] = 0; g_axis_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]);
         }
         g_mask = m;
+        // the rumble follows the players: a player with a controller has a motor (one without falls back to the device's body)
+        for (int p = 0; p < DM_PLAYERS; p++) {
+            int want = (p == 0 || (m >> p & 1)) ? 1 : 0, have = (old >> p & 1) ? 1 : 0;
+            if (want != have) {
+                dm_haptics_route(p, want);
+                LOG("[input] player %d's rumble: %s", p + 1, want ? "its own controller" : "the device's body");
+            }
+        }
         LOG("[input] the players with a controller: %d", __builtin_popcount(m));
     }
     for (int p = 0; p < DM_PLAYERS; p++) {
@@ -195,7 +226,12 @@ static void pad_publish(void) {
 // The player's own table for the controllers (the app's gamepad center pushes it: pad_map.h's line format).
 void dm_pad_mapping_set(const char *spec) {
     int n = pad_map_parse(&g_map, spec);
+    haptics_devices();   // the motors follow the table: a controller that went away leaves its player to the device's body
     LOG("[input] the controllers' table: %d device(s)", n);
+    for (int i = 0; i < g_map.n; i++) {
+        int p = g_map.devices[i].player;
+        LOG("[input]   the input device %d plays %s", g_map.devices[i].device, p < 0 ? "nobody (it sits out)" : p == 0 ? "player 1" : "another player");
+    }
 }
 
 // Everything the controller holds is released: the gamepad center mutes the input while it is open, so a key the
@@ -277,7 +313,7 @@ void dm_pad_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 // every touch is the game's; the host only needs the count (dm_pad_devices, jni_android.h).
 void dm_pad_devices(int count) {
     int was = atomic_exchange(&g_pads, count);
-    if (was && !count) { dm_haptics_android_device(-1); LOG("[input] no controller in use: the gamepad is shown"); }
+    if (was && !count) LOG("[input] no controller in use: the gamepad is shown");
     else if (!was && count) LOG("[input] a controller is in use: the gamepad steps aside");
 }
 
@@ -442,16 +478,18 @@ static int handle_event(const dm_java_event *e) {
             }
             return 0;
         }
-        atomic_store(&g_pad_in, e->device); dm_haptics_android_device(e->device);   // a controller is in use: the app hides the gamepad
+        atomic_store(&g_pad_in, e->device);   // a controller is in use: the app hides the gamepad
         if (p < 0) return 1;
+        haptics_device(p, e->device);   // this controller's motor is this player's
         if (down) g_btn[p] |= bit; else if (e->key_action == AKEY_EVENT_ACTION_UP) g_btn[p] &= ~bit;
         pad_publish(); return 1;
     }
     if (atomic_load(&g_tx_on) && ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD)) return 1;   // sticks: not for the text entry
     if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD) {
-        atomic_store(&g_pad_in, e->device); dm_haptics_android_device(e->device);
+        atomic_store(&g_pad_in, e->device);
         int p = pad_map_player(&g_map, e->device);   // the player this controller plays (-1: set aside)
         if (p < 0) return 1;
+        haptics_device(p, e->device);   // this controller's motor is this player's
         float *ax = g_ax[p];
         float dz = pad_map_deadzone(&g_map, e->device);   // the stick's dead zone: the device's own (the default when it has none)
         for (int i = 0; i < 4; i++) { float v = e->axis[i]; ax[i] = (v > -dz && v < dz) ? 0 : v; }
