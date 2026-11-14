@@ -7,7 +7,7 @@
 // host has no JSON parser):
 //
 //   v1
-//   dev 3 labels=1 dz=0.15 tr=0.55
+//   dev 3 labels=1 dz=0.15 tr=0.55 player=1
 //   bind scan:305 a
 //   unbind scan:314
 //   dev 7 labels=0 dz=0.12 tr=0.5
@@ -15,6 +15,9 @@
 // A source is "scan:<n>" (the physical scan code, the same button on every phone), "key:<n>" (Android's key code)
 // or "axis:<id>:<sign>" (half an analog axis: the trigger or the hat). A target is one of the game's buttons
 // ("a" ... "right"), or the disable marker.
+//
+// The "player" of a device is which player it plays: 0 is player 1 (the default, so a table without it behaves
+// as it always did), 1..7 are players 2..8, and -1 means the player set that controller aside (it does nothing).
 //
 // The default dictionary is what the game sees when the player changed nothing: the Switch's layout by position
 // (X on top, Y on the left, A on the right, B at the bottom). The position comes from the scan code, which is the
@@ -79,10 +82,11 @@ enum {
 // One binding: the source (a "scan:305" or "key:96" string) and the target (a PAD_* index, or -1 for disabled).
 typedef struct { char source[PAD_MAP_SRC_MAX]; int target; } pad_map_binding;
 
-// One device's table: the bindings, the face buttons' flip and the calibration.
+// One device's table: the bindings, the face buttons' flip, the calibration and the player it plays.
 typedef struct {
     int device;          // the Android input device id
     int labels;          // 1: the face buttons by their label, 0: by their position
+    int player;          // 0: player 1, 1..7: players 2..8, -1: set aside (the controller does nothing)
     float deadzone;      // < 0: the default
     float trigger;       // < 0: the default
     int nbindings;
@@ -162,7 +166,7 @@ static inline pad_map_device *pad_map_device_mut(pad_map_t *m, int device) {
     if (m->n >= PAD_MAP_MAX_DEVICES) return NULL;
     pad_map_device *d = &m->devices[m->n++];
     memset(d, 0, sizeof *d);
-    d->device = device; d->labels = -1; d->deadzone = -1; d->trigger = -1;   // -1: the environment decides
+    d->device = device; d->labels = -1; d->player = 0; d->deadzone = -1; d->trigger = -1;   // -1: the environment decides
     return d;
 }
 
@@ -209,6 +213,7 @@ static inline int pad_map_parse(pad_map_t *m, const char *spec) {
             cur = pad_map_device_mut(m, device);
             if (!cur) continue;
             cur->labels = pad_map_value(line, "labels", -1);
+            cur->player = pad_map_value(line, "player", 0);   // 0: player 1 (the default), -1: set aside
             cur->deadzone = pad_map_float(line, "dz", -1);
             cur->trigger = pad_map_float(line, "tr", -1);
         } else if (!strncmp(line, "bind ", 5) && cur) {
@@ -270,6 +275,13 @@ static inline int pad_map_labels(const pad_map_t *m, int device) {
     const pad_map_device *d = pad_map_device_of(m, device);
     if (!d || d->labels < 0) return pad_env_labels_cached();
     return d->labels;
+}
+
+// The player a device plays: 0 is player 1 (the default: a controller the table does not know plays player 1),
+// 1..7 are players 2..8, -1 means the player set that controller aside (it does nothing).
+static inline int pad_map_player(const pad_map_t *m, int device) {
+    const pad_map_device *d = pad_map_device_of(m, device);
+    return d ? d->player : 0;
 }
 
 // The stick's dead zone and the trigger's threshold for a device (the defaults when it has none).

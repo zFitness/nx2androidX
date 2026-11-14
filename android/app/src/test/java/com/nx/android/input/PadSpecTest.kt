@@ -15,6 +15,7 @@ class PadSpecTest {
             PadSpec.Device(
                 deviceId = 3,
                 labels = true,
+                player = 1,
                 calibration = PadCalibration(deadzone = 0.15f, trigger = 0.55f),
                 bindings = mapOf(PadSources.scan(305) to "a", PadSources.scan(314) to PadSources.DISABLED),
             ),
@@ -22,10 +23,10 @@ class PadSpecTest {
         ))
         val lines = text.trim().lines()
         assertEquals("v1", lines[0])
-        assertEquals("dev 3 labels=1 dz=0.15 tr=0.55", lines[1])
+        assertEquals("dev 3 labels=1 player=1 dz=0.15 tr=0.55", lines[1])
         assertTrue(lines.contains("bind scan:305 a"))
         assertTrue(lines.contains("unbind scan:314"))
-        assertTrue(lines.contains("dev 7 labels=0 dz=0.12 tr=0.5"))
+        assertTrue(lines.contains("dev 7 labels=0 player=0 dz=0.12 tr=0.5"))
     }
 
     @Test

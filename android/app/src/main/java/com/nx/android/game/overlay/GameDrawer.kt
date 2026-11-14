@@ -9,6 +9,7 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -78,6 +79,8 @@ import com.nx.android.data.RatePin
 import com.nx.android.game.hud.HudField
 import com.nx.android.game.Native
 import com.nx.android.game.input.PadStyle
+import com.nx.android.input.GamepadScan
+import com.nx.android.input.PadAssignment
 import com.nx.android.core.ui.components.CapsuleButton
 import com.nx.android.core.ui.components.Hint
 import com.nx.android.core.ui.components.QuietButton
@@ -85,11 +88,11 @@ import com.nx.android.core.ui.theme.GlassSheet
 import com.nx.android.core.ui.theme.NxPalette
 import kotlinx.coroutines.delay
 
-/** 抽屉的五个标签页（存档的导出与导入在库页的抽屉里，这里不再有） */
+/** 抽屉的标签页（存档的导出与导入在库页的抽屉里，这里不再有） */
 enum class DrawerTab(@StringRes val label: Int) {
     PERF(R.string.drawer_tab_perf), HUD(R.string.drawer_tab_hud),
     FRAMEGEN(R.string.drawer_tab_framegen), CONTROLS(R.string.drawer_tab_controls),
-    AUDIO(R.string.drawer_tab_audio)
+    AUDIO(R.string.drawer_tab_audio), PLAYERS(R.string.drawer_tab_players)
 }
 
 /**
@@ -130,6 +133,9 @@ fun GameDrawer(
     onHudFields: (Set<HudField>) -> Unit,
     hudFahrenheit: () -> Boolean,
     onHudFahrenheit: (Boolean) -> Unit,
+    pads: () -> List<GamepadScan.Info>,
+    players: () -> PadAssignment,
+    onPlayers: (PadAssignment) -> Unit,
     onLayoutEditor: () -> Unit,
     onResetPadLayout: () -> Unit,
     onPauseGame: () -> Unit,
@@ -161,6 +167,8 @@ fun GameDrawer(
                 // 系统现在有的输出设备：插上耳机就多一个，所以边开边读
                 val context = LocalContext.current
                 var audioDevices by remember { mutableStateOf(emptyList<AudioOutput>()) }
+                // 手柄：插上拔下要看得见（玩家页指着它们指派）
+                var pads by remember { mutableStateOf(emptyList<GamepadScan.Info>()) }
                 var tick by remember { mutableIntStateOf(0) }
                 LaunchedEffect(open) {   // 打开期间 2 Hz 轮询宿主的状态串与帧率档位
                     while (open) {
@@ -171,6 +179,8 @@ fun GameDrawer(
                         if (turboSupported) runCatching { turboMode = GpuTurbo.normalize(Native.gpuTurboGet()) }
                         // 设备列表：两秒读一次（插拔耳机要看得见）
                         if (audioSupported && tick % 4 == 0) runCatching { audioDevices = audioOutputDevices(context) }
+                        // 手柄列表：每次都读（插上手柄要立刻看得见）
+                        runCatching { pads = pads() }
                         tick++
                         delay(500)
                     }
@@ -183,7 +193,12 @@ fun GameDrawer(
                     GlassSheet(modifier = Modifier.fillMaxWidth().fillMaxHeight()) {
                         Column(Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp)) {
                             var tab by remember { mutableIntStateOf(0) }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 六个页签放不下就横着滚（标签挤成两行最难看）
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            ) {
                                 for ((i, t) in DrawerTab.entries.withIndex()) {
                                     val selected = tab == i
                                     Box(
@@ -220,6 +235,8 @@ fun GameDrawer(
                                     // 音频页：声音走哪个设备（宿主换了流，即时出声）
                                     DrawerTab.AUDIO -> AudioRows(audioSupported, audioId, audioDevices,
                                         onPick = { id -> audioId = id; Native.audioSet(id) })
+                                    // 玩家页：谁玩谁（这个游戏里哪只手柄是几号玩家）
+                                    DrawerTab.PLAYERS -> PlayerRows(pads, players, onPlayers)
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
@@ -497,6 +514,49 @@ private fun ControlRows(
             onMotion(on, !raw)
         }
     }
+}
+
+/**
+ * 玩家页：谁玩谁（这个游戏里哪只手柄是几号玩家）。
+ *
+ * 玩家 1 永远是手机：触屏的虚拟按键与手机的体感都是它的，它再接手柄。默认「自动」——
+ * **没被指派走的手柄都算玩家 1**（跟今天一样：单人游戏插两只手柄都能玩）；也可以锁死某一只，
+ * 别的就闲置了（按了没人管）。玩家 2~4 各自一只手柄，也可以空着。
+ * 一只手柄只能属于一个玩家：把它指派给谁，它就从原来那个人手里挪走。
+ */
+@Composable
+private fun PlayerRows(
+    pads: List<GamepadScan.Info>,
+    players: () -> PadAssignment,
+    onAssign: (PadAssignment) -> Unit,
+) {
+    // 指派在抽屉里自己先改（画面的即时反馈），再存下发
+    var assignment by remember { mutableStateOf(players()) }
+    GroupLabel(stringResource(R.string.drawer_group_players))
+    val auto = stringResource(R.string.drawer_player_auto)
+    val none = stringResource(R.string.drawer_player_none)
+    // 同型号的两只分不清：名字后面加设备号（跟手柄中心一样）
+    val repeats = pads.groupingBy { it.name }.eachCount()
+    val labels = pads.map { if ((repeats[it.name] ?: 0) > 1) "${it.name} · ${it.id}" else it.name }
+    for (player in 0..3) {
+        val key = assignment.padOf(player)
+        val options = listOf(if (player == 0) auto else none) + labels
+        val index = pads.indexOfFirst { it.profileKey == key }
+        val current = when {
+            key.isEmpty() && player == 0 -> auto
+            key.isEmpty() -> none
+            index < 0 -> key   // 那只手柄现在没接着：还是记着它（插回来还是这个玩家）
+            else -> labels[index]
+        }
+        OptionRow(Icons.Filled.SportsEsports, stringResource(R.string.drawer_player_n, player + 1),
+            options, current, width = 170.dp) { picked ->
+            val i = options.indexOf(picked)
+            val next = assignment.assign(player, if (i <= 0) "" else pads[i - 1].profileKey)
+            assignment = next
+            onAssign(next)
+        }
+    }
+    HintRow(stringResource(R.string.drawer_players_note))
 }
 
 /**

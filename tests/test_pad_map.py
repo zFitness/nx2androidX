@@ -73,10 +73,10 @@ static void table(void) {
     pad_map_t map;
     const char *spec =
         "v1\n"
-        "dev 3 labels=1 dz=0.15 tr=0.55\n"
+        "dev 3 labels=1 dz=0.15 tr=0.55 player=1\n"
         "bind scan:305 a\n"
         "unbind scan:314\n"
-        "dev 7 labels=0 dz=0.12 tr=0.5\n";
+        "dev 7 labels=0 dz=0.12 tr=0.5 player=-1\n";
     assert(pad_map_parse(&map, spec) == 2);
 
     // the device's own table: the binding wins over the dictionary
@@ -93,6 +93,11 @@ static void table(void) {
     assert(pad_map_key_bit(&map, 7, 308, 100) == DM_BTN_Y);
     // a device without a table: the dictionary, by position
     assert(pad_map_key_bit(&map, 9, 0, 96) == DM_BTN_B);
+
+    // the player a device plays: the table says, a device the table does not know plays player 1
+    assert(pad_map_player(&map, 3) == 1);
+    assert(pad_map_player(&map, 7) == -1);   // set aside: it does nothing
+    assert(pad_map_player(&map, 9) == 0);
 
     // the face buttons' flip: the table's, else the environment's (unset here)
     assert(pad_map_labels(&map, 3) == 1);

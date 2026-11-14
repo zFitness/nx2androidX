@@ -7,12 +7,13 @@ package com.nx.android.input
  *
  * ```
  * v1
- * dev 3 labels=1 dz=0.15 tr=0.55
+ * dev 3 labels=1 dz=0.15 tr=0.55 player=1
  * bind scan:305 a
  * unbind scan:314
  * ```
  *
  * 设备是 Android 的 input device id：宿主按事件的 device 查同一张表，所以同型号的两只手柄各查各的。
+ * player 是它当几号玩家：0 是玩家 1（不写也是它），1~3 是玩家 2~4，-1 是闲置（它按了也没人管）。
  */
 object PadSpec {
 
@@ -20,6 +21,7 @@ object PadSpec {
     data class Device(
         val deviceId: Int,
         val labels: Boolean,
+        val player: Int = 0,
         val calibration: PadCalibration = PadCalibration(),
         val bindings: Map<String, String> = emptyMap(),
     )
@@ -30,6 +32,7 @@ object PadSpec {
         for (device in devices) {
             out.append("dev ").append(device.deviceId)
                 .append(" labels=").append(if (device.labels) 1 else 0)
+                .append(" player=").append(device.player)
                 .append(" dz=").append(format(device.calibration.deadzone))
                 .append(" tr=").append(format(device.calibration.trigger))
                 .append('\n')

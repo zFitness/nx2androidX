@@ -153,17 +153,43 @@ void dm_java_lifecycle(int ev) {
 }
 
 // ---- input: a physical controller (the app's on-screen gamepad has its own way in) ----
-static uint64_t g_btn; static float g_ax[8];   // lx ly rx ry lt rt hatx haty
-static uint64_t g_axis_btn;   // the buttons an analog axis carries (the triggers, the hat, the player's own axis bindings)
+// The controllers' input, one set per player: player 1 is the phone (the on-screen gamepad and the phone's own
+// motion go there), and a controller plays the player the table says (player 1 unless the player moved it).
+static uint64_t g_btn[DM_PLAYERS]; static float g_ax[DM_PLAYERS][8];   // lx ly rx ry lt rt hatx haty
+static uint64_t g_axis_btn[DM_PLAYERS];   // the buttons an analog axis carries (the triggers, the hat, the player's own axis bindings)
 static pad_map_t g_map;       // the player's own bindings per controller (the app's gamepad center pushes them; pad_map.h)
 static uint64_t key_bit(int device, int32_t scan, int32_t k) {
     return pad_map_key_bit(&g_map, device, scan, k);   // the player's own binding first, the default dictionary otherwise
 }
 static int32_t axis(float v) { return (int32_t)(v * DM_STICK_MAX); }   // the dead zone is applied per device, when the event comes in
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
+static uint32_t g_mask = 1;    // the players with a controller (bit p = player p + 1; player 1 always)
+
+// The players the controllers play: the table says which player each controller is, and a controller the table
+// does not know plays player 1 (as it always did).
+static uint32_t players_mask(void) {
+    uint32_t m = 1;
+    for (int i = 0; i < g_map.n; i++) {
+        int p = g_map.devices[i].player;
+        if (p > 0 && p < DM_PLAYERS) m |= 1u << p;
+    }
+    return m;
+}
 static void pad_publish(void) {
-    uint64_t b = g_btn | g_shake_btn | g_axis_btn;
-    dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
+    uint32_t m = players_mask();
+    if (m != g_mask) {   // a player left (their controller went away or was moved): nothing stays pressed for them
+        uint32_t gone = g_mask & ~m;
+        for (int p = 0; p < DM_PLAYERS; p++) if (gone >> p & 1) {
+            g_btn[p] = 0; g_axis_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]);
+        }
+        g_mask = m;
+        LOG("[input] the players with a controller: %d", __builtin_popcount(m));
+    }
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        uint64_t b = g_btn[p] | g_axis_btn[p] | (p == 0 ? g_shake_btn : 0);   // the phone's shake is player 1's
+        dm_pad_set_player(p, b, axis(g_ax[p][0]), -axis(g_ax[p][1]), axis(g_ax[p][2]), -axis(g_ax[p][3]));   // Android's y grows downward, the Switch's upward
+    }
+    dm_pad_players(m);
 }
 
 // The player's own table for the controllers (the app's gamepad center pushes it: pad_map.h's line format).
@@ -175,8 +201,8 @@ void dm_pad_mapping_set(const char *spec) {
 // Everything the controller holds is released: the gamepad center mutes the input while it is open, so a key the
 // player held when it opened (and released while it was open) must not stay pressed in the game.
 void dm_pad_release_all(void) {
-    g_btn = 0; g_axis_btn = 0; memset(g_ax, 0, sizeof g_ax);
-    dm_pad_set(0, 0, 0, 0, 0);
+    for (int p = 0; p < DM_PLAYERS; p++) { g_btn[p] = 0; g_axis_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); }
+    for (int p = 0; p < DM_PLAYERS; p++) dm_pad_set_player(p, 0, 0, 0, 0, 0);
     LOG("[input] the controller's keys are all released");
 }
 
@@ -406,8 +432,9 @@ static int handle_event(const dm_java_event *e) {
             if (down && e->key_repeat == 0) dm_app_notice(DM_NOTICE_MENU);
             return 1;
         }
+        int p = pad_map_player(&g_map, e->device);   // the player this controller plays (-1: set aside)
         uint64_t bit = key_bit(e->device, e->key_scan, k);
-        if (pad_log_keys()) LOG("[input] device %d: scan %d key %d -> %s", e->device, e->key_scan, k, pad_button_name(bit));
+        if (pad_log_keys()) LOG("[input] device %d (player %d): scan %d key %d -> %s", e->device, p + 1, e->key_scan, k, pad_button_name(bit));
         if (!bit) {   // the rest: the system's
             static uint8_t seen[64];
             if ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD && down && k >= 0 && k < 512 && !(seen[k >> 3] >> (k & 7) & 1)) {
@@ -416,33 +443,38 @@ static int handle_event(const dm_java_event *e) {
             return 0;
         }
         atomic_store(&g_pad_in, e->device); dm_haptics_android_device(e->device);   // a controller is in use: the app hides the gamepad
-        if (down) g_btn |= bit; else if (e->key_action == AKEY_EVENT_ACTION_UP) g_btn &= ~bit;
-        dm_pad_players(1); pad_publish(); return 1;
+        if (p < 0) return 1;
+        if (down) g_btn[p] |= bit; else if (e->key_action == AKEY_EVENT_ACTION_UP) g_btn[p] &= ~bit;
+        pad_publish(); return 1;
     }
     if (atomic_load(&g_tx_on) && ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD)) return 1;   // sticks: not for the text entry
     if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD) {
         atomic_store(&g_pad_in, e->device); dm_haptics_android_device(e->device);
+        int p = pad_map_player(&g_map, e->device);   // the player this controller plays (-1: set aside)
+        if (p < 0) return 1;
+        float *ax = g_ax[p];
         float dz = pad_map_deadzone(&g_map, e->device);   // the stick's dead zone: the device's own (the default when it has none)
-        for (int i = 0; i < 4; i++) { float v = e->axis[i]; g_ax[i] = (v > -dz && v < dz) ? 0 : v; }
-        g_ax[4] = e->axis[4]; g_ax[5] = e->axis[5];
-        g_ax[6] = e->axis[6]; g_ax[7] = e->axis[7];
-        if (g_ax[4] == 0) g_ax[4] = e->axis[8]; if (g_ax[5] == 0) g_ax[5] = e->axis[9];
+        for (int i = 0; i < 4; i++) { float v = e->axis[i]; ax[i] = (v > -dz && v < dz) ? 0 : v; }
+        ax[4] = e->axis[4]; ax[5] = e->axis[5];
+        ax[6] = e->axis[6]; ax[7] = e->axis[7];
+        if (ax[4] == 0) ax[4] = e->axis[8]; if (ax[5] == 0) ax[5] = e->axis[9];
         // the analog buttons: the triggers (the device's threshold), the hat and the player's own axis bindings.
         // A pad may report its triggers as LTRIGGER/RTRIGGER or as BRAKE/GAS (the event's array puts BRAKE at 8 and GAS at 9),
         // so both ids are looked up for each of the two trigger slots.
         float tr = pad_map_trigger(&g_map, e->device);
-        g_axis_btn = 0;
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_LTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_BRAKE) && g_ax[4] > tr) g_axis_btn |= DM_BTN_ZL;
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_RTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_GAS) && g_ax[5] > tr) g_axis_btn |= DM_BTN_ZR;
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_X)) { if (g_ax[6] < -0.5f) g_axis_btn |= DM_BTN_LEFT; if (g_ax[6] > 0.5f) g_axis_btn |= DM_BTN_RIGHT; }
-        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_Y)) { if (g_ax[7] < -0.5f) g_axis_btn |= DM_BTN_UP; if (g_ax[7] > 0.5f) g_axis_btn |= DM_BTN_DOWN; }
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_LTRIGGER, g_ax[4]);
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_BRAKE, g_ax[4]);
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_RTRIGGER, g_ax[5]);
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_GAS, g_ax[5]);
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_X, g_ax[6]);
-        g_axis_btn |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_Y, g_ax[7]);
-        dm_pad_players(1); pad_publish(); return 1;
+        uint64_t ab = 0;
+        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_LTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_BRAKE) && ax[4] > tr) ab |= DM_BTN_ZL;
+        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_RTRIGGER) && !pad_map_has_axis(&g_map, e->device, PAD_AXIS_GAS) && ax[5] > tr) ab |= DM_BTN_ZR;
+        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_X)) { if (ax[6] < -0.5f) ab |= DM_BTN_LEFT; if (ax[6] > 0.5f) ab |= DM_BTN_RIGHT; }
+        if (!pad_map_has_axis(&g_map, e->device, PAD_AXIS_HAT_Y)) { if (ax[7] < -0.5f) ab |= DM_BTN_UP; if (ax[7] > 0.5f) ab |= DM_BTN_DOWN; }
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_LTRIGGER, ax[4]);
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_BRAKE, ax[4]);
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_RTRIGGER, ax[5]);
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_GAS, ax[5]);
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_X, ax[6]);
+        ab |= pad_map_axis_bit(&g_map, e->device, PAD_AXIS_HAT_Y, ax[7]);
+        g_axis_btn[p] = ab;
+        pad_publish(); return 1;
     }
     if ((src & AINPUT_SOURCE_TOUCHSCREEN) == AINPUT_SOURCE_TOUCHSCREEN) return 1;   // the touches are the app's (it routes them)
     return 0;

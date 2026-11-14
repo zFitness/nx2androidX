@@ -56,6 +56,7 @@ import com.nx.android.data.FrameGenSettings
 import com.nx.android.data.LosslessDll
 import com.nx.android.data.MotionKnobs
 import com.nx.android.data.MotionSettings
+import com.nx.android.data.PadPlayers
 import com.nx.android.data.PrefsStore
 import com.nx.android.data.hasGyroscope
 import com.nx.android.data.RatePin
@@ -72,6 +73,7 @@ import com.nx.android.game.overlay.TextPrompt
 import com.nx.android.core.ui.theme.NxTheme
 import com.nx.android.input.GamepadScan
 import com.nx.android.input.PadCalibration
+import com.nx.android.input.PadAssignment
 import com.nx.android.input.PadProfileStore
 import com.nx.android.input.ui.PadCenterController
 import com.nx.android.input.PadSpec
@@ -136,6 +138,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     private var fgSettings: FrameGenSettings? = null
     private var rateSettings: RateSettings? = null
     private var motionSettings: MotionSettings? = null
+    private var padPlayers: PadPlayers? = null
     private var packPath: String? = null
     private lateinit var padView: PadView
 
@@ -216,11 +219,14 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
      */
     private fun pushPadMapping(): Boolean {
         val devices = GamepadScan.devices.value
+        // 谁玩谁（这个游戏里哪只手柄是几号玩家）：存的是手柄的指纹，拔了再插还是那个玩家
+        val assignment = padPlayers?.load() ?: PadAssignment()
         val spec = PadSpec.build(devices.map { info ->
             val profile = padController.profiles[info.profileKey]
             PadSpec.Device(
                 deviceId = info.id,
                 labels = profile?.labels ?: false,
+                player = assignment.playerOf(info.profileKey),
                 calibration = profile?.calibration ?: PadCalibration(),
                 bindings = profile?.bindings ?: emptyMap(),
             )
@@ -283,6 +289,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
         rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
         motionSettings = titleId?.let { MotionSettings(PrefsStore(this), it) }
+        padPlayers = titleId?.let { PadPlayers(PrefsStore(this), it) }
         // 手柄的档案（每只手柄一份）与手柄的枚举：中心靠它
         loadPadProfiles()
         GamepadScan.start(this)
@@ -453,6 +460,13 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 onHudFields = { saveHudFields(it) },
                 hudFahrenheit = { hudFahrenheit },
                 onHudFahrenheit = { saveHudFahrenheit(it) },
+                // 谁玩谁：这个游戏里哪只手柄是几号玩家（存的是手柄的指纹）
+                pads = { GamepadScan.devices.value },
+                players = { padPlayers?.load() ?: PadAssignment() },
+                onPlayers = { assignment ->
+                    padPlayers?.save(assignment)
+                    pushPadMapping()   // 新的表立刻推给宿主：手柄换人，游戏里立刻就是新的玩家
+                },
                 onLayoutEditor = { openEditor() },
                 onResetPadLayout = { resetPadLayout() },
                 // 暂停/继续：游戏原地停/起，抽屉不收——玩家可以一边停着一边调设置

@@ -594,4 +594,15 @@
     <string name="app_pad_center_connected">手柄，接了 %1$d 只</string>
     <string name="pad_center_xbox_print">按 Xbox 印字</string>
     <string name="pad_center_print_hint">游戏说的是 NS 的位置（上 X、左 Y、右 A、下 B），手柄上印的字只是贴纸。这个预设把面键绑成 Xbox 的印字（下面 A、右边 B、上 Y、左 X）。</string>
+    <!-- 手柄导航的提示条 -->
+    <string name="ui_nav_move">移动</string>
+    <string name="ui_nav_details">详情</string>
+    <string name="ui_nav_tabs">切页</string>
+    <string name="ui_nav_back">返回</string>
+    <string name="drawer_tab_players">玩家</string>
+    <string name="drawer_group_players">玩家</string>
+    <string name="drawer_player_n">玩家 %1$d</string>
+    <string name="drawer_player_auto">自动</string>
+    <string name="drawer_player_none">没有手柄</string>
+    <string name="drawer_players_note">玩家 1 永远是手机：触屏的虚拟按键与体感都是它的，它再接手柄。默认「自动」——没被指派走的手柄都算玩家 1（单人游戏插两只手柄都能玩）。锁死某一只之后，别的就闲置了（按了没人管）。一只手柄只能属于一个玩家。</string>
 </resources>

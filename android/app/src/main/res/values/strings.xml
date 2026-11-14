@@ -595,4 +595,15 @@
     <string name="app_pad_center_connected">Controllers, %1$d connected</string>
     <string name="pad_center_xbox_print">By the Xbox print</string>
     <string name="pad_center_print_hint">The game speaks Switch positions (X on top, Y on the left, A on the right, B at the bottom); what the controller prints on its buttons is only a sticker. This preset binds the face buttons by the Xbox print (the bottom one A, the right one B, the top one Y, the left one X).</string>
+    <!-- 手柄导航的提示条 -->
+    <string name="ui_nav_move">Move</string>
+    <string name="ui_nav_details">Details</string>
+    <string name="ui_nav_tabs">Tabs</string>
+    <string name="ui_nav_back">Back</string>
+    <string name="drawer_tab_players">Players</string>
+    <string name="drawer_group_players">Players</string>
+    <string name="drawer_player_n">Player %1$d</string>
+    <string name="drawer_player_auto">Automatic</string>
+    <string name="drawer_player_none">No controller</string>
+    <string name="drawer_players_note">Player 1 is the phone: the on-screen gamepad and the motion are its, and it takes the controllers nobody else plays (automatic). Lock it to one controller and the others sit out. A controller plays one player only.</string>
 </resources>
