@@ -198,29 +198,34 @@ static void haptics_devices(void) {
         haptics_device(p, kept ? cur : first);
     }
 }
-static void pad_publish(void) {
+// The players with a controller changed: a player who left (their controller went away or was moved) keeps
+// nothing pressed, and the rumble follows the players.
+static void pad_players_update(void) {
     uint32_t m = players_mask();
-    if (m != g_mask) {   // a player left (their controller went away or was moved): nothing stays pressed for them
-        uint32_t old = g_mask, gone = old & ~m;
-        for (int p = 0; p < DM_PLAYERS; p++) if (gone >> p & 1) {
-            g_btn[p] = 0; g_axis_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]);
-        }
-        g_mask = m;
-        // the rumble follows the players: a player with a controller has a motor (one without falls back to the device's body)
-        for (int p = 0; p < DM_PLAYERS; p++) {
-            int want = (p == 0 || (m >> p & 1)) ? 1 : 0, have = (old >> p & 1) ? 1 : 0;
-            if (want != have) {
-                dm_haptics_route(p, want);
-                LOG("[input] player %d's rumble: %s", p + 1, want ? "its own controller" : "the device's body");
-            }
-        }
-        LOG("[input] the players with a controller: %d", __builtin_popcount(m));
+    if (m == g_mask) return;
+    uint32_t old = g_mask, gone = old & ~m;
+    for (int p = 0; p < DM_PLAYERS; p++) if (gone >> p & 1) {
+        g_btn[p] = 0; g_axis_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]);
+        LOG("[input] player %d's controller went away: its keys are released", p + 1);
     }
+    g_mask = m;
+    // the rumble follows the players: a player with a controller has a motor (one without falls back to the device's body)
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        int want = (p == 0 || (m >> p & 1)) ? 1 : 0, have = (old >> p & 1) ? 1 : 0;
+        if (want != have) {
+            dm_haptics_route(p, want);
+            LOG("[input] player %d's rumble: %s", p + 1, want ? "its own controller" : "the device's body");
+        }
+    }
+    LOG("[input] the players with a controller: %d", __builtin_popcount(m));
+}
+static void pad_publish(void) {
+    pad_players_update();   // the table may have changed since the last event (a controller came or went)
     for (int p = 0; p < DM_PLAYERS; p++) {
         uint64_t b = g_btn[p] | g_axis_btn[p] | (p == 0 ? g_shake_btn : 0);   // the phone's shake is player 1's
         dm_pad_set_player(p, b, axis(g_ax[p][0]), -axis(g_ax[p][1]), axis(g_ax[p][2]), -axis(g_ax[p][3]));   // Android's y grows downward, the Switch's upward
     }
-    dm_pad_players(m);
+    dm_pad_players(g_mask);
 }
 
 // The player's own table for the controllers (the app's gamepad center pushes it: pad_map.h's line format).
@@ -232,6 +237,9 @@ void dm_pad_mapping_set(const char *spec) {
         int p = g_map.devices[i].player;
         LOG("[input]   the input device %d plays %s", g_map.devices[i].device, p < 0 ? "nobody (it sits out)" : p == 0 ? "player 1" : "another player");
     }
+    // the table changed: a controller that went away leaves its player with nothing pressed (the keys it held
+    // are released now, not at the next key event)
+    pad_publish();
 }
 
 // Everything the controller holds is released: the gamepad center mutes the input while it is open, so a key the
