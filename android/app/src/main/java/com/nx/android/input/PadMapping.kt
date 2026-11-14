@@ -3,11 +3,16 @@ package com.nx.android.input
 /**
  * 查表规则：物理键 → 游戏键。
  *
- * 顺序是「玩家自己绑的 → 出厂字典」：玩家没动过的地方，落回出厂字典（与改动前逐键一致）。
- * 出厂字典有两套：
- * - 按位置（默认）：Switch 的布局 —— 下面那颗是 B，右边那颗是 A；
- * - 按标签：键上印的 A 就是游戏的 A（Xbox 布局的手柄最常见）。**标签属于手柄，不属于游戏**，
- *   所以这一项是每只手柄自己的选择，不是档案里的游戏设置。
+ * 顺序是「玩家自己绑的 → 出厂字典」：玩家没动过的地方，落回出厂字典。
+ *
+ * 出厂字典按**位置**说话，而位置是扫描码的事（Linux 手柄规范：304 是下面那颗，307 是上面那颗）：
+ * 同一个键在任何手柄上都是同一个扫描码，而 Android 给它起的名字（BUTTON_A、BUTTON_X…）**每家不一样**
+ * ——任天堂的手柄有自己的键位表，把上面那颗叫 BUTTON_Y。名字不可信，位置才可信。
+ *
+ * 游戏嘴里的 A/B/X/Y 指的就是 **NS 手柄上的四个位置**：X 在上、Y 在左、A 在右、B 在下。
+ * 手柄上印的字只是贴纸；想要「印字说了算」的玩家在改键页自己绑（或者点那个一键预设）。
+ *
+ * 没有扫描码的键（十字键）按 Android 的 keyCode 兜底——那上面没有歧义。
  *
  * 这份规则与宿主那边的一份是同一套（nxnative/dm/android/pad_map.h）：宿主按事件的 device 查同一张表。
  */
@@ -53,13 +58,33 @@ object PadMapping {
     data class Conflict(val sourceTarget: String?, val targetSource: String?)
 
     /**
-     * 出厂字典：**NS 的位置**（游戏嘴里的 A/B/X/Y 指的就是 NS 手柄上的四个位置：
-     * X 在上、Y 在左、A 在右、B 在下）。跟手柄上印的字无关——印字只是贴纸。
+     * 出厂字典（按位置）：**扫描码 → 游戏键**。
      *
-     * 所以 NS 印字的手柄零配置全对；Xbox 印字的手柄按位置走（游戏要 A 就是右边那颗），
-     * 想按印字来的玩家在改键页自己绑（或者点那个一键预设）。
+     * NS 的位置：X 在上、Y 在左、A 在右、B 在下。游戏说的是这四个位置，
+     * 手柄上印的字只是贴纸（想要印字说了算的，改键页有一键预设）。
      */
     private val POSITION: Map<Int, String> = mapOf(
+        Scan.SOUTH to "b", Scan.EAST to "a", Scan.NORTH to "x", Scan.WEST to "y",
+        Scan.L1 to "l", Scan.R1 to "r", Scan.L2 to "zl", Scan.R2 to "zr",
+        Scan.L3 to "ls", Scan.R3 to "rs",
+        Scan.SELECT to "minus", Scan.START to "plus",
+    )
+
+    /**
+     * 按印字的出厂字典（弃用：面键按位置还是按印字的老开关，恒 false）。
+     * 留着是为了老档案读得出来也不作数——它按 Xbox 的印字：下 A、右 B、上 Y、左 X。
+     */
+    private val PRINT: Map<Int, String> = POSITION + mapOf(
+        Scan.SOUTH to "a", Scan.EAST to "b", Scan.NORTH to "y", Scan.WEST to "x",
+    )
+
+    /**
+     * 没有扫描码时的兜底：**Android 的 keyCode → 游戏键**。
+     *
+     * 只有十字键真的走这条路（它的扫描码是 0）。面键的 keyCode 各家手柄起名字不一样，
+     * 拿它当准绳就是之前那个「按上面却变成左边」的毛病，所以它只是兜底。
+     */
+    private val BY_KEY: Map<Int, String> = mapOf(
         Key.BUTTON_A to "b", Key.BUTTON_B to "a", Key.BUTTON_X to "x", Key.BUTTON_Y to "y",
         Key.BUTTON_L1 to "l", Key.BUTTON_R1 to "r", Key.BUTTON_L2 to "zl", Key.BUTTON_R2 to "zr",
         Key.BUTTON_THUMBL to "ls", Key.BUTTON_THUMBR to "rs",
@@ -67,36 +92,43 @@ object PadMapping {
         Key.DPAD_UP to "up", Key.DPAD_DOWN to "down", Key.DPAD_LEFT to "left", Key.DPAD_RIGHT to "right",
     )
 
-    /**
-     * 按印字的出厂字典（弃用：面键按位置还是按标签的老开关，恒 false）。
-     * 留着是为了老档案读得出来也不作数——它按 Xbox 的印字：下 A、右 B、上 Y、左 X。
-     */
-    private val LABEL: Map<Int, String> = POSITION + mapOf(
+    /** 按印字的 keyCode 兜底（弃用，与宿主那份一致）。 */
+    private val BY_KEY_PRINT: Map<Int, String> = BY_KEY + mapOf(
         Key.BUTTON_A to "a", Key.BUTTON_B to "b", Key.BUTTON_X to "y", Key.BUTTON_Y to "x",
     )
 
+    /** 出厂字典查表用的扫描码顺序（改键页显示「默认 · scan:xxx」用）。 */
+    private val SCANS = intArrayOf(
+        Scan.SOUTH, Scan.EAST, Scan.NORTH, Scan.WEST, Scan.L1, Scan.R1,
+        Scan.L2, Scan.R2, Scan.SELECT, Scan.START, Scan.L3, Scan.R3,
+    )
+
     /**
-     * 出厂字典：这个 keyCode 是哪个游戏键（不是手柄键就是 null）。
+     * 出厂字典：这个物理键是哪个游戏键（不是手柄键就是 null）。
      *
-     * @param labels 弃用：面键按位置还是按标签的老开关（恒 false）。面键的语义现在由逐键绑定表达。
+     * @param scanCode 这个键的扫描码（0：没有）
+     * @param keyCode Android 给它起的名字（只在没有扫描码时兜底）
+     * @param labels 弃用：面键按位置还是按印字的老开关（恒 false）。面键的语义现在由逐键绑定表达。
      */
-    fun defaultTarget(keyCode: Int, labels: Boolean = false): String? =
-        (if (labels) LABEL else POSITION)[keyCode]
+    fun defaultTarget(scanCode: Int, keyCode: Int, labels: Boolean = false): String? {
+        if (scanCode > 0) {
+            val byPosition = (if (labels) PRINT else POSITION)[scanCode]
+            if (byPosition != null) return byPosition
+        }
+        return (if (labels) BY_KEY_PRINT else BY_KEY)[keyCode]
+    }
 
     /**
      * 某个游戏键的默认来源（出厂字典：扫描码优先，没有就 keyCode）：设置页显示默认绑定用。
      *
-     * 这里走的是**运行时那一条路**（扫描码 → 它的 keyCode → 出厂字典），所以面板上写的
-     * 默认来源与游戏真的收到的一致（X/Y 那对按方位与按名字对调，别处算出来的那一套不作数）。
+     * 走的是**运行时那一条路**（扫描码 → 出厂字典），所以面板上写的默认来源
+     * 与游戏真的收到的一致。
      */
     fun defaultSourceFor(target: String, labels: Boolean = false): String? {
-        for (scan in intArrayOf(
-            Scan.SOUTH, Scan.EAST, Scan.NORTH, Scan.WEST, Scan.L1, Scan.R1, Scan.L2, Scan.R2,
-            Scan.SELECT, Scan.START, Scan.L3, Scan.R3,
-        )) {
-            if (defaultTarget(Face.keyCodeOf(scan), labels) == target) return PadSources.scan(scan)
+        for (scan in SCANS) {
+            if (defaultTarget(scan, 0, labels) == target) return PadSources.scan(scan)
         }
-        for (key in POSITION.keys) if (POSITION[key] == target) return PadSources.key(key)
+        for (key in BY_KEY.keys) if (defaultTarget(0, key, labels) == target) return PadSources.key(key)
         return null
     }
 
@@ -113,7 +145,7 @@ object PadMapping {
         }
         val bound = mapping[PadSources.key(keyCode)]
         if (bound != null) return if (bound == PadSources.DISABLED) null else bound
-        return defaultTarget(keyCode, labels)
+        return defaultTarget(scanCode, keyCode, labels)
     }
 
     /** 这个键被禁用了吗（禁用是「在这儿，但什么都不做」）。 */
@@ -188,7 +220,12 @@ object PadMapping {
         /** 下面那颗。 */
         const val BOTTOM = Scan.SOUTH
 
-        /** 那颗键在 Android 那边是什么 keyCode（系统的键位表：扫描码与 keyCode 是一对）。 */
+        /**
+         * 那颗键在 Android 那边通常叫什么 keyCode（通用键位表：扫描码与 keyCode 是一对）。
+         *
+         * 只是兜底：说了算的是位置（扫描码），而各家手柄的键位表不一定跟通用表一样
+         * （任天堂的手柄就把上面那颗叫 BUTTON_Y）。
+         */
         fun keyCodeOf(scanCode: Int): Int = when (scanCode) {
             Scan.SOUTH -> Key.BUTTON_A
             Scan.EAST -> Key.BUTTON_B

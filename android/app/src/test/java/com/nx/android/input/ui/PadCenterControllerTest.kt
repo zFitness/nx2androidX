@@ -240,9 +240,23 @@ class PadCenterControllerTest {
     @Test
     fun `the resolved target is the game key the player sees`() {
         val f = Fixture()
-        // 出厂字典按位置：下面那颗（BUTTON_A）是游戏的 B，右边那颗（BUTTON_B）是游戏的 A
+        // 出厂字典按位置：下面那颗是游戏的 B，右边那颗是游戏的 A
         assertEquals("b", f.controller.resolveTarget(7, 0, PadMapping.Key.BUTTON_A))
         assertEquals("a", f.controller.resolveTarget(7, 0, PadMapping.Key.BUTTON_B))
+        assertEquals("x", f.controller.resolveTarget(7, PadMapping.Scan.NORTH, 0))
+        assertEquals("y", f.controller.resolveTarget(7, PadMapping.Scan.WEST, 0))
+    }
+
+    @Test
+    fun `the position wins over the key code's name`() {
+        val f = Fixture()
+        // 任天堂的手柄把上面那颗叫 BUTTON_Y（keyCode 100），把左边那颗叫 BUTTON_X：
+        // Android 的名字各家的手柄不一样，位置才是说了算的
+        assertEquals("x", f.controller.resolveTarget(7, PadMapping.Scan.NORTH, PadMapping.Key.BUTTON_Y))
+        assertEquals("y", f.controller.resolveTarget(7, PadMapping.Scan.WEST, PadMapping.Key.BUTTON_X))
+        // 通用键位表的手柄：名字与位置本来就对得上
+        assertEquals("x", f.controller.resolveTarget(7, PadMapping.Scan.NORTH, PadMapping.Key.BUTTON_X))
+        assertEquals("b", f.controller.resolveTarget(7, PadMapping.Scan.SOUTH, PadMapping.Key.BUTTON_A))
     }
 
     @Test

@@ -5,8 +5,9 @@ compiled on the host and checked. The default dictionary is the Switch's layout 
 the left, A on the right, B at the bottom (the game speaks Switch positions; what the controller prints on
 its buttons is only a sticker).
 
-It used to be half and half - A/B by position, X/Y by the Xbox print - which is why a controller of one
-kind matched its own print and the other kind did not.
+The position comes from the scan code, which is the same on every controller. Android's key codes only say
+what the system calls a button, and that is not the same everywhere - the Nintendo controller calls the top
+button BUTTON_Y - so they are only the fallback for the buttons that carry no scan code (the d-pad).
 """
 import subprocess
 import sys
@@ -28,34 +29,44 @@ HARNESS = r'''
 #include <string.h>
 
 static void defaults(void) {
-    // by position: the Switch's layout (the bottom button is B, the right one A)
-    assert(pad_default_bit(PAD_KEY_BUTTON_A, 0) == DM_BTN_B);
-    assert(pad_default_bit(PAD_KEY_BUTTON_B, 0) == DM_BTN_A);
-    assert(pad_default_bit(PAD_KEY_BUTTON_X, 0) == DM_BTN_X);
-    assert(pad_default_bit(PAD_KEY_BUTTON_Y, 0) == DM_BTN_Y);
-    assert(pad_default_bit(PAD_KEY_BUTTON_L1, 0) == DM_BTN_L);
-    assert(pad_default_bit(PAD_KEY_BUTTON_R1, 0) == DM_BTN_R);
-    assert(pad_default_bit(PAD_KEY_BUTTON_L2, 0) == DM_BTN_ZL);
-    assert(pad_default_bit(PAD_KEY_BUTTON_R2, 0) == DM_BTN_ZR);
-    assert(pad_default_bit(PAD_KEY_BUTTON_THUMBL, 0) == DM_BTN_LS);
-    assert(pad_default_bit(PAD_KEY_BUTTON_THUMBR, 0) == DM_BTN_RS);
-    assert(pad_default_bit(PAD_KEY_BUTTON_START, 0) == DM_BTN_PLUS);
-    assert(pad_default_bit(PAD_KEY_BUTTON_SELECT, 0) == DM_BTN_MINUS);
-    assert(pad_default_bit(PAD_KEY_DPAD_UP, 0) == DM_BTN_UP);
-    assert(pad_default_bit(PAD_KEY_DPAD_DOWN, 0) == DM_BTN_DOWN);
-    assert(pad_default_bit(PAD_KEY_DPAD_LEFT, 0) == DM_BTN_LEFT);
-    assert(pad_default_bit(PAD_KEY_DPAD_RIGHT, 0) == DM_BTN_RIGHT);
-    assert(pad_default_bit(9999, 0) == 0);
+    // By position: the scan code says where the button IS (the same on every controller).
+    // The Switch's arrangement: X on top, Y on the left, A on the right, B at the bottom.
+    assert(pad_default_bit(PAD_SCAN_SOUTH, 0, 0) == DM_BTN_B);
+    assert(pad_default_bit(PAD_SCAN_EAST, 0, 0) == DM_BTN_A);
+    assert(pad_default_bit(PAD_SCAN_NORTH, 0, 0) == DM_BTN_X);
+    assert(pad_default_bit(PAD_SCAN_WEST, 0, 0) == DM_BTN_Y);
+    assert(pad_default_bit(PAD_SCAN_L1, 0, 0) == DM_BTN_L);
+    assert(pad_default_bit(PAD_SCAN_R1, 0, 0) == DM_BTN_R);
+    assert(pad_default_bit(PAD_SCAN_L2, 0, 0) == DM_BTN_ZL);
+    assert(pad_default_bit(PAD_SCAN_R2, 0, 0) == DM_BTN_ZR);
+    assert(pad_default_bit(PAD_SCAN_L3, 0, 0) == DM_BTN_LS);
+    assert(pad_default_bit(PAD_SCAN_R3, 0, 0) == DM_BTN_RS);
+    assert(pad_default_bit(PAD_SCAN_START, 0, 0) == DM_BTN_PLUS);
+    assert(pad_default_bit(PAD_SCAN_SELECT, 0, 0) == DM_BTN_MINUS);
 
-    // by label: A is A, B is B, X is X, Y is Y; the rest is the same
-    assert(pad_default_bit(PAD_KEY_BUTTON_A, 1) == DM_BTN_A);
-    assert(pad_default_bit(PAD_KEY_BUTTON_B, 1) == DM_BTN_B);
-    // the print (deprecated): the Xbox print - A is A, B is B, Y on top, X on the left
-    assert(pad_default_bit(PAD_KEY_BUTTON_X, 1) == DM_BTN_Y);
-    assert(pad_default_bit(PAD_KEY_BUTTON_Y, 1) == DM_BTN_X);
-    assert(pad_default_bit(PAD_KEY_BUTTON_L1, 1) == DM_BTN_L);
-    assert(pad_default_bit(PAD_KEY_BUTTON_START, 1) == DM_BTN_PLUS);
-    assert(pad_default_bit(9999, 1) == 0);
+    // The position wins over the key code's name: a controller whose key layout calls the top
+    // button BUTTON_Y (the Nintendo one does) still gets X there.
+    assert(pad_default_bit(PAD_SCAN_NORTH, PAD_KEY_BUTTON_Y, 0) == DM_BTN_X);
+    assert(pad_default_bit(PAD_SCAN_WEST, PAD_KEY_BUTTON_X, 0) == DM_BTN_Y);
+    assert(pad_default_bit(PAD_SCAN_NORTH, PAD_KEY_BUTTON_X, 0) == DM_BTN_X);
+    assert(pad_default_bit(PAD_SCAN_SOUTH, PAD_KEY_BUTTON_A, 0) == DM_BTN_B);
+
+    // No scan code (the d-pad has none): the key code's name it is.
+    assert(pad_default_bit(0, PAD_KEY_DPAD_UP, 0) == DM_BTN_UP);
+    assert(pad_default_bit(0, PAD_KEY_DPAD_DOWN, 0) == DM_BTN_DOWN);
+    assert(pad_default_bit(0, PAD_KEY_DPAD_LEFT, 0) == DM_BTN_LEFT);
+    assert(pad_default_bit(0, PAD_KEY_DPAD_RIGHT, 0) == DM_BTN_RIGHT);
+    assert(pad_default_bit(0, 9999, 0) == 0);
+    assert(pad_default_bit(9999, 0, 0) == 0);
+
+    // by print (deprecated): the Xbox print - A at the bottom, B on the right, Y on top, X on the left
+    assert(pad_default_bit(PAD_SCAN_SOUTH, 0, 1) == DM_BTN_A);
+    assert(pad_default_bit(PAD_SCAN_EAST, 0, 1) == DM_BTN_B);
+    assert(pad_default_bit(PAD_SCAN_NORTH, 0, 1) == DM_BTN_Y);
+    assert(pad_default_bit(PAD_SCAN_WEST, 0, 1) == DM_BTN_X);
+    assert(pad_default_bit(PAD_SCAN_L1, 0, 1) == DM_BTN_L);
+    assert(pad_default_bit(PAD_SCAN_START, 0, 1) == DM_BTN_PLUS);
+    assert(pad_default_bit(0, 9999, 1) == 0);
 }
 
 static void table(void) {

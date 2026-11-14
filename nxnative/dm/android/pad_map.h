@@ -17,8 +17,11 @@
 // ("a" ... "right"), or the disable marker.
 //
 // The default dictionary is what the game sees when the player changed nothing: the Switch's layout by position
-// (the bottom face button is B, the right one A). With "labels" the face buttons go by their label instead (an
-// Xbox controller's A is the game's A): the label belongs to the controller, not to the game.
+// (X on top, Y on the left, A on the right, B at the bottom). The position comes from the scan code, which is the
+// same on every controller; Android's key codes only say what the system calls a button, and that is not the same
+// everywhere (each vendor has its own key layout), so they are only the fallback for the buttons that carry no
+// scan code (the d-pad). With "labels" the face buttons go by their print instead (an Xbox controller's A is the
+// game's A): the print belongs to the controller, not to the game.
 #ifndef DM_PAD_MAP_H
 #define DM_PAD_MAP_H
 
@@ -35,6 +38,15 @@ enum {
     PAD_KEY_BUTTON_A = 96, PAD_KEY_BUTTON_B = 97, PAD_KEY_BUTTON_X = 99, PAD_KEY_BUTTON_Y = 100,
     PAD_KEY_BUTTON_L1 = 102, PAD_KEY_BUTTON_R1 = 103, PAD_KEY_BUTTON_L2 = 104, PAD_KEY_BUTTON_R2 = 105,
     PAD_KEY_BUTTON_THUMBL = 106, PAD_KEY_BUTTON_THUMBR = 107, PAD_KEY_BUTTON_START = 108, PAD_KEY_BUTTON_SELECT = 109,
+};
+
+// The Linux scan codes: they say where the button IS (the bottom one is 304 on every controller).
+// Android's key codes only say what the system CALLS the button, and that is not the same on every
+// controller (each vendor has its own key layout), so the dictionary follows the scan code.
+enum {
+    PAD_SCAN_SOUTH = 304, PAD_SCAN_EAST = 305, PAD_SCAN_NORTH = 307, PAD_SCAN_WEST = 308,
+    PAD_SCAN_L1 = 310, PAD_SCAN_R1 = 311, PAD_SCAN_L2 = 312, PAD_SCAN_R2 = 313,
+    PAD_SCAN_SELECT = 314, PAD_SCAN_START = 315, PAD_SCAN_L3 = 317, PAD_SCAN_R3 = 318,
 };
 
 // The game's buttons, in the order the center lists them. The bits are the host's own (dm_input.h): the name is
@@ -89,21 +101,26 @@ static inline uint64_t pad_button_bit(int index) { return index < 0 || index >= 
 
 // The default dictionary: the Switch's layout by position (X on top, Y on the left, A on the right, B at the bottom).
 // The game speaks Switch positions; what the controller prints on its buttons is only a sticker.
-static inline uint64_t pad_default_bit(int key, int labels) {
-    if (labels) {   // by print (deprecated, always 0): the Xbox print - A is A, B is B, Y on top, X on the left
-        switch (key) {
-        case PAD_KEY_BUTTON_A: return DM_BTN_A; case PAD_KEY_BUTTON_B: return DM_BTN_B;
-        case PAD_KEY_BUTTON_X: return DM_BTN_Y; case PAD_KEY_BUTTON_Y: return DM_BTN_X;
-        default: break;
-        }
-    } else {
-        switch (key) {
-        case PAD_KEY_BUTTON_A: return DM_BTN_B; case PAD_KEY_BUTTON_B: return DM_BTN_A;
-        case PAD_KEY_BUTTON_X: return DM_BTN_X; case PAD_KEY_BUTTON_Y: return DM_BTN_Y;
+static inline uint64_t pad_default_bit(int scan, int key, int labels) {
+    if (scan > 0) {   // by position: the scan code says where the button IS (the same on every controller)
+        switch (scan) {
+        case PAD_SCAN_SOUTH: return labels ? DM_BTN_A : DM_BTN_B;
+        case PAD_SCAN_EAST: return labels ? DM_BTN_B : DM_BTN_A;
+        case PAD_SCAN_NORTH: return labels ? DM_BTN_Y : DM_BTN_X;
+        case PAD_SCAN_WEST: return labels ? DM_BTN_X : DM_BTN_Y;
+        case PAD_SCAN_L1: return DM_BTN_L; case PAD_SCAN_R1: return DM_BTN_R;
+        case PAD_SCAN_L2: return DM_BTN_ZL; case PAD_SCAN_R2: return DM_BTN_ZR;
+        case PAD_SCAN_L3: return DM_BTN_LS; case PAD_SCAN_R3: return DM_BTN_RS;
+        case PAD_SCAN_SELECT: return DM_BTN_MINUS; case PAD_SCAN_START: return DM_BTN_PLUS;
         default: break;
         }
     }
-    switch (key) {   // the rest is the same either way
+    // No scan code (the d-pad is the one that has none): the key code's name it is.
+    switch (key) {
+    case PAD_KEY_BUTTON_A: return labels ? DM_BTN_A : DM_BTN_B;
+    case PAD_KEY_BUTTON_B: return labels ? DM_BTN_B : DM_BTN_A;
+    case PAD_KEY_BUTTON_X: return labels ? DM_BTN_Y : DM_BTN_X;
+    case PAD_KEY_BUTTON_Y: return labels ? DM_BTN_X : DM_BTN_Y;
     case PAD_KEY_BUTTON_L1: return DM_BTN_L; case PAD_KEY_BUTTON_R1: return DM_BTN_R;
     case PAD_KEY_BUTTON_L2: return DM_BTN_ZL; case PAD_KEY_BUTTON_R2: return DM_BTN_ZR;
     case PAD_KEY_BUTTON_THUMBL: return DM_BTN_LS; case PAD_KEY_BUTTON_THUMBR: return DM_BTN_RS;
@@ -231,7 +248,7 @@ static inline uint64_t pad_map_key_bit(const pad_map_t *m, int device, int scan,
         if (b) return b->target < 0 ? 0 : pad_button_bit(b->target);
     }
     int labels = d ? (d->labels >= 0 ? d->labels : pad_env_labels_cached()) : pad_env_labels_cached();
-    return pad_default_bit(key, labels);
+    return pad_default_bit(scan, key, labels);
 }
 
 // The face buttons' flip for a device: the table's, else the environment's.
