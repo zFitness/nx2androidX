@@ -6,6 +6,7 @@
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
 #include "zstd.h"
+#include "vk_cbuf_extent.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <string.h>
@@ -297,6 +298,8 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     s->nbind = (int)hdr[0]; s->c1_len = hdr[1]; memcpy(s->local, hdr + 2, 12);
     s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + (size_t)20 * s->nbind;
     // SPIR-V with the stage's set
+    for (int i = 0; i < s->nbind && i < 96; i++) if (s->b[i].kind == RK_CBUF)
+        s->cb_extent[i] = spv_cbuf_extent(w, nw, s->b[i].binding);
     int f64_used = 0; uint32_t xb = 4;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) break; if (op == 71 && n >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set;   // OpDecorate DescriptorSet
         if (op == 22 && n == 3 && w[i + 2] == 64) f64_used = 1;   // OpTypeFloat 64

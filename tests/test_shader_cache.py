@@ -40,6 +40,8 @@ class ShaderCache(unittest.TestCase):
         self.dll = self.root / 'translator/dmsh_xlate.dll'; self.dll.parent.mkdir(); self.dll.write_bytes(b'translator')
         self.exports = self.builds = 0; self.partial = self.empty = False; self.during_export = None
         self.addCleanup(mock.patch.stopall)
+        # The translator build is mocked below; its prerequisite probe must not use DNS.
+        mock.patch.object(pipeline, '_has_network', return_value=True).start()
         mock.patch.object(nsp, 'split_shaders').start()
         mock.patch.object(pipeline.Port, 'device_oodle_end').start()
         mock.patch.object(nsp, 'run', side_effect=self.run_external).start()

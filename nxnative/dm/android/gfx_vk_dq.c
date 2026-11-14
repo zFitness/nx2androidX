@@ -33,10 +33,21 @@ static _Atomic int g_sleeping, g_draining;
 static pthread_spinlock_t g_pl;   // the producers' lock, from rec_begin to rec_end
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER, g_dcv = PTHREAD_COND_INITIALIZER;
 static int g_on;
+static _Atomic int g_dq_profile;
+static _Atomic uint64_t g_work_ns, g_idle_ns, g_sleep_ns, g_yields, g_drain_ns;
+static uint64_t dq_tick(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
+void vk_dq_config(void) {
+    const char *e = getenv("DM_VK_DQ_PROFILE"); int profile = e && atoi(e); atomic_store(&g_dq_profile, profile);
+    static uint64_t last; if (!profile) { last = 0; return; }
+    uint64_t now = dq_tick(); if (last && now - last < 5000000000ull) return;
+    uint64_t work = atomic_exchange(&g_work_ns, 0), idle = atomic_exchange(&g_idle_ns, 0), sleep = atomic_exchange(&g_sleep_ns, 0), yields = atomic_exchange(&g_yields, 0), drain = atomic_exchange(&g_drain_ns, 0);
+    if (last) VKLOG("DQ profile: window %.3f ms work %.3f idle-spin %.3f sleep %.3f drain %.3f ms yields %llu", (now-last)/1e6, work/1e6, idle/1e6, sleep/1e6, drain/1e6, (unsigned long long)yields);
+    last = now;
+}
 uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains, calls made directly (unknown arguments)
 
 static void wake(void) { if (atomic_load(&g_sleeping)) { pthread_mutex_lock(&g_mu); pthread_cond_signal(&g_cv); pthread_mutex_unlock(&g_mu); } }
-void vk_dq_drain(void) {
+static void dq_drain_(void) {
     if (!g_on) return;
     pthread_spin_lock(&g_pl); uint64_t w = g_w; pthread_spin_unlock(&g_pl);   // the records queued so far (another producer may add more meanwhile)
     if (atomic_load_explicit(&g_rd, memory_order_acquire) >= w) return;
@@ -50,6 +61,10 @@ void vk_dq_drain(void) {
             if (n++ < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the record there: op %u size %u",
                 (unsigned long long)w, (unsigned long long)atomic_load(&g_pub), (unsigned long long)rd, h->op, h->size); } }
     atomic_store(&g_draining, 0); pthread_mutex_unlock(&g_mu);
+}
+void vk_dq_drain(void) {
+    int profile = atomic_load(&g_dq_profile); uint64_t start = profile ? dq_tick() : 0;
+    dq_drain_(); if (profile) atomic_fetch_add(&g_drain_ns, dq_tick() - start);
 }
 static void *rec_begin(uint32_t op, VkCommandBuffer cb, size_t n) {   // room for a record with n bytes after its header
     size_t need = (sizeof(rec_hdr) + n + 15) & ~(size_t)15;   // 16-byte records: the ring's end always has room for a whole header
@@ -166,18 +181,25 @@ static void run(const rec_hdr *h) {
 static void *recorder_main(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk record"); uint64_t r = 0;
     for (;;) {
+        int profile = atomic_load(&g_dq_profile);
         uint64_t pub = atomic_load(&g_pub);
         if (r == pub) {
-            for (int i = 0; i < 200 && (pub = atomic_load(&g_pub)) == r; i++) sched_yield();   // the producer usually queues the next call within microseconds
+            uint64_t start = profile ? dq_tick() : 0, yields = 0;
+            for (int i = 0; i < 200 && (pub = atomic_load(&g_pub)) == r; i++) { sched_yield(); yields++; }
+            if (profile) { atomic_fetch_add(&g_idle_ns, dq_tick() - start); atomic_fetch_add(&g_yields, yields); }
             if (pub == r) {
+                uint64_t sleep_start = profile ? dq_tick() : 0;
                 pthread_mutex_lock(&g_mu);
                 if (atomic_load(&g_draining)) pthread_cond_broadcast(&g_dcv);
                 atomic_store(&g_sleeping, 1);
                 while ((pub = atomic_load(&g_pub)) == r) pthread_cond_wait(&g_cv, &g_mu);
                 atomic_store(&g_sleeping, 0); pthread_mutex_unlock(&g_mu);
+                if (profile) atomic_fetch_add(&g_sleep_ns, dq_tick() - sleep_start);
             }
         }
+        uint64_t work_start = profile ? dq_tick() : 0;
         while (r != pub) { const rec_hdr *h = (const rec_hdr *)(g_ring + r % RING); run(h); r += h->size; atomic_store_explicit(&g_rd, r, memory_order_release); }
+        if (profile) atomic_fetch_add(&g_work_ns, dq_tick() - work_start);
         if (atomic_load(&g_draining)) { pthread_mutex_lock(&g_mu); pthread_cond_broadcast(&g_dcv); pthread_mutex_unlock(&g_mu); }
     }
     return NULL;

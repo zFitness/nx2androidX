@@ -262,6 +262,7 @@ int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t n
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n);
 static int sparse_tex(const tex_t *t) { return t->pool && nvn_sparse_pool(t->pool); }
 uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
+static uint64_t upload_tick(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f);
 static uint64_t pkg_hash(const uint8_t *m, size_t n) {   // FNV-1a over 8-byte words
     uint64_t h = 1469598103934665603ull; size_t i = 0;
@@ -275,6 +276,10 @@ static void pkg_upload(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     clock_gettime(CLOCK_MONOTONIC, &b); g_pkg_ns += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); g_pkg_n++; g_pkg_bytes += t->L.size;
 }
 static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
+    const char *profile_env = getenv("DM_VK_UPLOAD_PROFILE");
+    int profile = profile_env && atoi(profile_env); uint64_t pt = profile ? upload_tick() : 0, times[6] = {0};
+    uint8_t *snapshot = NULL; const uint8_t *source = t->mem;
+#define UP_PHASE(i) do { if (profile) { uint64_t now = upload_tick(); times[i] += now - pt; pt = now; } } while (0)
     { static int n; const char *e = getenv("DM_VK_LOG_UPLOADS"); if (e && atoi(e) && n < 60) { n++;   // which packaged textures are (re-)uploaded
         VKLOG("upload: serial %llu %ux%ux%u nvn format %#x (vk %d) target %d levels %u layers %u flags %#x stride %u size %llu mem %p, tileH*100+pkg_block_h %d%s",
               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, f->vk, t->d.target, im->levels, im->layers, t->d.flags, t->d.stride, (unsigned long long)t->L.size,
@@ -282,6 +287,7 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     if (im->packaged < 100) im->packaged++;
     VkCommandBuffer cb = vk_upload_cmd();
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
+    UP_PHASE(0);
     const uint8_t *mem = t->mem; uint8_t *copy = NULL;
     if ((im->pkg_sparse = sparse_tex(t))) {   // through the page table (see above); its physical pages stay protected, so no sweep releases them (pkg_mem NULL)
         im->pkg_vgen = nvn_sparse_gen(); nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_seen = im->pkg_stamp;
@@ -294,27 +300,59 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     } else {
         nvn_dirty_protect(t->mem, t->L.size);
         im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
-        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
+        UP_PHASE(1);
+        // A cached snapshot avoids repeated scattered reads from uncached guest pools.
+        // Protection and the dirty stamp precede the copy; sparse textures use their page-table copy.
+        const char *cache_env = getenv("DM_VK_UPLOAD_SNAPSHOT");
+        if (cache_env && atoi(cache_env) && t->L.size >= 4096 && t->L.size <= 64 * 1024 * 1024) {
+            snapshot = malloc(t->L.size);
+            if (snapshot) { memcpy(snapshot, t->mem, t->L.size); mem = snapshot; }
+        }
+        UP_PHASE(5);
+        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(mem, t->L.size);
     }
+    source = mem; UP_PHASE(2);
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
-    if (!bpb) { free(copy); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
+    if (!bpb) { free(copy); free(snapshot); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
     for (unsigned lv = 0; lv < im->levels; lv++) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
         for (unsigned ly = 0; ly < im->layers; ly++) {
             VkBuffer sb; VkDeviceSize so; uint8_t *blocks = f->dec ? malloc(slab) : NULL, *dst = blocks ? blocks : vk_scratch(slab, 16, &sb, &so);
-            if (f->dec && !blocks) { free(copy); return; }
+            UP_PHASE(3);
+            if (f->dec && !blocks) { free(copy); free(snapshot); return; }
             if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
                 size_t stride = t->d.stride ? t->d.stride : pitch;
-                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, mem, dst, pitch)) { free(blocks); free(copy); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, source + (size_t)y * stride, pitch);
+            } else if (nvn_deswizzle(&t->d, lv, ly, source, dst, pitch)) { free(copy); free(snapshot); free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
+            UP_PHASE(4);
+            {   // Opt-in first-upload evidence: the exact linear bytes sent to the GPU.
+                extern uint64_t g_tex_frame;
+                const char *e = getenv("DM_VK_UPLOAD_DUMP"); unsigned dw, dh, dd; static unsigned count;
+                if (e && sscanf(e, "%ux%ux%u", &dw, &dh, &dd) == 3 && w == dw && h == dh && z == dd && count < 64) {
+                    size_t bytes = f->dec ? (size_t)w * h * z * f->dbpp : slab;
+                    if (bytes <= 16 * 1024 * 1024) { const char *root = getenv("DM_ROOT"); char path[1024]; unsigned id = count++;
+                        snprintf(path, sizeof path, "%s/upload_%03u.bin", root ? root : ".", id); FILE *out = fopen(path, "wb");
+                        if (out) { fwrite(dst, 1, bytes, out); fclose(out); }
+                        VKLOG("upload dump %u: present %llu serial %llu pool %#llx offset %#llx %ux%ux%u format %u mip %u layer %u upload %d bytes %zu hash %#llx",
+                            id, (unsigned long long)g_tex_frame, (unsigned long long)t->serial, (unsigned long long)(uintptr_t)t->pool, (unsigned long long)t->off,
+                            w, h, z, im->fmt, lv, ly, im->packaged, bytes, (unsigned long long)pkg_hash(dst, bytes));
+                    }
+                }
+            }
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+            UP_PHASE(0);
         }
     }
     free(copy);
+    free(snapshot);
+    if (profile) { extern uint64_t g_tex_frame; VKLOG("upload phases: frame %llu serial %llu %ux%u bytes %llu upload %d command %.3f protect %.3f hash %.3f scratch %.3f deswizzle-decode %.3f snapshot %.3f ms content %#llx",
+        (unsigned long long)g_tex_frame, (unsigned long long)t->serial, t->d.width, t->d.height, (unsigned long long)t->L.size, im->packaged,
+        times[0]/1e6, times[1]/1e6, times[2]/1e6, times[3]/1e6, times[4]/1e6, times[5]/1e6, (unsigned long long)im->pkg_hash); }
+#undef UP_PHASE
 }
 static int packaged_tex(const tex_t *t);
 static int cpu_content_tex(const tex_t *t, const vkfmt_t *f);
@@ -559,7 +597,7 @@ void vk_tex_release_drain(void) {   // the replay thread, at each submission (vk
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
 // ---------------- views ----------------
-typedef struct vview { VkImageView v; VkImageViewType type; VkFormat fmt; uint32_t lv0, nlv, ly0, nly; VkComponentMapping swz; VkImageAspectFlags aspect; int attach; struct vview *next; } vview;   // attach: an attachment view (its usage differs from a sampling view's)
+typedef struct vview { VkImageView v; VkImageViewType type; VkFormat fmt; uint32_t lv0, nlv, ly0, nly; VkComponentMapping swz; VkImageAspectFlags aspect; int attach; VkImageUsageFlags usage; struct vview *next; } vview;   // attach: an attachment view (its usage differs from a sampling view's)
 static nvn_hmap g_views = {.klen = sizeof(vkimg_t *)};   // vkimg_t* → vview list
 static pthread_mutex_t g_view_mu = PTHREAD_MUTEX_INITIALIZER;
 extern uint64_t g_tex_gen;
@@ -598,6 +636,7 @@ static VkComponentMapping sample_swizzle(const VkComponentMapping *format, const
         apply(swz_comp(sw[2]),format,VK_COMPONENT_SWIZZLE_B),
         apply(swz_comp(sw[3]),format,VK_COMPONENT_SWIZZLE_A)};
 }
+__thread VkImageUsageFlags vk_view_usage;
 __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
@@ -618,6 +657,13 @@ static int bc_standin_ok(const vkimg_t *im, const vkfmt_t *cf, const vkfmt_t *vf
 VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
+    { const char *probe = getenv("DM_VK_FIRST_USE"); unsigned w, h, fmt; static unsigned n;
+      if (probe && n < 32 && sscanf(probe, "%ux%u:%u", &w, &h, &fmt) == 3 && im->w == w && im->h == h && im->fmt == (VkFormat)fmt) {
+          ++n; VKLOG("first use probe %u: serial %llu pool %#llx+%#llx attachment %d gpu_written %d packaged %d write_seq %llu aliases %u cpu_hash %#llx",
+              n, (unsigned long long)t->serial, (unsigned long long)im->pool, (unsigned long long)im->off, as_attachment, im->gpu_w,
+              im->packaged, (unsigned long long)im->wseq, im->novl, (unsigned long long)(t->mem ? pkg_hash(t->mem, t->L.size) : 0));
+      }
+    }
     if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
     if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
@@ -685,7 +731,7 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
     for (vview *v = head; v; v = v->next)
-        if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; return v->v; }
+        if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; vk_view_usage = v->usage; return v->v; }
     VkImageViewUsageCreateInfo uci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, NULL, 0};
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, fmt, &fp);
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -694,10 +740,10 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
-    vview *nv = calloc(1, sizeof *nv); *nv = (vview){view, type, fmt, lv0, nlv, ly0, nly, swz, aspect, as_attachment != 0, head};
+    vview *nv = calloc(1, sizeof *nv); *nv = (vview){view, type, fmt, lv0, nlv, ly0, nly, swz, aspect, as_attachment != 0, uci.usage, head};
     nvn_hm_put(&g_views, &im, nv);
     pthread_mutex_unlock(&g_view_mu);
-    vk_view_fmt = fmt; vk_view_layers = nly;
+    vk_view_fmt = fmt; vk_view_layers = nly; vk_view_usage = uci.usage;
     return view;
 }
 
@@ -771,6 +817,7 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.anisotropyEnable = p->aniso > 1.0f; ci.maxAnisotropy = p->aniso > V.max_aniso ? V.max_aniso : p->aniso;
     ci.compareEnable = p->cmp_mode == 1; ci.compareOp = cmp_op(p->cmp_func);
     ci.minLod = p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;   // no mipmap filter: level 0 only (GL's rule)
+    if (p->minf <= 1) ci.minLod = 0.0f;   // base-level filtering ignores the guest mip LOD clamp
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {

@@ -125,6 +125,8 @@ def header(g):
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
     svs = g.get('small_vpool_sparse', 'off')   # virtual pools no larger than the application pool get their own range and may become sparse at the first mapping (hle_nvn.c vpool_reserve): on / off
     if svs not in ('on', 'off'): sys.exit(f'{g.id}: small_vpool_sparse must be on or off: {svs}')
+    dcl = g.get('depth_clamp', 'off')   # a device without VK_EXT_depth_clip_control keeps Vulkan's z 0..1 clip volume, so a game that draws in the -1..1
+    if dcl not in ('on', 'off'): sys.exit(f'{g.id}: depth_clamp must be on or off: {dcl}')   # convention has that geometry clipped away (gfx_vk_exec.c graphics_pipeline clamps it instead): on / off
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
@@ -155,6 +157,7 @@ def header(g):
          f'#define DM_GAME_ENV {q(g.get("game_env", ""))}',   # KEY=VALUE pairs getenv answers (hle_os.c; Absolum: .NET's DOTNET_GCRegionRange)
          f'#define DM_GAME_MEM_MAP_LIMIT {int(mml == "on")}',
          f'#define DM_GAME_SMALL_VPOOL_SPARSE {int(svs == "on")}',
+         f'#define DM_GAME_DEPTH_CLAMP {int(dcl == "on")}',
          f'#define DM_GAME_DISPLAY_VERSIONS {vers}',
          f'#define DM_GAME_PRESENT_DISPLAY {int(pi == "display")}',
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',

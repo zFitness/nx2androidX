@@ -714,7 +714,7 @@ static uint64_t g_frame;
 // (how Xenoblade Chronicles 3's render thread was found waiting in SyncWait on the acquire sync for its whole frame's GPU work)
 static int seq_on(void) { static uint64_t until; const char *e = getenv("DM_NVN_SEQ"); if (e && atoi(e)) { until = g_frame + (uint64_t)atoi(e); setenv("DM_NVN_SEQ", "0", 1); } return g_frame < until; }
 #define SEQ(...) do { if (seq_on()) { char sb_[256]; snprintf(sb_, sizeof sb_, __VA_ARGS__); LOG("[seq] f%llu t%lx %.3f %s", (unsigned long long)g_frame, (unsigned long)(uintptr_t)pthread_self(), now_ns() / 1e6, sb_); } } while (0)
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); SEQ("fence %p", (void *)s); }
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); SEQ("fence %p value %llu condition %d flags %d", (void *)s, (unsigned long long)((sync_t *)s)->fence, (int)c, f); }
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 // A GPU-side wait on a sync: the host has a single Metal queue that executes submissions in order, so commands before the fence are always done first and nothing needs waiting. A sync not fenced yet (fenced later by another thread) is not waited for here; logged once
 NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; static int once; if (!((const sync_t *)s)->fenced && !once++) LOG("[nvn] QueueWaitSync: the sync object has no fence yet, the host does not wait"); return 1; }
@@ -725,7 +725,7 @@ NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
     if (!o->fenced) { SEQ("syncwait %p unfenced", (void *)s); return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; }
     if (nvn_fence_wait(o->fence, 0)) { SEQ("syncwait %p kind %u already", (void *)s, o->fenced); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
-    uint64_t t0 = now_ns(); int r = nvn_fence_wait(o->fence, timeout);
+    uint64_t t0 = now_ns(); SEQ("syncwait begin %p value %llu", (void *)s, (unsigned long long)o->fence); int r = nvn_fence_wait(o->fence, timeout);
     SEQ("syncwait %p kind %u timeout %llu waited %.2f ms -> %d", (void *)s, o->fenced, (unsigned long long)timeout, (now_ns() - t0) / 1e6, r);
     return r ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
 }

@@ -109,6 +109,7 @@ static void slab_give(slab_t *sl, uint32_t slot, uint64_t fence) { (void)sl; (vo
 static int zcf_take(uint64_t size, zcfree_t *out) { (void)size; (void)out; return 0; }
 static void zcf_free_now(const zcfree_t *entry) { (void)entry; assert(0); }
 static struct { VkDevice dev; } V;
+static int g_has_ahb = 1;
 static int failure, released, closed, destroyed, messages;
 static char last[1024];
 static uint8_t temporary[64];
@@ -148,9 +149,10 @@ static void *mock_mmap(void *addr, size_t n, int prot, int flags, int fd, off_t 
 static int mock_munmap(void *p, size_t n) { assert(p == temporary && n == 64); return 0; }
 #define munmap mock_munmap
 static uint32_t vk_mem_type(uint32_t bits, uint32_t want, uint32_t avoid) { (void)bits; (void)want; (void)avoid; return 0; }
-static VkResult vkGetAndroidHardwareBufferPropertiesANDROID(VkDevice d, AHardwareBuffer *a, VkAndroidHardwareBufferPropertiesANDROID *out) {
+static VkResult mock_ahb_properties(VkDevice d, const AHardwareBuffer *a, VkAndroidHardwareBufferPropertiesANDROID *out) {
     (void)d; assert(a); out->allocationSize = 64; out->memoryTypeBits = 1; return failure == 7 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
+static PFN_vkGetAndroidHardwareBufferPropertiesANDROID vkGetAndroidHardwareBufferPropertiesANDROID = mock_ahb_properties;
 static VkResult vkCreateBuffer(VkDevice d, const VkBufferCreateInfo *ci, const void *alloc, VkBuffer *out) {
     (void)d; (void)alloc; assert(ci->size == 64); *out = (VkBuffer)(uintptr_t)1; return failure == 8 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
@@ -167,6 +169,13 @@ int main(void) {
     int enabled = getenv("DM_VK_MEM_DIAG") && atoi(getenv("DM_VK_MEM_DIAG"));
     static const char *const names[] = {"size", "AHardwareBuffer_allocate", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds", "mmap-temporary", "mmap-fixed", "vkGetAndroidHardwareBufferPropertiesANDROID", "vkCreateBuffer", "vkAllocateMemory", "vkBindBufferMemory"};
     uint8_t memory[64]; memset(memory, 23, sizeof memory);
+    vkpool_t unsupported = {0};
+    g_has_ahb = 0;
+    assert(pool_zero_copy(&unsupported, memory, sizeof memory) == -6);
+    g_has_ahb = 1; vkGetAndroidHardwareBufferPropertiesANDROID = NULL;
+    assert(pool_zero_copy(&unsupported, memory, sizeof memory) == -6);
+    assert(!released && !closed && !destroyed && !messages);
+    vkGetAndroidHardwareBufferPropertiesANDROID = mock_ahb_properties;
     for (failure = 0; failure <= 10; failure++) {
         for (int repeat = 0; repeat < 2; repeat++) {
             vkpool_t p = {0}; released = closed = destroyed = 0;

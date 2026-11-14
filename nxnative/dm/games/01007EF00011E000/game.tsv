@@ -22,6 +22,14 @@ gpu_timestamps	segment
 # patches.py FRAME_STEP); 30 when 60 does not hold, game time = real time. DM_FPS_TARGET=30 (Documents/env.txt on the iPhone) saves power; 0 runs the game's own
 # interval controller (with the 60 fps cuts, which also serve while the game's VFR override is set)
 fps_target	60
+# A device without VK_EXT_depth_clip_control (Adreno 650 with its own Vulkan 1.1 driver, for one) keeps Vulkan's z 0..1 clip volume, which cuts away the
+# game's final composite: its full-screen blit quad sits at z -1 with the depth test off, so the window texture is never written and the app shows a black
+# screen at 60 fps. Clamping the depth keeps that quad (Android host: gfx_vk_exec.c graphics_pipeline). Off on the devices that have the extension
+depth_clamp	on
+# CPU-filled lighting volumes have no packaged layout. Track writes after
+# texture creation: the 256x32 RGBA16F volume was sampled without an upload.
+tex_flush_upload	on
+tex_dirty_upload	on
 
 # ---- Versions ----
 # only the merged 1.9.0 copy is extracted; the base game's own build IDs are added when needed

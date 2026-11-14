@@ -50,7 +50,7 @@ typedef struct {
     VkInstance inst; VkPhysicalDevice pd; VkDevice dev; VkQueue q; uint32_t qf;
     VkPhysicalDeviceProperties props; VkPhysicalDeviceMemoryProperties mem;
     VkPipelineCache pcache;
-    int has_bc, has_astc, has_gs, has_depth_clip_ctl, has_custom_border, has_robust2, has_xfb, has_imageless, has_dtiming, has_dynrender, has_timeline, has_draw_count;
+    int has_bc, has_astc, has_gs, has_depth_clip_ctl, has_custom_border, has_robust2, has_xfb, has_imageless, has_dtiming, has_dynrender, has_timeline, has_draw_count, has_depth_clamp;
     float max_aniso;
     // subgroups (vk_init): VkPhysicalDeviceSubgroupProperties' size, stages, operations and quadOperationsInAllStages; VkPhysicalDeviceSubgroupSizeControlProperties'
     // range and maxComputeWorkgroupSubgroups; DM_VK_SUBGROUP_PIN's required size (sg_pin) and the stages it is given to (vk_sg_pin)
@@ -137,6 +137,7 @@ VkFormat vk_int_fmt(uint32_t bytes, int sint);   // the uint (or sint) format of
 void vk_watch(const vkimg_t *im, const char *what);   // DM_VK_WATCH (gfx_vk_exec.c)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out);   // registered texture ID → image (NULL if none)
 VkSampler vk_samp_by_id(int sid);
+extern __thread VkImageUsageFlags vk_view_usage;
 extern __thread VkFormat vk_view_fmt; extern __thread uint32_t vk_view_layers;   // the format and layer count of the view vk_tex_view last returned on this thread
 VkImageView vk_dummy_view(int dim, int arrayed, int ms, int storage, int is_int);
 VkSampler vk_dummy_sampler(void);
@@ -159,6 +160,7 @@ typedef struct {
     const uint8_t *c1; uint32_t c1_len; VkBuffer c1_buf; VkDeviceSize c1_off;
     uint32_t local[3];
     uint8_t dyn[96]; int ndyn;          // bindings of uniform buffers bound with a dynamic offset (gfx_vk_exec.c stage_set), and their count
+    uint32_t cb_extent[96];            // proven SPIR-V uniform read extent, or 0 for the full binding
     int xfb; uint32_t xfb_stride[4];    // a vertex shader that captures transform feedback (its SPIR-V has the Xfb execution mode), and each buffer's stride
     uint32_t *spv, nspv;                // its SPIR-V as the module was made from it, for the variants below
     struct { uint64_t um, im; uint32_t xo; int fd; VkShaderModule mod; } var[8]; int nvar;   // variants whose sampled bindings (bit = index in b) of an integer view read uint (um) / int (im) texels,

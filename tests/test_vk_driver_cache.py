@@ -33,6 +33,7 @@ def harness():
 #include <stdlib.h>
 #include <string.h>
 static struct { VkDevice dev; VkPhysicalDeviceProperties props; } V;
+#define VKLOG(...) ((void)0)
 typedef struct { int stage, index; uint64_t addr, size; } p_bind_buf;
 static struct { p_bind_buf ssbo[6][16], ubo[6][16]; uint64_t tex[6][256], img[6][8], samp[6][128]; } S;
 static uint32_t g_dispatch[3], g_draw_binst;
@@ -77,6 +78,7 @@ VKAPI_ATTR void VKAPI_CALL vkGetBufferMemoryRequirements(VkDevice device, VkBuff
     *req = (VkMemoryRequirements){a->size, 256, 1};
 }
 static uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags required, VkMemoryPropertyFlags preferred) {
+    if (required & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) return UINT32_MAX;
     assert(bits == 1 && required == (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) && !preferred);
     return 0;
 }
