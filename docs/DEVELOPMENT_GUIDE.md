@@ -317,6 +317,28 @@ that it is not in this build; the same host built by the command line is `porter
 change the license of the build: the code it is made from is GPL-3.0-or-later either way.
 [android/NOTICE.md](../android/NOTICE.md) says what that means for the app.
 
+## Testing the physical controller without a controller
+
+The physical controller's path (the app's gamepad center, the mapping table, the host's dictionary) can be tested
+on a phone without a controller in hand: `devtools/uinput_pad.c` is a virtual gamepad that sends the same kernel
+events a pad sends.
+
+```bash
+NDK=~/Library/Android/sdk/ndk/27.2.12479018
+$NDK/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android24-clang -O2 -o /tmp/uinput_pad devtools/uinput_pad.c
+adb push /tmp/uinput_pad /data/local/tmp/uinput_pad
+adb shell 'chmod 755 /data/local/tmp/uinput_pad'
+adb shell '/data/local/tmp/uinput_pad "Nintendo Switch Pro Controller" 5 1406 8201 32769 st /data/local/tmp/pad.cmd'
+```
+
+Its bus, vendor and product pick Android's key layout file, which is the point: the layout decides what a button is
+*called* (the Nintendo one calls the top button `BUTTON_Y`, the generic one `BUTTON_X`), while the scan code says
+where the button *is* (307 is the top one on every controller). A pad that is created, unplugged and created again
+also shows whether the app finds its profile again.
+
+The host says what the game received: `DM_PAD_LOG=1` in the pack's `env.txt` makes it log every key event with its
+scan code and the game button it became.
+
 ## Licenses
 
 The repository's own code is GPL-3.0-or-later ([LICENSE](../LICENSE)), nxnative included; the vendored third-party code

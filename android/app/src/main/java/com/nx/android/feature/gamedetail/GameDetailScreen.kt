@@ -104,8 +104,13 @@ import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.components.rememberGameIcon
 import com.nx.android.core.ui.components.sizeText
+import com.nx.android.core.ui.nav.NavHint
+import com.nx.android.core.ui.nav.NavHintInline
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.failureText
 import com.nx.android.core.ui.theme.NxPalette
+import com.nx.android.input.GamepadScan
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -145,7 +150,7 @@ private data class RemovalRequest(val kind: Removal, val plan: GameCleanup.Plan,
 @Composable
 fun GameDetailRoute(lib: LibraryState, port: PortState, player: PlayerState,
                     e: GameEntry, installedDrivers: List<Driver>, actions: AppActions, onGoBuilds: () -> Unit,
-                    onRequest: (PickerRequest) -> Unit, onClose: () -> Unit) {
+                    onRequest: (PickerRequest) -> Unit, onClose: () -> Unit, navActive: Boolean = false) {
     val viewModel: GameDetailViewModel = hiltViewModel(key = "game-detail-${e.titleId}")
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -160,7 +165,8 @@ fun GameDetailRoute(lib: LibraryState, port: PortState, player: PlayerState,
         }.onFailure { actions.onToast(locale.str(R.string.lib_no_receiver)) }
     }
     GameDetailScreen(lib, port, player, e, installedDrivers, viewModel.saveRepository, shareFile,
-        uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose)
+        uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose,
+        navActive = navActive)
 }
 
 @Composable
@@ -169,7 +175,8 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         shareFile: (File) -> Unit, detailState: GameDetailUiState,
                         onSelectLanguage: (String?) -> Unit, onSelectDriver: (String?) -> Unit,
                         actions: AppActions, onGoBuilds: () -> Unit,
-                        onRequest: (PickerRequest) -> Unit, onClose: () -> Unit) {
+                        onRequest: (PickerRequest) -> Unit, onClose: () -> Unit,
+                        navActive: Boolean = false) {
     val locale = LocalAppLocale.current
     val status = lib.statusOf(e)
     // Title ID：游戏的身份（还没构建过的还没有）
@@ -191,6 +198,13 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
     // 正在搬移/删除时：返回键不做事（别把进行中的动作打断，面板也别关）
     BackHandler(enabled = moving || removing) { }
     BackHandler(enabled = !(moving || removing)) { onClose() }
+    // 手柄的返回键：跟系统的返回键一条路（正在搬移/删除时同样不做事）
+    OnNavKey(enabled = navActive && !moving && !removing) { key ->
+        if (key == NavKey.Back) onClose()
+    }
+    // 手柄接着吗：接上了才在页头告诉玩家「按 B 回去」
+    val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
+    val padConnected = padDevices.isNotEmpty()
 
     /**
      * 开始构建：源文件在就直接带过去；不在了（玩家把它挪走腾空间去了）就请他重新选一个。
@@ -389,6 +403,10 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                }
+                // 手柄接着的时候，页头告诉玩家怎么回去（这一层只做「能关掉」）
+                if (padConnected) {
+                    NavHintInline(listOf(NavHint("B", locale.str(R.string.ui_nav_back))))
                 }
                 // 已完成的游戏才有可管理的产物
                 if (status == GameStatus.DONE) {

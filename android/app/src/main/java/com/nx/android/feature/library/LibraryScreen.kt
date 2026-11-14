@@ -12,6 +12,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,6 +34,11 @@ import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.PortState
 import com.nx.android.core.ui.LocalAppLocale
 import com.nx.android.core.ui.PreviewSurface
+import com.nx.android.core.ui.nav.NavHint
+import com.nx.android.core.ui.nav.NavHintBar
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
+import com.nx.android.input.GamepadScan
 import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.data.library.GameProfile
 import com.nx.android.domain.GameEntry
@@ -115,6 +123,15 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
     )
 
     /**
+     * 移动选中的游戏：库里没有游戏时不动（不越界，也不崩）。
+     */
+    fun moveHero(delta: Int) {
+        if (visible.isEmpty()) return
+        val next = (heroIndex + delta).coerceIn(0, visible.size - 1)
+        viewModel?.selectHero(next, visible.size) ?: lib.selectHero(next, visible.size)
+    }
+
+    /**
      * 手柄导航：左右移动选中的游戏，确认键打开它的配置面板。
      *
      * 走的是库里已有的那套：移动就是改 heroIndex（瓦片行的滚动与放大都跟着它），
@@ -184,9 +201,12 @@ internal fun LibraryContent(
     lockedOf: (GameEntry) -> Boolean,
     runningGameName: String,
     actions: LibraryActions,
+    navActive: Boolean = false,
+    padConnected: Boolean = false,
 ) {
     val sel = entries.getOrNull(heroIndex)
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
         if (entries.isEmpty()) {
             // 空态：架子上的几个空位、一句提示、支持的格式。没有按钮——加游戏的路只有构建页那一条
@@ -235,6 +255,20 @@ internal fun LibraryContent(
             )
         }
         Spacer(Modifier.height(18.dp))
+    }
+    // 按键提示：接了手柄才浮出来，靠右下角（不占地方：插上手柄时页面别的东西也不挪）
+    AnimatedVisibility(
+        visible = navActive && padConnected && entries.isNotEmpty(),
+        modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp),
+        enter = fadeIn(), exit = fadeOut(),
+    ) {
+        NavHintBar(
+            listOf(
+                NavHint("←→", stringResource(R.string.ui_nav_move)),
+                NavHint("A", stringResource(R.string.ui_nav_open)),
+            )
+        )
+    }
     }
 }
 

@@ -69,6 +69,8 @@ import com.nx.android.core.ui.components.SubtitleRow
 import com.nx.android.core.ui.components.rememberPageScroll
 import com.nx.android.core.ui.components.step
 import com.nx.android.core.ui.failureText
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.theme.NxPalette
 import com.nx.android.feature.updates.UpdateCheckRow
 import com.nx.android.feature.updates.openRepo
@@ -108,10 +110,14 @@ fun SettingsScreen(ob: OnboardingState, drivers: List<Driver>, driverRepository:
                    onDrivers: () -> Unit,
                    section: SettingsSection, onSelectSection: (SettingsSection) -> Unit,
                    onDiagnosticLog: () -> Unit,
-                   onClose: () -> Unit) {
+                   onClose: () -> Unit, navActive: Boolean = false) {
     val scroll = rememberPageScroll()
     LaunchedEffect(section) { scroll.scrollTo(0) }
     BackHandler { onClose() }
+    // 手柄的返回键：跟系统的返回键一条路（这一页只做「能关掉」）
+    OnNavKey(enabled = navActive) { key ->
+        if (key == NavKey.Back) onClose()
+    }
 
     // 它是一页，不是一个浮在上面的东西：整块盖住，连边框圆角都不留
     Box(Modifier.fillMaxSize().background(NxPalette.Surface)) {
