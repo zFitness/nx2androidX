@@ -104,13 +104,10 @@ import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.components.StatusDot
 import com.nx.android.core.ui.components.rememberGameIcon
 import com.nx.android.core.ui.components.sizeText
-import com.nx.android.core.ui.nav.NavHint
-import com.nx.android.core.ui.nav.NavHintInline
 import com.nx.android.core.ui.nav.NavKey
 import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.failureText
 import com.nx.android.core.ui.theme.NxPalette
-import com.nx.android.input.GamepadScan
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -202,9 +199,6 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
     OnNavKey(enabled = navActive && !moving && !removing) { key ->
         if (key == NavKey.Back) onClose()
     }
-    // 手柄接着吗：接上了才在页头告诉玩家「按 B 回去」
-    val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
-    val padConnected = padDevices.isNotEmpty()
 
     /**
      * 开始构建：源文件在就直接带过去；不在了（玩家把它挪走腾空间去了）就请他重新选一个。
@@ -403,10 +397,6 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState, player: PlayerS
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                // 手柄接着的时候，页头告诉玩家怎么回去（这一层只做「能关掉」）
-                if (padConnected) {
-                    NavHintInline(listOf(NavHint("B", locale.str(R.string.ui_nav_back))))
                 }
                 // 已完成的游戏才有可管理的产物
                 if (status == GameStatus.DONE) {

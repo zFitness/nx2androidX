@@ -79,6 +79,8 @@ import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.domain.GameConfig
 import com.nx.android.feature.builds.BuildsRoute
 import com.nx.android.feature.builds.BuildsViewModel
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.OnNavKey
 import com.nx.android.core.ui.components.CapsuleButton
 import com.nx.android.core.ui.elapsedSecs
 import com.nx.android.core.ui.ProvideAppLocale
@@ -390,6 +392,15 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
         settingsOpen -> NavHost.SETTINGS
         lib.selected != null -> NavHost.PANEL
         else -> NavHost.LIBRARY
+    }
+
+    // 肩键切页签：页签的状态在这一层，所以切页也在这里做（浮层开着时不切）。
+    OnNavKey(enabled = navHost == NavHost.LIBRARY) { key ->
+        when (key) {
+            NavKey.TabLeft -> tab = Tab.LIBRARY.ordinal
+            NavKey.TabRight -> tab = Tab.BUILDS.ordinal
+            else -> {}
+        }
     }
     val libraryViewModel: LibraryViewModel = hiltViewModel()
     val buildsViewModel: BuildsViewModel = hiltViewModel()

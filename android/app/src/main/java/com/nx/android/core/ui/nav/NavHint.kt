@@ -45,19 +45,6 @@ fun NavHintBar(hints: List<NavHint>, modifier: Modifier = Modifier) {
     }
 }
 
-/** 同一套提示，但不套玻璃底：放在已经有底的界面里（比如面板的页头）。 */
-@Composable
-fun NavHintInline(hints: List<NavHint>, modifier: Modifier = Modifier) {
-    if (hints.isEmpty()) return
-    Row(
-        modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        HintItems(hints)
-    }
-}
-
 @Composable
 private fun HintItems(hints: List<NavHint>) {
     for (h in hints) {

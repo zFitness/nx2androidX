@@ -599,7 +599,6 @@
     <string name="ui_nav_move">Move</string>
     <string name="ui_nav_details">Details</string>
     <string name="ui_nav_tabs">Tabs</string>
-    <string name="ui_nav_back">Back</string>
     <string name="drawer_tab_players">Players</string>
     <string name="drawer_group_players">Players</string>
     <string name="drawer_player_n">Player %1$d</string>

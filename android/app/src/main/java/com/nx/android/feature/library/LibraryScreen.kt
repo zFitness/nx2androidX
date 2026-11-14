@@ -131,17 +131,41 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
         viewModel?.selectHero(next, visible.size) ?: lib.selectHero(next, visible.size)
     }
 
+    /** 这个游戏的状态 / 它是不是旧版宿主编的包 / 别的游戏在玩时它能不能跑 */
+    fun statusOf(e: GameEntry): GameStatus = lib.statusOf(e)
+    fun staleOf(e: GameEntry): Boolean = e.pack?.needsRuntimeUpdate == true
+    fun lockedOf(e: GameEntry): Boolean {
+        val ported = e.pack
+        return statusOf(e) == GameStatus.DONE && player.running && player.titleId != (ported?.titleId ?: "")
+    }
+
+    /**
+     * 主动作：把选中的游戏跑起来 / 去构建 / 看构建的进度。
+     *
+     * 与左下角那个主按钮同一条路（`mainActionOf`）：别的游戏在玩时主按钮是置灰的，这里也不做事。
+     */
+    fun runMainAction() {
+        val entry = visible.getOrNull(heroIndex) ?: return
+        if (lockedOf(entry)) return
+        when (mainActionOf(statusOf(entry), staleOf(entry))) {
+            MainAction.VIEW_BUILD -> libraryActions.onViewBuild(entry)
+            MainAction.RUN -> libraryActions.onRun(entry)
+            MainAction.BUILD -> libraryActions.onBuild(entry)
+        }
+    }
+
     /**
      * 手柄导航：左右移动选中的游戏，确认键打开它的配置面板。
      *
      * 走的是库里已有的那套：移动就是改 heroIndex（瓦片行的滚动与放大都跟着它），
-     * 打开就是「点已选中的那个瓦片」——手柄与手指走同一条路，看起来也一模一样。
+     * 确认就是主按钮那个动作，Start 就是「点已选中的那个瓦片」——手柄与手指走同一条路。
      */
     OnNavKey(enabled = navActive) { key ->
         when (key) {
             NavKey.Left -> moveHero(-1)
             NavKey.Right -> moveHero(+1)
-            NavKey.Confirm -> libraryActions.onSelect(heroIndex)
+            NavKey.Confirm -> runMainAction()
+            NavKey.Menu -> libraryActions.onSelect(heroIndex)
             else -> {}
         }
     }
@@ -149,14 +173,12 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
     LibraryContent(
         entries = visible,
         heroIndex = heroIndex,
-        statusOf = { lib.statusOf(it) },
+        statusOf = { statusOf(it) },
+        staleOf = { staleOf(it) },
         profileOf = { lib.profileOf(it) },
         portProgress = port.progress,
         // 单游戏：别的游戏在玩时，那个游戏的「▶ 运行」置灰并说明
-        lockedOf = { e ->
-            val ported = e.pack
-            lib.statusOf(e) == GameStatus.DONE && player.running && player.titleId != (ported?.titleId ?: "")
-        },
+        lockedOf = { lockedOf(it) },
         runningGameName = player.name,
         actions = libraryActions,
         navActive = navActive,
@@ -196,6 +218,7 @@ internal fun LibraryContent(
     entries: List<GameEntry>,
     heroIndex: Int,
     statusOf: (GameEntry) -> GameStatus,
+    staleOf: (GameEntry) -> Boolean = { false },
     profileOf: (String) -> GameProfile? = { null },
     portProgress: Float,
     lockedOf: (GameEntry) -> Boolean,
@@ -205,6 +228,11 @@ internal fun LibraryContent(
     padConnected: Boolean = false,
 ) {
     val sel = entries.getOrNull(heroIndex)
+    // 提示条上确认键那一项写的文案：与左下角主按钮完全一样（同一个 mainActionOf）
+    val mainLabel = sel?.let { e ->
+        val stale = staleOf(e)
+        mainActionLabel(mainActionOf(statusOf(e), stale), stale)
+    }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().padding(horizontal = 24.dp)) {
@@ -244,7 +272,7 @@ internal fun LibraryContent(
                 entry = entry,
                 profile = profileOf(entry.titleId),
                 status = statusOf(entry),
-                stale = entry.pack?.needsRuntimeUpdate == true,
+                stale = staleOf(entry),
                 locked = lockedOf(entry),
                 runningGameName = runningGameName,
                 portProgress = portProgress,
@@ -263,9 +291,12 @@ internal fun LibraryContent(
         enter = fadeIn(), exit = fadeOut(),
     ) {
         NavHintBar(
-            listOf(
+            listOfNotNull(
                 NavHint("←→", stringResource(R.string.ui_nav_move)),
-                NavHint("A", stringResource(R.string.ui_nav_open)),
+                // 确认键那一项写的与主按钮一样：运行 / 构建 / 查看构建 / 更新运行库
+                mainLabel?.let { NavHint("A", it) },
+                NavHint("Start", stringResource(R.string.ui_nav_details)),
+                NavHint("L/R", stringResource(R.string.ui_nav_tabs)),
             )
         )
     }

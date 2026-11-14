@@ -598,7 +598,6 @@
     <string name="ui_nav_move">移动</string>
     <string name="ui_nav_details">详情</string>
     <string name="ui_nav_tabs">切页</string>
-    <string name="ui_nav_back">返回</string>
     <string name="drawer_tab_players">玩家</string>
     <string name="drawer_group_players">玩家</string>
     <string name="drawer_player_n">玩家 %1$d</string>
