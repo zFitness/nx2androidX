@@ -51,7 +51,7 @@ import java.io.File
 @Composable
 fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actions: AppActions,
                   onGoBuilds: () -> Unit, onRequest: (PickerRequest) -> Unit, uiState: LibraryUiState? = null,
-                  viewModel: LibraryViewModel? = null) {
+                  viewModel: LibraryViewModel? = null, navActive: Boolean = false) {
 
     // a port ends: the cards' statuses are re-read
     LaunchedEffect(port.phase) { viewModel?.refresh() ?: lib.rescan() }
@@ -69,6 +69,10 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
     LaunchedEffect(visible.size) { viewModel?.selectHero(heroIndex, visible.size) ?: lib.selectHero(heroIndex, visible.size) }
 
     val locale = LocalAppLocale.current
+
+    // 手柄接着吗：接上了才在页面底部给按键提示（插上就淡入，拔掉就淡出）
+    val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
+    val padConnected = padDevices.isNotEmpty()
 
     /**
      * 开始构建：源文件在就直接带过去；不在了（玩家把它挪走腾空间去了）就请他重新选一个。
@@ -91,6 +95,40 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
         }
     }
 
+    val libraryActions = LibraryActions(
+        onSelect = { i ->
+            if (i == heroIndex) viewModel?.selectGame(visible.getOrNull(i)) ?: run { lib.selected = visible.getOrNull(i) }
+            else viewModel?.selectHero(i, visible.size) ?: lib.selectHero(i, visible.size)
+        },
+        onBuild = { e ->
+            val pack = e.pack
+            if (pack?.needsRuntimeUpdate == true) actions.onRun(pack.pack, e.label) else build(e)
+        },
+        onRun = { e -> e.pack?.let { actions.onRun(it.pack, e.label) } },
+        onViewBuild = { e ->
+            // 正在构建：去构建页看进度（第一次构建还没有源文件的记忆，就带着正在跑的那个）
+            val target = e.source ?: port.gameFile.takeIf { port.running }?.let { File(it) }
+            viewModel?.setBuildTarget(target) ?: run { lib.buildsTarget = target }
+            onGoBuilds()
+        },
+        onConfigure = { e -> viewModel?.selectGame(e) ?: run { lib.selected = e } },
+    )
+
+    /**
+     * 手柄导航：左右移动选中的游戏，确认键打开它的配置面板。
+     *
+     * 走的是库里已有的那套：移动就是改 heroIndex（瓦片行的滚动与放大都跟着它），
+     * 打开就是「点已选中的那个瓦片」——手柄与手指走同一条路，看起来也一模一样。
+     */
+    OnNavKey(enabled = navActive) { key ->
+        when (key) {
+            NavKey.Left -> moveHero(-1)
+            NavKey.Right -> moveHero(+1)
+            NavKey.Confirm -> libraryActions.onSelect(heroIndex)
+            else -> {}
+        }
+    }
+
     LibraryContent(
         entries = visible,
         heroIndex = heroIndex,
@@ -103,24 +141,9 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
             lib.statusOf(e) == GameStatus.DONE && player.running && player.titleId != (ported?.titleId ?: "")
         },
         runningGameName = player.name,
-        actions = LibraryActions(
-            onSelect = { i ->
-                if (i == heroIndex) viewModel?.selectGame(visible.getOrNull(i)) ?: run { lib.selected = visible.getOrNull(i) }
-                else viewModel?.selectHero(i, visible.size) ?: lib.selectHero(i, visible.size)
-            },
-            onBuild = { e ->
-                val pack = e.pack
-                if (pack?.needsRuntimeUpdate == true) actions.onRun(pack.pack, e.label) else build(e)
-            },
-            onRun = { e -> e.pack?.let { actions.onRun(it.pack, e.label) } },
-            onViewBuild = { e ->
-                // 正在构建：去构建页看进度（第一次构建还没有源文件的记忆，就带着正在跑的那个）
-                val target = e.source ?: port.gameFile.takeIf { port.running }?.let { File(it) }
-                viewModel?.setBuildTarget(target) ?: run { lib.buildsTarget = target }
-                onGoBuilds()
-            },
-            onConfigure = { e -> viewModel?.selectGame(e) ?: run { lib.selected = e } },
-        ),
+        actions = libraryActions,
+        navActive = navActive,
+        padConnected = padConnected,
     )
 
     // 配置面板不在这里画：它要盖住顶栏，所以由页面的根（MainScreen）在最上层画（见 ui/App.kt）
@@ -129,9 +152,11 @@ fun LibraryScreen(lib: LibraryState, port: PortState, player: PlayerState, actio
 @Composable
 fun LibraryRoute(viewModel: LibraryViewModel, port: PortState, player: PlayerState,
                  actions: AppActions,
-                 onGoBuilds: () -> Unit, onRequest: (PickerRequest) -> Unit) {
+                 onGoBuilds: () -> Unit, onRequest: (PickerRequest) -> Unit,
+                 navActive: Boolean = false) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    LibraryScreen(viewModel.library, port, player, actions, onGoBuilds, onRequest, uiState, viewModel)
+    LibraryScreen(viewModel.library, port, player, actions, onGoBuilds, onRequest, uiState, viewModel,
+        navActive = navActive)
 }
 
 /** 页面上的动作：选一个游戏、构建、运行、看正在跑的构建、开配置 */

@@ -161,6 +161,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     // ---- 手柄中心：每只手柄一份档案（App 侧），映射表推给宿主 ----
     private lateinit var padController: PadCenterController
     private var padSupported by mutableStateOf(false)   // 宿主有没有那三个入口（老包没有）
+    private var scanSupported = true   // 宿主带扫描码的那个入口（老包没有）
 
     private fun isGamepad(deviceId: Int): Boolean {
         val d = inputManager.getInputDevice(deviceId) ?: return false
@@ -539,9 +540,16 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         }
         if (e.action == KeyEvent.ACTION_DOWN || e.action == KeyEvent.ACTION_UP) {
             noteController(e.source, e.deviceId)   // 手柄按了键：它算「在用」，虚拟手柄让位
-            // 宿主带扫描码（新的运行时）就用带扫描码的那个入口；老运行时只有旧的那个
-            if (padSupported) {
-                Native.keyScan(e.deviceId, e.source, e.keyCode, e.scanCode, e.action, e.metaState, e.repeatCount)
+            // 宿主带扫描码（新的运行时）就用带扫描码的那个入口；老运行时只有旧的那个。
+            // 扫描码是位置（出厂字典按它判），丢了它整套面键就会按 Android 的名字走 —— 所以
+            // 这里以「真的发不出去」为准，不靠上面那个标志：标志掉了也照样先试带扫描码的那个。
+            if (scanSupported) {
+                try {
+                    Native.keyScan(e.deviceId, e.source, e.keyCode, e.scanCode, e.action, e.metaState, e.repeatCount)
+                } catch (t: Throwable) {
+                    scanSupported = false   // 老运行时：没有那个入口
+                    Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)
+                }
             } else {
                 Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)
             }

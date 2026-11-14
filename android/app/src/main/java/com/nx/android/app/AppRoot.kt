@@ -125,6 +125,14 @@ enum class Tab(@StringRes val label: Int, val icon: ImageVector) {
     BUILDS(R.string.app_tab_builds, Icons.Filled.Inventory2),
 }
 
+/**
+ * 手柄导航现在归谁：谁在最上面，谁拿走手柄。
+ *
+ * 判断只在这一处做（页面的根），页面自己只管「我收到这个动作时做什么」——
+ * 这样不会出现两个页面同时响应，也不会要动一处就想起另一处。
+ */
+private enum class NavHost { NONE, LIBRARY, PANEL, SETTINGS }
+
 /** The screens' way back to the activity's own privileges: what they may ask for, nothing else */
 data class AppActions(
     val onAskStorage: () -> Unit,
@@ -203,9 +211,14 @@ fun AppRoot(
             if (onboardingUiState.active) {
                 OnboardingScreen(onboardingViewModel, actions) { pickerReq = it }
             } else {
+                // 这一层之外还盖着东西吗（文件选择器、驱动页、日志、清单、开源声明）：
+                // 盖着的时候手柄的键不落到里面的页面上
+                val outerOverlayOpen = pickerReq != null || driversOpen || logOpen ||
+                    buildLogId.isNotEmpty() || envCheckOpen || ossNotice
                 MainScreen(prefs, locale, port, library, player, onboarding, drivers, environmentSetup, actions, startTab, runtime, launchBuildId,
                     padController = padController,
                     padCenterOpen = padCenterOpen, onPadCenter = onPadCenter,
+                    outerOverlayOpen = outerOverlayOpen,
                     onRequest = { pickerReq = it },
                     onDrivers = { driversOpen = true },
                     onLog = { id -> buildLogId = id },
@@ -356,6 +369,7 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
                padController: PadCenterController,
                padCenterOpen: Boolean,
                onPadCenter: (Boolean) -> Unit,
+               outerOverlayOpen: Boolean = false,
                onRequest: (PickerRequest) -> Unit,
                onDrivers: () -> Unit,
                onLog: (String) -> Unit,
@@ -369,6 +383,14 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
     // 的一份（分发层也要知道：手柄的键该进中心还是进页面）
     val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
     val lib = library
+    // 手柄导航归谁：谁在最上面，谁拿走手柄。
+    // 手柄中心开着的时候，手柄的键进中心（活动层就不发了），外面还盖着东西的时候也一样。
+    val navHost = when {
+        outerOverlayOpen || padCenterOpen -> NavHost.NONE
+        settingsOpen -> NavHost.SETTINGS
+        lib.selected != null -> NavHost.PANEL
+        else -> NavHost.LIBRARY
+    }
     val libraryViewModel: LibraryViewModel = hiltViewModel()
     val buildsViewModel: BuildsViewModel = hiltViewModel()
     LaunchedEffect(launchBuildId) {
@@ -411,7 +433,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
         Box(Modifier.weight(1f)) {
             when (Tab.entries[tab]) {
                 Tab.LIBRARY -> LibraryRoute(libraryViewModel, port, player, actions,
-                    onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest)
+                    onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest,
+                    navActive = navHost == NavHost.LIBRARY)
                 Tab.BUILDS -> BuildsRoute(buildsViewModel, prefs.keys, environmentSetup.ready, actions, onRequest, onLog)
             }
         }
@@ -430,7 +453,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
             panelFile.value?.let { f ->
                 GameDetailRoute(lib, port, player, f, installedDrivers, actions,
                     onGoBuilds = { buildsViewModel.setTarget(lib.buildsTarget); tab = Tab.BUILDS.ordinal }, onRequest = onRequest,
-                    onClose = { lib.selected = null })
+                    onClose = { lib.selected = null },
+                    navActive = navHost == NavHost.PANEL)
             }
         }
         // 手柄中心：盖住整屏（顶栏也在下面），关掉才回到底下的页面
@@ -447,7 +471,8 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
                 onRequest, onDrivers,
                 section = settingsSection, onSelectSection = { settingsSection = it },
                 onDiagnosticLog = onDiagnosticLog,
-                onClose = { settingsOpen = false })
+                onClose = { settingsOpen = false },
+                navActive = navHost == NavHost.SETTINGS)
         }
     }
 }

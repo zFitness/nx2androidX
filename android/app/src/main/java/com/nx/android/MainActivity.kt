@@ -46,6 +46,9 @@ import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadTestInput
 import com.nx.android.input.ui.PadCenterController
 import com.nx.android.input.ui.capturableAxes
+import com.nx.android.core.ui.nav.NavKey
+import com.nx.android.core.ui.nav.NavKeys
+import com.nx.android.core.ui.nav.UiInput
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -67,6 +70,9 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_TAB = "tab"   // the notification's tap lands on the builds page
         const val EXTRA_BUILD_ID = "buildId"
+
+        /** 十字键帽推到底才算方向（帽子只有 -1/0/1，门槛比摇杆低）。 */
+        const val HAT_THRESHOLD = 0.5f
     }
 
     @Inject lateinit var locale: AppLocale
@@ -96,6 +102,9 @@ class MainActivity : ComponentActivity() {
     /** 首页的手柄中心开着吗（开着的时候手柄的键不进库页，只进示波与抓键）。
      *  这一份是**唯一**的那份：分发层（dispatchKeyEvent）与页面读的都是它。 */
     var padCenterOpen by mutableStateOf(false)
+
+    /** 摇杆上一次给出的方向：边沿触发用（推到底发一次，回中才复位）。 */
+    private var lastStickNav: NavKey? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -331,10 +340,18 @@ class MainActivity : ComponentActivity() {
             )
             return true
         }
+        // 手柄的键 → 界面导航：库页因此能用手柄选游戏、打开与关掉配置面板。
+        val nav = navKeyOf(e)
+        if (nav != null) {
+            val down = e.action == KeyEvent.ACTION_DOWN
+            // 按住不放时按节奏连发（首键立即），别一次跳过好几个
+            if (down && NavKeys.repeatAllowed(e.repeatCount)) UiInput.emit(nav)
+            return true
+        }
         return super.dispatchKeyEvent(e)
     }
 
-    /** 摇杆与扳机：中心开着的时候只进示波与抓键。 */
+    /** 摇杆与扳机：中心开着的时候只进示波与抓键；中心关着的时候摇杆当方向键。 */
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         if (padCenterOpen) {
             val info = GamepadScan.devices.value.firstOrNull { it.id == e.deviceId }
@@ -343,8 +360,44 @@ class MainActivity : ComponentActivity() {
             padController.offerAxis(e.deviceId, isGamepad(e.deviceId), capturableAxes(e))
             return true
         }
+        // 摇杆当方向键：十字键帽优先，左摇杆兜底。边沿触发——推到底发一次，回中才能再走一步，
+        // 不然摇杆一推就一路走到底。扳机与肩键不参与导航。
+        if (isGamepad(e.deviceId)) {
+            val hat = NavKeys.fromAxis(
+                e.getAxisValue(MotionEvent.AXIS_HAT_X), e.getAxisValue(MotionEvent.AXIS_HAT_Y), HAT_THRESHOLD)
+            val stick = NavKeys.fromAxis(
+                e.getAxisValue(MotionEvent.AXIS_X), e.getAxisValue(MotionEvent.AXIS_Y), NavKeys.STICK_THRESHOLD)
+            val dir = hat ?: stick
+            if (dir != null && dir != lastStickNav) {
+                lastStickNav = dir
+                UiInput.emit(dir)
+            } else if (dir == null) {
+                lastStickNav = null
+            }
+            return true
+        }
         return super.onGenericMotionEvent(e)
     }
+
+    /**
+     * 这个按键是不是给界面的导航动作。
+     *
+     * 真手柄：按**位置**解释（底部的面键 = 确认，右侧面键 = 返回）。
+     * 手柄自己上报的系统返回键也当返回：小米等 ROM 会把面键的返回再报一个 BACK，
+     * 一起收掉就不会「既关掉浮层又退出 App」。导航条与手势的 Back 不是手柄设备，照旧走系统。
+     *
+     * 调试构建：还认虚拟设备（`adb shell input keyevent`）注进来的十字键与面键——
+     * 没有手柄时也能在真机上验这条通路。只认这一小组键，软键盘的键不碰。
+     */
+    private fun navKeyOf(e: KeyEvent): NavKey? {
+        if (isGamepad(e.deviceId)) return NavKeys.fromKeyCode(e.keyCode)
+        if (BuildConfig.DEBUG && isVirtualDevice(e.deviceId)) return NavKeys.fromInjectedKeyCode(e.keyCode)
+        return null
+    }
+
+    /** 这只设备是虚拟设备吗（`adb shell input` 注进来的键都算）。 */
+    private fun isVirtualDevice(deviceId: Int): Boolean =
+        InputDevice.getDevice(deviceId)?.isVirtual == true
 
     /** 这只设备是手柄吗（虚拟设备不算：小米常驻一个 uinput-xiaomi，它说是手柄却从不发输入）。 */
     private fun isGamepad(deviceId: Int): Boolean {
