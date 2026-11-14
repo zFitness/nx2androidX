@@ -132,8 +132,6 @@ fun GameDrawer(
     onHudFahrenheit: (Boolean) -> Unit,
     onLayoutEditor: () -> Unit,
     onResetPadLayout: () -> Unit,
-    padCenterSupported: Boolean,
-    onOpenPadCenter: () -> Unit,
     onPauseGame: () -> Unit,
     onResumeGame: () -> Unit,
     onExit: () -> Unit,
@@ -218,7 +216,7 @@ fun GameDrawer(
                                             // 即时反馈：开关的显示别等下一轮轮询（宿主的 env 已经改了）
                                             motionState = (if (on) 1 else 0) or (if (raw) 2 else 0)
                                         },
-                                        padCenterSupported, onOpenPadCenter)
+                                        )
                                     // 音频页：声音走哪个设备（宿主换了流，即时出声）
                                     DrawerTab.AUDIO -> AudioRows(audioSupported, audioId, audioDevices,
                                         onPick = { id -> audioId = id; Native.audioSet(id) })
@@ -458,8 +456,6 @@ private fun ControlRows(
     motion: () -> Int,
     motionHasGyro: Boolean,
     onMotion: (Boolean, Boolean) -> Unit,
-    padCenterSupported: Boolean,
-    onOpenPadCenter: () -> Unit,
 ) {
     var shown by remember { mutableStateOf(padShown()) }
     var opacity by remember { mutableStateOf(padOpacity()) }
@@ -500,15 +496,6 @@ private fun ControlRows(
         ToggleRow(Icons.Filled.TouchApp, stringResource(R.string.motion_raw), stringResource(R.string.motion_raw_note), raw) {
             onMotion(on, !raw)
         }
-    }
-    // 实体手柄：手柄中心（面键怎么对应由中心里的改键页管：一个键一个键地绑）。
-    // 老包里的宿主没有手柄中心那两个入口，这一组不显示。
-    if (padCenterSupported) {
-        Spacer(Modifier.height(4.dp))
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-        GroupLabel(stringResource(R.string.drawer_group_physical))
-        ActionRow(Icons.Filled.Tune, stringResource(R.string.drawer_pad_center), stringResource(R.string.drawer_pad_center_hint),
-            onClick = onOpenPadCenter)
     }
 }
 

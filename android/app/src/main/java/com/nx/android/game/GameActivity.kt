@@ -74,11 +74,7 @@ import com.nx.android.input.GamepadScan
 import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadProfileStore
 import com.nx.android.input.ui.PadCenterController
-import com.nx.android.input.ui.PadCenterScreen
-import com.nx.android.input.ui.capturableAxes
-import com.nx.android.input.ui.vibratePad
 import com.nx.android.input.PadSpec
-import com.nx.android.input.PadTestInput
 import org.json.JSONObject
 
 /**
@@ -165,7 +161,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
     // ---- 手柄中心：每只手柄一份档案（App 侧），映射表推给宿主 ----
     private lateinit var padController: PadCenterController
     private var padSupported by mutableStateOf(false)   // 宿主有没有那三个入口（老包没有）
-    private var padCenterOpen by mutableStateOf(false)
 
     private fun isGamepad(deviceId: Int): Boolean {
         val d = inputManager.getInputDevice(deviceId) ?: return false
@@ -233,16 +228,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         padSupported = ok
         return ok
     }
-
-    /** 这只设备（deviceId）现在是哪个游戏键：档案的绑定优先，出厂字典兜底。 */
-    private fun resolvePadTarget(deviceId: Int, scanCode: Int, keyCode: Int): String? =
-        padController.resolveTarget(deviceId, scanCode, keyCode)
-
-    /** 这只手柄的档案（没有就是空的那一份）。 */
-    private fun padProfile(info: GamepadScan.Info): PadProfileStore.Profile = padController.profile(info)
-
-    /** 手柄中心开着：输入静音（游戏继续跑），键只进示波与捕获。 */
-    private fun padCenterMute(): Boolean = padCenterOpen
 
     private fun immersive() {
         window.decorView   // the decor must exist: the insets controller hangs off it (a plain Activity has none until it is asked for)
@@ -469,8 +454,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 onHudFahrenheit = { saveHudFahrenheit(it) },
                 onLayoutEditor = { openEditor() },
                 onResetPadLayout = { resetPadLayout() },
-                padCenterSupported = padSupported,
-                onOpenPadCenter = { openPadCenter() },
                 // 暂停/继续：游戏原地停/起，抽屉不收——玩家可以一边停着一边调设置
                 onPauseGame = {
                     paused = true
@@ -495,14 +478,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                     onSizeCommit = { c, s -> padView.commitSize(c, s) },
                     onSizeCancel = { c -> padView.cancelPreview(c) },
                     onDone = { closeEditor() },
-                )
-            }
-            // 手柄中心：接在手机上的实体手柄（游戏继续跑，手柄的输入静音）
-            if (padCenterOpen) {
-                PadCenterScreen(
-                    controller = padController,
-                    onClose = { closePadCenter() },
-                    onVibrate = { info -> vibratePad(this@GameActivity, info) },
                 )
             }
             // 游戏的文本输入：系统的输入法（宿主那边挂起游戏等着）
@@ -530,15 +505,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         noteController(e.source, e.deviceId)   // 手柄动了：它算「在用」，虚拟手柄让位
-        // 示波画的是游戏收到的那一份：死区里的偏移算 0（这只手的死区）
-        val info = GamepadScan.devices.value.firstOrNull { it.id == e.deviceId }
-        val deadzone = info?.let { padController.deadzoneOf(it) } ?: PadCalibration.DEFAULT_DEADZONE
-        PadTestInput.onMotion(e, deadzone)
-        if (padCenterOpen) {
-            // 抓键：扳机推到底、十字键帽扳到边也算一次按键
-            padController.offerAxis(e.deviceId, isGamepad(e.deviceId), capturableAxes(e))
-            return true   // 中心开着：摇杆不进游戏
-        }
         Native.motion(e.source, e.deviceId, e.action, IntArray(0), FloatArray(0), FloatArray(0), axes(e))
         return true
     }
@@ -558,28 +524,12 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
      */
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
-        // 手柄中心开着：手柄设备的键只进示波与抓键，不进游戏，也不关中心。
-        // 判据是「这个事件来自手柄设备」，不是「keyCode 是不是手柄键」：有的 ROM 会把
-        // 手柄的 B 键再发一个 BACK（小米就是这样），漏下去就把中心关了。
-        // 导航条与手势的 Back 不是手柄设备：它们照旧走（Back 收工）。
-        if (padCenterOpen && isGamepad(e.deviceId)) {
-            if (GamepadScan.devices.value.none { it.id == e.deviceId }) GamepadScan.refreshNow(this)
-            noteController(e.source, e.deviceId)
-            PadTestInput.onKey(e) { deviceId, scan, key -> resolvePadTarget(deviceId, scan, key) }
-            padController.offerKey(
-                e.deviceId, true,
-                e.action == KeyEvent.ACTION_DOWN, e.action == KeyEvent.ACTION_UP, e.repeatCount,
-                e.scanCode, e.keyCode,
-            )
-            return true
-        }
         if (!forwardsKeyToGame(e.keyCode)) return false   // 音量键：系统的事，游戏与宿主都不沾
         if (e.keyCode == KeyEvent.KEYCODE_BACK) {
             if (e.action == KeyEvent.ACTION_DOWN) {
                 val hostPanel = !drawerOpen && hostPanelUp()   // 抽屉在前面时，Back 归抽屉
                 when {
                     editorOpen -> closeEditor()   // 编辑器：Back 是收工（改动早就存好了）
-                    padCenterOpen -> closePadCenter()   // 手柄中心：Back 是收工
                     drawerOpen -> drawerOpen = false
                     hostPanel -> Native.key(e.deviceId, e.source, e.keyCode, e.action, e.metaState, e.repeatCount)   // 宿主的面板在后退一步
                     else -> drawerOpen = true
@@ -597,22 +547,6 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
             }
         }
         return true
-    }
-
-    /** 手柄中心：开着的时候手柄的输入静音，示波与捕获照常。 */
-    private fun openPadCenter() {
-        drawerOpen = false
-        padCenterOpen = true
-        PadTestInput.start()
-        runCatching { Native.padReleaseAll() }   // 开着的时候松开：中心关掉时游戏里不能留着按住的键
-    }
-
-    private fun closePadCenter() {
-        padCenterOpen = false
-        padController.cancelCapture()
-        PadTestInput.stop()
-        runCatching { Native.padReleaseAll() }
-        pushPadMapping()
     }
 
     /** 宿主自己的面板开着吗（文本输入、布局编辑器、存档选择；dm_menu_state: -1 是关着的） */

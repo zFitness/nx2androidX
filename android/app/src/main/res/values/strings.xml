@@ -556,7 +556,6 @@
 
     <!-- 手柄中心（实体手柄）：手柄中心面板与抽屉里的那一组 -->
     <string name="pad_center_title">Gamepad center</string>
-    <string name="pad_center_muted">The game keeps running, but the controller does not reach it while the center is open.</string>
     <string name="pad_center_devices">Controllers</string>
     <string name="pad_center_none">No controller is connected. Turn on Bluetooth and connect one.</string>
     <string name="pad_center_bluetooth">Bluetooth settings</string>
@@ -575,9 +574,6 @@
     <string name="pad_center_vibrate">Test the vibration</string>
     <string name="pad_center_no_vibration">no vibration motor</string>
     <string name="pad_center_events">Events</string>
-    <string name="drawer_group_physical">Controller</string>
-    <string name="drawer_pad_center">Gamepad center</string>
-    <string name="drawer_pad_center_hint">See the controllers, test their buttons, rebind and calibrate them.</string>
     <string name="pad_conflict_title">That button is already spoken for</string>
     <string name="pad_conflict_text">%1$s is already bound to %2$s. Give it to the new button, swap the two, or leave it as it is.</string>
     <string name="pad_conflict_replace">Replace</string>

@@ -555,7 +555,6 @@
 
     <!-- 手柄中心（实体手柄）：手柄中心面板与抽屉里的那一组 -->
     <string name="pad_center_title">手柄中心</string>
-    <string name="pad_center_muted">游戏照常跑，但中心开着的时候手柄的输入不进游戏。</string>
     <string name="pad_center_devices">手柄</string>
     <string name="pad_center_none">没有接着手柄。打开蓝牙，连一只。</string>
     <string name="pad_center_bluetooth">蓝牙设置</string>
@@ -574,9 +573,6 @@
     <string name="pad_center_vibrate">测试振动</string>
     <string name="pad_center_no_vibration">没有振动马达</string>
     <string name="pad_center_events">事件</string>
-    <string name="drawer_group_physical">实体手柄</string>
-    <string name="drawer_pad_center">手柄中心</string>
-    <string name="drawer_pad_center_hint">看手柄、试按键、改键与校准。</string>
     <string name="pad_conflict_title">这个键已经有别的用处</string>
     <string name="pad_conflict_text">%1$s 已经绑在 %2$s 上。给新按的那个、两个对调，或者什么都不改。</string>
     <string name="pad_conflict_replace">替换</string>
