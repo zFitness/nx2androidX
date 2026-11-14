@@ -307,20 +307,6 @@ private fun ColumnScope.PhysicalControllerPage(
             ControllerDiagram(state, compact, faceSlots)
             Spacer(Modifier.height(20.dp))
             Text(
-                stringResource(R.string.pad_center_left_trigger),
-                style = MaterialTheme.typography.labelLarge,
-                color = Color(0xFFA9A9B2),
-            )
-            TriggerMeter(state?.leftTrigger ?: 0f)
-            Spacer(Modifier.height(10.dp))
-            Text(
-                stringResource(R.string.pad_center_right_trigger),
-                style = MaterialTheme.typography.labelLarge,
-                color = Color(0xFFA9A9B2),
-            )
-            TriggerMeter(state?.rightTrigger ?: 0f)
-            Spacer(Modifier.height(20.dp))
-            Text(
                 stringResource(
                     if (selected?.axes.isNullOrEmpty()) R.string.pad_center_no_axes
                     else R.string.pad_center_test_hint,
@@ -359,7 +345,7 @@ private fun ColumnScope.PhysicalControllerPage(
     }
 }
 
-/** 肩键与摇杆：L、L3、SELECT、OPTION、R3、R。 */
+/** 肩键与摇杆：ZL、L、L3、SELECT、OPTION、R3、R、ZR。 */
 @Composable
 private fun UtilityButtons(pressed: Set<String>) {
     Row(
@@ -368,12 +354,14 @@ private fun UtilityButtons(pressed: Set<String>) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         listOf(
+            "ZL" to "zl",
             "L" to "l",
             "L3" to "ls",
-            "SEL" to "minus",
-            "OPT" to "plus",
+            "-" to "minus",
+            "+" to "plus",
             "R3" to "rs",
             "R" to "r",
+            "ZR" to "zr",
         ).forEach { (label, key) -> TestButton(label, key in pressed) }
     }
 }
@@ -493,19 +481,6 @@ private fun StickIndicator(label: String, x: Float, y: Float) {
             drawLine(NxPalette.Surface, Offset(center.x, center.y - radius), Offset(center.x, center.y + radius), 1.dp.toPx())
             drawCircle(NxPalette.Brand, size.minDimension * 0.12f, Offset(center.x + x * radius, center.y + y * radius))
         }
-    }
-}
-
-@Composable
-private fun TriggerMeter(value: Float) {
-    Box(
-        Modifier.fillMaxWidth().padding(top = 6.dp).height(10.dp)
-            .clip(RoundedCornerShape(5.dp)).background(NxPalette.Surface),
-    ) {
-        Box(
-            Modifier.fillMaxWidth(value.coerceIn(0f, 1f))
-                .fillMaxHeight().background(NxPalette.Brand),
-        )
     }
 }
 

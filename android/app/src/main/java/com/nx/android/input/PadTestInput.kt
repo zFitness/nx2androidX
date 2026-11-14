@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 一只手柄此刻的样子（手柄中心的示波面板）：按着的键、摇杆的偏移、扳机的行程。
+ * 一只手柄此刻的样子（手柄中心的示波面板）：按着的键、摇杆的偏移。
  *
  * 只看，不吃：这些事件照旧进游戏（除非手柄中心开着，那时中心自己吞掉）。
  */
@@ -20,8 +20,6 @@ data class PadTestState(
     val leftY: Float = 0f,
     val rightX: Float = 0f,
     val rightY: Float = 0f,
-    val leftTrigger: Float = 0f,
-    val rightTrigger: Float = 0f,
     val eventCount: Long = 0,
 )
 
@@ -109,8 +107,6 @@ object PadTestInput {
         // has, the right stick is the right stick.
         val rightX = if (MotionEvent.AXIS_RX in ranges) stick(MotionEvent.AXIS_RX) else stick(MotionEvent.AXIS_Z)
         val rightY = if (MotionEvent.AXIS_RY in ranges) stick(MotionEvent.AXIS_RY) else stick(MotionEvent.AXIS_RZ)
-        val leftTrigger = if (MotionEvent.AXIS_LTRIGGER in ranges) value(MotionEvent.AXIS_LTRIGGER) else 0f
-        val rightTrigger = if (MotionEvent.AXIS_RTRIGGER in ranges) value(MotionEvent.AXIS_RTRIGGER) else 0f
         val hatX = value(MotionEvent.AXIS_HAT_X)
         val hatY = value(MotionEvent.AXIS_HAT_Y)
         val directions = buildSet {
@@ -127,8 +123,6 @@ object PadTestInput {
                 leftY = leftY,
                 rightX = rightX,
                 rightY = rightY,
-                leftTrigger = leftTrigger,
-                rightTrigger = rightTrigger,
             )
         }
     }

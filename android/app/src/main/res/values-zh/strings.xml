@@ -583,8 +583,6 @@
     <string name="pad_center_receiving">正在接收输入</string>
     <string name="pad_center_test_hint">动一动摇杆或按个键</string>
     <string name="pad_center_no_axes">没有摇杆轴</string>
-    <string name="pad_center_left_trigger">左扳机</string>
-    <string name="pad_center_right_trigger">右扳机</string>
     <string name="pad_center_custom_device">设备 %1$d</string>
     <string name="pad_center_pressed">按着</string>
     <string name="pad_center_released">松开</string>

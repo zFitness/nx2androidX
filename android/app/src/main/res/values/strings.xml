@@ -584,8 +584,6 @@
     <string name="pad_center_receiving">Input received</string>
     <string name="pad_center_test_hint">Move a stick or press a button</string>
     <string name="pad_center_no_axes">No joystick axes reported</string>
-    <string name="pad_center_left_trigger">Left trigger</string>
-    <string name="pad_center_right_trigger">Right trigger</string>
     <string name="pad_center_custom_device">Device %1$d</string>
     <string name="pad_center_pressed">Pressed</string>
     <string name="pad_center_released">Released</string>
