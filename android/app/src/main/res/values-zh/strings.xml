@@ -604,4 +604,6 @@
     <string name="drawer_player_auto">自动</string>
     <string name="drawer_player_none">没有手柄</string>
     <string name="drawer_players_note">玩家 1 永远是手机：触屏的虚拟按键与体感都是它的，它再接手柄。默认「自动」——没被指派走的手柄都算玩家 1（单人游戏插两只手柄都能玩）。锁死某一只之后，别的就闲置了（按了没人管）。一只手柄只能属于一个玩家。</string>
+    <string name="pad_center_player">玩家 %1$d</string>
+    <string name="pad_center_idle">闲置</string>
 </resources>

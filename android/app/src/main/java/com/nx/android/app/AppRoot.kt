@@ -66,12 +66,14 @@ import androidx.compose.ui.unit.sp
 import com.nx.android.R
 import com.nx.android.input.GamepadScan
 import com.nx.android.input.ui.PadCenterController
+import com.nx.android.input.PadAssignment
 import com.nx.android.input.ui.PadCenterScreen
 import com.nx.android.appstate.PortState
 import com.nx.android.appstate.PlayerState
 import com.nx.android.appstate.OnboardingState
 import com.nx.android.data.AppLocale
 import com.nx.android.data.PrefsStore
+import com.nx.android.data.PadPlayers
 import com.nx.android.data.StorageVolumes
 import com.nx.android.domain.EnvCheck
 import com.nx.android.domain.GameIdentity
@@ -384,6 +386,7 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
     // 手柄中心：从顶栏的手柄按钮进来，盖住整屏（跟设置页一样）。开着不开着是活动那边
     // 的一份（分发层也要知道：手柄的键该进中心还是进页面）
     val padDevices by GamepadScan.devices.collectAsStateWithLifecycle()
+    val padCtx = androidx.compose.ui.platform.LocalContext.current
     val lib = library
     // 手柄导航归谁：谁在最上面，谁拿走手柄。
     // 手柄中心开着的时候，手柄的键进中心（活动层就不发了），外面还盖着东西的时候也一样。
@@ -473,6 +476,13 @@ fun MainScreen(prefs: PrefsStore, locale: AppLocale, port: PortState, library: L
             PadCenterScreen(
                 controller = padController,
                 onClose = { onPadCenter(false) },
+                // 谁玩谁：指派是每个游戏一份，这里看的是**正在跑**的那个游戏的（没在跑就是默认：
+                // 没被指派走的手柄都算玩家 1）
+                assignment = remember(player.running, player.titleId) {
+                    if (player.running && player.titleId.isNotEmpty())
+                        PadPlayers(padCtx, player.titleId).load()
+                    else PadAssignment()
+                },
             )
         }
         // 设置页：盖住整屏（顶栏也在下面），关掉才回到底下的页面

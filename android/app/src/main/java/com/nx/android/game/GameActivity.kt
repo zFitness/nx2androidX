@@ -289,7 +289,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         fgSettings = titleId?.let { FrameGenSettings(PrefsStore(this), it) }
         rateSettings = titleId?.let { RateSettings(PrefsStore(this), it) }
         motionSettings = titleId?.let { MotionSettings(PrefsStore(this), it) }
-        padPlayers = titleId?.let { PadPlayers(PrefsStore(this), it) }
+        padPlayers = titleId?.let { PadPlayers(this, it) }
         // 手柄的档案（每只手柄一份）与手柄的枚举：中心靠它
         loadPadProfiles()
         GamepadScan.start(this)

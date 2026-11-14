@@ -64,6 +64,7 @@ import com.nx.android.core.ui.theme.NxPalette
 import com.nx.android.input.GamepadScan
 import com.nx.android.input.PadCalibration
 import com.nx.android.input.PadMapping
+import com.nx.android.input.PadAssignment
 import com.nx.android.input.PadTestInput
 import com.nx.android.input.PadTestState
 
@@ -81,6 +82,7 @@ fun PadCenterScreen(
     controller: PadCenterController,
     onClose: () -> Unit,
     onVibrate: ((GamepadScan.Info) -> Unit)? = null,
+    assignment: PadAssignment = PadAssignment(),
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -156,6 +158,7 @@ fun PadCenterScreen(
                     selected = selected,
                     state = selected?.let { states[it.id] },
                     compact = compact,
+                    assignment = assignment,
                     onOpenMapping = { mappingOpen = true },
                     onVibrate = vibrate,
                 )
@@ -172,6 +175,7 @@ private fun ColumnScope.PhysicalControllerPage(
     selected: GamepadScan.Info?,
     state: PadTestState?,
     compact: Boolean,
+    assignment: PadAssignment,
     onOpenMapping: () -> Unit,
     onVibrate: (GamepadScan.Info) -> Unit,
 ) {
@@ -223,13 +227,32 @@ private fun ColumnScope.PhysicalControllerPage(
                         .clickable { controller.select(device.id) }
                         .padding(horizontal = 12.dp, vertical = 12.dp),
                 ) {
-                    Text(
-                        device.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (active) Color.White else Color(0xFFA9A9B2),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            device.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (active) Color.White else Color(0xFFA9A9B2),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        // 谁玩谁：这只控制器当几号玩家（指派是每个游戏一份，这里看的是正在跑的那个游戏的）
+                        val player = assignment.playerOf(device.profileKey)
+                        Spacer(Modifier.width(6.dp))
+                        Box(
+                            Modifier.clip(RoundedCornerShape(4.dp))
+                                .background(if (player < 0) NxPalette.Unbuilt.copy(alpha = 0.16f) else NxPalette.Brand.copy(alpha = 0.16f))
+                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                        ) {
+                            Text(
+                                if (player < 0) stringResource(R.string.pad_center_idle)
+                                else stringResource(R.string.pad_center_player, player + 1),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (player < 0) NxPalette.Unbuilt else NxPalette.Brand,
+                                maxLines = 1,
+                            )
+                        }
+                    }
                     if ((repeatedNames[device.name] ?: 0) > 1) {
                         Text(
                             stringResource(R.string.pad_center_custom_device, device.id),
