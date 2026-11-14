@@ -99,6 +99,20 @@ static inline int pad_button_index(const char *name) {
 }
 static inline uint64_t pad_button_bit(int index) { return index < 0 || index >= PAD_N ? 0 : pad_buttons[index].bit; }
 
+// The name of the game's button a bit stands for ("a", "b", ...; "(none)" when the key does nothing).
+static inline const char *pad_button_name(uint64_t bit) {
+    if (!bit) return "(none)";
+    for (int i = 0; i < PAD_N; i++) if (pad_buttons[i].bit == bit) return pad_buttons[i].name;
+    return "?";
+}
+
+// The keys' debug log (DM_PAD_LOG=1 in the pack's env.txt): what each key event became for the game.
+static inline int pad_log_keys(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_PAD_LOG"); on = e && atoi(e) ? 1 : 0; }
+    return on;
+}
+
 // The default dictionary: the Switch's layout by position (X on top, Y on the left, A on the right, B at the bottom).
 // The game speaks Switch positions; what the controller prints on its buttons is only a sticker.
 static inline uint64_t pad_default_bit(int scan, int key, int labels) {

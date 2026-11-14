@@ -407,6 +407,7 @@ static int handle_event(const dm_java_event *e) {
             return 1;
         }
         uint64_t bit = key_bit(e->device, e->key_scan, k);
+        if (pad_log_keys()) LOG("[input] device %d: scan %d key %d -> %s", e->device, e->key_scan, k, pad_button_name(bit));
         if (!bit) {   // the rest: the system's
             static uint8_t seen[64];
             if ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD && down && k >= 0 && k < 512 && !(seen[k >> 3] >> (k & 7) & 1)) {
