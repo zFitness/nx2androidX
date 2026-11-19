@@ -107,7 +107,7 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     private var layoutVer = -1
     private var layoutW = 0f        // 布局算出来的宿主窗口尺寸
     private var layoutH = 0f
-    private var controllers = 0      // 正在使用的物理手柄（有的话，虚拟手柄让位）
+    private var player1Taken = false // 玩家 1 被物理手柄占了（有的话，虚拟手柄让位）
 
     /** 编辑器：控件下标 → 覆盖（拖动中的位置、大小对话框的预览）。改动只留在 App 这里，存盘时才写进宿主 */
     private class Pend(val cx: Float, val cy: Float, val s: Float)
@@ -189,14 +189,20 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
     /** 把这两个值告诉宿主（宿主只留运行时的副本） */
     private fun pushPrefs() = runCatching { Native.padPrefs(shown, opacity) }   // 宿主还没载入时跳过
 
-    /** 手柄可见吗（没有物理手柄在用时才画） */
-    fun visible(): Boolean = shown && controllers == 0
+    /**
+     * 手柄可见吗（玩家 1 被物理手柄占了才让位）。
+     *
+     * 玩家 1 永远是手机（抽屉的「谁玩谁」那一页这么写）：触屏的虚拟按键是玩家 1 的手柄。
+     * 所以物理手柄占着玩家 1 时它让位；那只物理手柄被指派给玩家 2 之后，虚拟按键就是玩家 1 的了，
+     * 两个人一起玩（双人成行那样）才凑得齐。
+     */
+    fun visible(): Boolean = shown && !player1Taken
 
     /**
      * 手柄回答触摸吗（它回答就是按键，不回答就每一根手指都是游戏的触摸）。
      *
      * 规矩照旧宿主 overlay_layout.h 的 ov_answer：画出来=全部控件回答，藏着=什么都不回答。
-     * 物理手柄在用时手柄让位，也是这样（front_player.c 的注释：这时每一根触摸都是游戏的）。
+     * 手柄让位时也是这样（front_player.c 的注释：这时每一根触摸都是游戏的）。
      * 手柄藏起来时它看不见，所以它不能还按着键，也不能还抢触摸。
      */
     private fun answering(): Boolean = visible()
@@ -227,10 +233,10 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
         return if (a) controls() else noCtrls
     }
 
-    /** 物理手柄的个数变了（App 监听系统的输入设备） */
-    fun setControllers(n: Int) {
-        if (controllers == n) return
-        controllers = n
+    /** 玩家 1 被物理手柄占了没有（App 算的：在用的手柄里有玩家 1 的那份） */
+    fun setPlayer1Taken(taken: Boolean) {
+        if (player1Taken == taken) return
+        player1Taken = taken
         answerControls()
         invalidate()
     }
@@ -287,7 +293,7 @@ class PadView(context: Context, private val prefs: PrefsStore, private val pack:
         for (i in 0 until n) { tIds[i] = e.getPointerId(i); tXs[i] = e.getX(i); tYs[i] = e.getY(i) }
         // 手柄画着才回答触摸：藏起来的时候它那片地方什么都不回答，每根手指都是游戏的触摸
         // （旧宿主 overlay_layout.h 的 ov_answer：画出来=全部控件回答，藏着=什么都不回答；
-        // 物理手柄在用时手柄让位，也是这样）
+        // 手柄让位时也是这样）
         val ctrls = answerControls()
         // actionMasked，不是 action：getAction() 给的是「动作 | 手指下标 << 8」的合成值，
         // 第二根手指的 POINTER_DOWN 是 261 而不是 5，路由就认不出来（那样两个键不能一起按）

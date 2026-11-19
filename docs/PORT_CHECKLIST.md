@@ -8,7 +8,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative, synced from upstream (see [UPSTREAM_PROFILES.md](UPSTREAM_PROFILES.md)): the profile is here, the game is not necessarily ported to Android yet. A game without an `android.tsv` can still be tried as an experimental port (`porter build --experimental`). "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**60 / 112 ported**
+**61 / 113 ported**
 
 **Credit.** A ported game names the person who brought it up (`ported by @handle`), taken from the commit that added its profile. The ports from before this was written down are credited to the author of the commit that introduced them.
 
@@ -56,6 +56,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Hades II · `0100A00019DE0000` · ported by @shirai91
 - [x] Hollow Knight: Silksong · `010013C00E930000` · ported by @shirai91
 - [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
+- [x] It Takes Two · `010092A0172E4000` · 29/30 fps with 1.0.4 · work in progress: the partner character is a flat block of the player colour
 - [x] Kirby and the Forgotten Land · `01004D300C5AE000`
 - [x] Kirby's Return to Dream Land Deluxe · `01006B601380E000` · needs the console's firmware for its fonts
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · Retroid Pocket 6 / PurpleVK; brief visual glitches

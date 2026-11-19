@@ -343,12 +343,13 @@ void dm_pad_input(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 // The host used to poll InputDevice's list once a second. The app does it now (it has the system's listener):
 // it counts a device that is a gamepad or a joystick, is not virtual, and has sent input — Xiaomi phones keep a
 // system device "uinput-xiaomi" attached for good that says it is a gamepad and sends nothing, and counting it
-// hid the gamepad and its menu button (issue #22). While a controller is in use the app hides the gamepad and
-// every touch is the game's; the host only needs the count (dm_pad_devices, jni_android.h).
+// hid the gamepad and its menu button (issue #22). The on-screen gamepad is the phone's own player 1 (the
+// drawer says so: "player 1 is the phone"), so it steps aside only while a controller holds that player — the
+// app decides that and tells the host nothing more than the count here.
 void dm_pad_devices(int count) {
     int was = atomic_exchange(&g_pads, count);
-    if (was && !count) LOG("[input] no controller in use: the gamepad is shown");
-    else if (!was && count) LOG("[input] a controller is in use: the gamepad steps aside");
+    if (was && !count) LOG("[input] no controller in use");
+    else if (!was && count) LOG("[input] a controller is in use: %d of them", count);
 }
 
 // ---- the app's pad data: the layout it draws and the state it shows ----

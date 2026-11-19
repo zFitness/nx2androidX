@@ -1,6 +1,8 @@
 package com.nx.android.input
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -59,5 +61,19 @@ class PadAssignmentTest {
     fun `clearing a player gives its controller back to player 1`() {
         val assignment = PadAssignment().assign(1, b).assign(1, "")
         assertEquals(0, assignment.playerOf(b))
+    }
+
+    @Test
+    fun `player 1 is taken while a controller in use plays it`() {
+        // 自动：没被指派走的手柄都算玩家 1 → 触屏的虚拟按键让位
+        assertTrue(PadAssignment().player1Taken(listOf(a)))
+        // 指派给玩家 2 之后玩家 1 空出来 → 虚拟按键回来（它是玩家 1 的那份）
+        assertFalse(PadAssignment().assign(1, a).player1Taken(listOf(a)))
+        // 锁死玩家 1 给另一只：这一只就闲置了，不再占玩家 1
+        assertFalse(PadAssignment().assign(0, b).player1Taken(listOf(a)))
+        // 两只都在用：玩家 1 那只占着
+        assertTrue(PadAssignment().assign(1, b).player1Taken(listOf(a, b)))
+        // 没有手柄在用：玩家 1 空着
+        assertFalse(PadAssignment().player1Taken(emptyList()))
     }
 }

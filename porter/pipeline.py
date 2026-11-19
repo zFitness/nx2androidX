@@ -421,7 +421,6 @@ class Port:
             self.check_graphics()
             self.fps_unlock()
             self.rewrite()
-            if o.install: self.pull_captures()
             self.shaders()
             self.host()
             self.apk()
@@ -868,6 +867,7 @@ class Port:
 
     # ---- Unreal Engine shader code archives decoded with the game's own Oodle (the Mac does it in decode_ue_shaders) ----
     UE_ROUNDS = 4
+    UE_PROGRAM_SECS = 150   # the longest run-time shader capture: the game creates its programs in the first seconds of boot and keeps rendering afterwards
     def device_ue(self):
         """Unreal Engine keeps its shaders in shader code archives that only the game's own Oodle decodes: in its paks (version 11; each shader Oodle-compressed, Octopath Traveler 0), or
         in IoStore containers (Unreal Engine 5.6, FINAL FANTASY RESONANCE: shader libraries whose shader groups are Oodle-compressed as wholes, 5,919 groups in 64 KB container blocks
@@ -880,7 +880,7 @@ class Port:
         the streams it has and asks the decoder for the rest only"""
         import hashlib
         import struct
-        todo = {v: self.dirs[v] for v in self.versions if not ((self.dirs[v] / 'ue_shaders/stamp').exists() and (self.dirs[v] / 'ue_shaders/stamp').read_text() == nsp.ue_stamp(self.dirs[v]))}
+        todo = {v: self.dirs[v] for v in self.versions if not self.ue_done(self.dirs[v])}
         if not todo: return
         PROG.add(1); PROG.stage('UE shader decode', step='the shader code archives')
         tmp = self.work / 'tmp/ue'; total = 0
@@ -920,7 +920,9 @@ class Port:
                 say(f'{v}: round {rnd + 1}: {got:,} of {len(want):,} Oodle streams decoded {self.oodle_where}')
                 if not got: raise BuildError(f"{v}: the game's Oodle decoder decoded none of {len(want):,} streams (see {self.logs / 'android_oodle_job.log'})")
             else: raise BuildError(f'{v}: the Unreal shader code archives still need Oodle streams after {self.UE_ROUNDS} rounds')
-            if not listing: raise BuildError(f'the RomFS has Unreal paks, but none under {d / "RomFS"} holds a shader code archive: where the shaders are has to be found first')
+            if uepak.form(listing) == 'inline':
+                # no shader code archive and no IoStore shader library: the shaders are inline in the cooked packages (It Takes Two)
+                self.device_ue_inline(d, v); self.device_ue_programs(d, v); continue
             if n:   # Oodle-compressed shaders in the paks' archives (Octopath Traveler 0): uepak.job's own job file
                 PROG.set(step=f"{v}: {n:,} shaders with the game's decoder {self.oodle_where}")
                 self.oodle_job(jd / 'oodle.job', jd / 'oodle.job.out')   # (finish reads job.json and the output only)
@@ -932,6 +934,91 @@ class Port:
             total += n + sum(x['shaders'] for x in listing if x['compression'] == 'IoStore, decoded')
         nsp.rmtree(tmp)
         PROG.end(f'{total:,} shaders decoded {self.oodle_where}')
+    UE_INLINE_BYTES = 512 << 20   # the raw bytes of one batch of cooked packages: the decoder's answer is that big, and the phone has no room for much more
+    def ue_done(self, d):
+        """The Unreal shaders of this version are decoded already: the stamp says which files they were decoded from (the form decides which folder holds it: the shader code
+        archives of the paks, or the cooked packages that hold the records inline)"""
+        for sub in ('ue_shaders', 'ue_inline', 'ue_programs'):
+            p = d / sub / 'stamp'
+            if p.exists() and p.read_text() == nsp.ue_stamp(d): return True
+        return False
+    def ue_program_host(self):
+        """The host as an executable with the Vulkan graphics: the capture needs the game's own NVN programs, so the null device (the GLSLC capture's host) is of no use"""
+        out = self.aw / ('host-ueprog-debug' if self.o.debug else 'host-ueprog')
+        PROG.set(step='building the host for the run-time shader capture')
+        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
+                self.logs / 'android_ueprog_host.log', env=self.env)
+        return out / 'dmhost'
+    def device_ue_programs(self, d, v):
+        """The programs the game hands the NVN driver at run time, captured here (the phone app's porter IS the device, so the game runs here): Unreal Engine 4.27 keeps its
+        shaders inline in the cooked packages (device_ue_inline) and expands them into the driver's form when it creates the program, so the programs are the form the translation
+        chain takes, while the records are the engine's own compact form. The host writes every program it is given to <DM_ROOT> (DM_NVN_SHDUMP, hle_nvn.c), and the split reads
+        them from <version dir>/ue_programs.
+
+        Only the programs the game creates while it runs are captured: the shaders of the scene it starts in (It Takes Two's title screen: 1,567 programs - 820 pixel, 77 vertex,
+        670 compute). The shaders of the scenes that follow are captured by running the game again"""
+        out = d / 'ue_programs.partial'; nsp.rmtree(out); out.mkdir(parents=True)
+        run = self.work / 'tmp/ue_programs'; nsp.rmtree(run); run.mkdir(parents=True)
+        for s in ('save', 'temp'): (run / s).mkdir(parents=True)
+        host = self.ue_program_host()
+        os.chmod(host, 0o755)   # a file the App unpacked is not executable: the phone's own exec bit
+        env = dict(self.env, DM_ROOT=str(run), DM_ROMFS=str(d / 'RomFS'), DM_SAVE=str(run / 'save'), DM_TEMP=str(run / 'temp'), DM_NVN_SHDUMP=str(run))
+        env.pop('LD_LIBRARY_PATH', None)   # the guest's glibc libraries are none of the bionic host's business: its own are in /system/lib64
+        log = self.logs / 'android_ue_programs.log'
+        say(f'booting {self.app_name} to capture the programs it hands the driver (up to {self.UE_PROGRAM_SECS} s)')
+        t0 = time.time()
+        with open(log, 'w') as f:
+            p = subprocess.Popen([str(host), str(self.patched)], env=env, stdout=f, stderr=subprocess.STDOUT)
+            try:
+                while p.poll() is None and time.time() - t0 < self.UE_PROGRAM_SECS: time.sleep(1)
+            finally:
+                if p.poll() is None:   # the host's graceful exit (SIGTERM), a kill 5 s later
+                    p.terminate()
+                    try: p.wait(5)
+                    except subprocess.TimeoutExpired: p.kill(); p.wait()
+        progs = sorted(run.glob('program_*.bin'))
+        if not progs: raise BuildError(f'{self.app_name} handed the driver no program in {self.UE_PROGRAM_SECS} s (see {log})')
+        for pr in progs: shutil.move(str(pr), str(out / pr.name))
+        (out / 'stamp').write_text(nsp.ue_stamp(d))
+        nsp.swap_in(out, d / 'ue_programs'); nsp.rmtree(run)
+        say(f'{v}: {len(progs):,} programs captured (the shaders the game creates while it runs)')
+    def device_ue_inline(self, d, v):
+        """The shaders are inline in the cooked packages (It Takes Two: the pak holds no shader code archive and no IoStore shader library, every shader sits in the .uexp file
+        that needs it, and the engine's global shaders in the global shader cache). The packages that can hold records are decoded with the game's own Oodle (on the device, or
+        here on the phone app) and the ones that hold records are written to <version dir>/ue_inline, where the split reads them. The Oodle-compressed .uexp files of that pak
+        are 10 GB, which does not fit on the phone at once, so they go in batches; the packages that hold no record are dropped (most of them are lighting and geometry
+        data). A package that is stored or zlib-compressed is read here, without the game's decoder"""
+        romfs = d / 'RomFS'
+        out = d / 'ue_inline.partial'; nsp.rmtree(out)
+        tmp = self.work / 'tmp/ue_inline'; nsp.rmtree(tmp); tmp.mkdir(parents=True)
+        kept, raw = 0, 0
+        for pak in uepak.unreal_paks(str(romfs), legacy=False):
+            pk = uepak.Pak(pak)
+            rel = os.path.relpath(pak, str(romfs))
+            batch, size = [], 0
+            for name in uepak.inline_files(pk):
+                e = pk.entry(name)
+                if e['method'] != 'Oodle':
+                    data = pk.read(name)   # stored or zlib: read here
+                    if b'LSLG' in data:
+                        path = out / rel / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(data); kept += 1
+                    continue
+                batch.append(name); size += e['raw']; raw += e['raw']
+                if size >= self.UE_INLINE_BYTES:
+                    kept += self.ue_inline_batch(pak, pk, batch, out / rel, tmp, v); batch, size = [], 0
+            if batch: kept += self.ue_inline_batch(pak, pk, batch, out / rel, tmp, v)
+        (out / 'stamp').write_text(nsp.ue_stamp(d))
+        nsp.swap_in(out, d / 'ue_inline'); nsp.rmtree(tmp)
+        say(f'{v}: {kept:,} cooked packages hold shader records ({raw / 2**30:.1f} GB decoded {self.oodle_where})')
+        PROG.end(f'{kept:,} packages with shader records')
+    def ue_inline_batch(self, pak, pk, names, out, tmp, v):
+        """A batch of the cooked packages, decoded with the game's own Oodle; the ones that hold records are written into out → their number"""
+        job, manifest = uepak.inline_job(pak, pk, names)
+        jf = tmp / 'job.bin'; jf.write_bytes(job)
+        PROG.set(step=f"{v}: {len(names):,} cooked packages ({len(job) / 2**20:.0f} MB) with the game's decoder {self.oodle_where}")
+        self.oodle_job(jf, tmp / 'job.out')
+        return len(uepak.inline_finish(str(tmp / 'job.out'), manifest, str(out)))
+
     def device_oodle_end(self):
         adb = getattr(self, 'oodle_adb', None)
         if adb:
@@ -992,7 +1079,9 @@ class Port:
         pkg = self.work / 'shader' / 'pkg'
         try:
             if getattr(self, 'glslc_why', ''): self.local_glslc()   # shaders the game compiles at boot with its own GLSLC: captured by running the game's own compiler here
+            self.pull_captures()   # the shaders the app's run found the bundle lacks: they are translated beside the package's
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded with the game's own Oodle (on the device, or here on the phone app) into <version dir>/ue_shaders before the split reads them
+            self.pull_ue_programs()   # the programs of the app's run: they join the split's inputs (after the capture, which rewrites that folder)
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=getattr(self, 'oodle_run', None),   # Oodle-compressed archives: the game's own decoder (on the device, or here on the phone app)
                                aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
@@ -1039,16 +1128,44 @@ class Port:
         PROG.end(note)
         for d in (self.work / 'tmp').glob('shvk_*'): nsp.rmtree(d)   # the translator's work folders
 
+    def pack_files(self, folder, dst, pattern):
+        """The files of the data pack's own folder on the device, copied into dst: the host writes there what it captures (the programs the game hands it, the shaders the bundle lacks).
+        The app's mode: the porter runs on the phone and the pack is in its own folder, so the files are copied. The desktop tool's mode: the pack is installed on the shared storage, so they are
+        pulled. A device that cannot be reached leaves what was copied already there"""
+        dst = Path(dst); dst.mkdir(parents=True, exist_ok=True)
+        if self.o.app:
+            src = self.data_dir() / folder if folder else self.data_dir()
+            if not src.is_dir(): return []
+            got = []
+            for p in sorted(src.iterdir()):
+                if not p.is_file() or (pattern and not pattern(p.name)): continue
+                if (dst / p.name).is_file() and (dst / p.name).stat().st_size == p.stat().st_size: continue
+                shutil.copyfile(p, dst / p.name); got.append(p.name)
+            return got
+        try:
+            adb = Adb(self.tools.get('adb'), self.o.device or getattr(self, 'cfg', {}).get('device'), log=say)
+            adb.pick()
+            base = f'{datapack.files_folder(self.package)}/{folder}' if folder else datapack.files_folder(self.package)
+            return adb.pull_new(base, dst, pattern=pattern)
+        except AdbError as e:
+            say(f'the pack\'s {folder or "files"} not pulled ({e})'); return []
+
     def pull_captures(self):
         """Shaders whose code no game file holds: the app saves each one the bundle lacks on the device (gfx_vk_shader.c vk_shader_missing), and they are
         pulled here into <build folder>/android/captured_shaders, kept from port to port, for shader_vk.py to translate into the bundle (Xenoblade Chronicles 3: effect and model shaders).
-        Only for an install, which has the device; a device that cannot be reached leaves the captures already pulled"""
-        adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say)
-        try:
-            adb.pick()
-            got = adb.pull_new(f'{datapack.files_folder(self.package)}/captured_shaders', self.aw / 'captured_shaders', pattern=lambda n: re.fullmatch(r'[0-9a-f]{16}\.bin', n))
-        except AdbError as e: say(f'shaders captured on the device not pulled ({e})'); return
+        A device that cannot be reached leaves the captures already pulled"""
+        got = self.pack_files('captured_shaders', self.aw / 'captured_shaders', pattern=lambda n: re.fullmatch(r'[0-9a-f]{16}\.bin', n))
         if got: say(f'{len(got)} shader(s) missing from the bundle, captured on the device: {" ".join(n[:16] for n in got)}')
+
+    def pull_ue_programs(self):
+        """The programs the game handed the driver while it ran on the phone: the host writes every program it is given into the pack's folder (DM_NVN_SHDUMP, hle_nvn.c), so the
+        scenes the player reached are programs the headless capture (device_ue_programs) never sees. They join the split's inputs (the version dir's ue_programs), so the next port
+        translates them too: the shaders of a scene are only known once the game has been there"""
+        got = []
+        for v in self.versions:
+            got += self.pack_files('', self.dirs[v] / 'ue_programs', pattern=lambda n: n.startswith('program_') and n.endswith('.bin'))
+        if got: say(f'{len(got):,} program(s) of the app\'s run added to the shaders of {", ".join(self.versions)}')
+        return got
 
     def translator(self):
         """The shader translator (dm/gfx/tools/dmsh_xlate over dm/third_party/ryujinx) built from the repository's source with the player's .NET SDK, once for every game,

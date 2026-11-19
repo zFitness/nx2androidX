@@ -1,0 +1,47 @@
+# IT TAKES TWO: EA / Hazelight, Unreal Engine 4 (EA's "Nuts" branch), NVN, Wwise sound, SDK 13.3.5; base game 1.0.0 + update 1.0.4 (the update's title ID 010092A0172E4800).
+# Started from the NSP script's provisional profile (dm/games/profile_guess.py) and brought up on the device (docs/agents)
+
+# ---- Identity ----
+title_id	010092A0172E4000
+program_id	010092A0172E4000
+
+# ---- App ----
+name	It Takes Two
+ipa	ItTakesTwo.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1	1.0.4	main=ddd039e882dbcd1ca9509763dda7596b	subsdk0=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# main imports from subsdk0 and sdk
+modules	main subsdk0 sdk
+romfs_marker	Nuts/Content/Paks/Nuts-Switch.pak
+zip_store	.cache:.mp4:.pak:.ttf:.metallib
+
+# ---- Memory ----
+# Unreal Engine 4 (EA's "Nuts" branch): nninitStartup (main+0x349e9cc) reserves one address region for the engine (-SwitchVirtualAddressSpaceSize= in MB, game_args below; 62 GB by
+# default). This build reserves that region only when the argument is not given: with the argument the size is set, so the branch at main+0x349f2e8 skips the whole block and the
+# region's base stays 0, and the game aborts (nn::diag Break, main+0x3495b58). The profile's cuts (patches.py) make the argument size the region as in the other Unreal games'
+# profiles (the branch skips only the 62 GB default, the reservation takes the size from the global), and the default path is unchanged. Its allocator, an FMallocBinned3 made
+# on the first allocation (GCreateMalloc, main+0x349fad8), cuts 36 GB of pools out of that region; the constructor call is cut and the host runs Unreal's heap on a malloc zone
+# outside the guest block (patches.py, hle_uemalloc.c), and the SDK's node area is cut to 62 MB (dm/tools/sdk_patches.py, this game's sdk build). The region then holds what
+# the engine maps itself: the alias region is the node area + up to 1 GB of alignment (regions of 1 GB and more are 1 GB aligned) + the 2 GB region, so the region ends at
+# +3 GB of the 3.125 GB alias region; 256 MB stacks, 128 MB heap region
+game_args	-SwitchVirtualAddressSpaceSize=2048
+mem_reserve	0xF0000000
+mem_alias	0xC8000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 80 MB of system resource
+sys_resource	0x5000000
+# the game's own modules and data hold 64 MB
+mem_used	0x4000000
+
+# ---- Shader split ----
+# The shaders are the programs the game hands the NVN driver at run time, captured on the device (the host's DM_NVN_SHDUMP writes every program it is given as
+# <extract>/ue_programs/program_<key>_0.bin): 1,878 of them (1,001 pixel, 190 vertex, 684 compute, 3 geometry). The game ships no shader archive (its global shader
+# cache is a separate file), so there are no shader_groups; the shader_map.tsv rows point at the captured programs.
+shader_note	It Takes Two shaders, from the programs the game hands the driver at run time (captured with DM_NVN_SHDUMP)

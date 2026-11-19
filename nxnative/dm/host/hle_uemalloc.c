@@ -10,6 +10,10 @@
 // 16 DumpAllocatorStats, 17 IsInternallyThreadSafe, 18 ValidateHeap, 19 GetDescriptiveName, 20 OnMallocInitialized (main+0x5e4c0e8: TryMalloc / TryRealloc call +0x18 / +0x28, GCreateMalloc
 // calls +0x88 and +0xa0; Free is main+0x10, which reads the pool base as GetAllocationSize does). Its allocator object is made at run time (GCreateMalloc mallocs it), so the host puts the
 // vtable in at an observation gate right after the cut constructor call (OBS in the game's patches.py, OBS_UE_MALLOC: x19 = the object)
+// Unreal Engine 4.26 (It Takes Two, EA's "Nuts" branch) has the same slots as 4.27 without OnMallocInitialized, so 20: 0-1 destructors, 2 Exec, 3 Malloc, 4 TryMalloc, 5 Realloc, 6 TryRealloc, 7 Free, 8 QuantizeSize,
+// 9 GetAllocationSize, 10 Trim, 11 SetupTLSCachesOnCurrentThread, 12 ClearAndDisableTLSCachesOnCurrentThread, 13 InitializeStatsMetadata, 14 UpdateStats, 15 GetAllocatorStats, 16 DumpAllocatorStats, 17 IsInternallyThreadSafe,
+// 18 ValidateHeap, 19 GetDescriptiveName (main+0x3501008: the string "Binned3"). Its allocator object is made at run time as well (GCreateMalloc, main+0x349fad8: operator new of 0x1c38 bytes, the object in x19, the constructor at
+// main+0x34fe3b8), so the host puts the vtable in at an observation gate right after the cut constructor call (OBS in the game's patches.py, OBS_UE_MALLOC: x19 = the object)
 // Unreal Engine 5.6 (FINAL FANTASY RESONANCE) adds MallocZeroed / TryMallocZeroed after Free and two TLS cache calls after the setup, and two cached-memory queries at the end: 0-1 destructors,
 // 2-5 FExec, 6 Malloc, 7 TryMalloc, 8 Realloc, 9 TryRealloc, 10 Free, 11 MallocZeroed, 12 TryMallocZeroed, 13 QuantizeSize, 14 GetAllocationSize, 15 Trim, 16 SetupTLSCachesOnCurrentThread,
 // 17 MarkTLSCachesAsUsedOnCurrentThread, 18 MarkTLSCachesAsUnusedOnCurrentThread, 19 ClearAndDisableTLSCachesOnCurrentThread, 20 InitializeStatsMetadata, 21 UpdateStats, 22 GetAllocatorStats,
@@ -22,11 +26,12 @@
 #include <stdatomic.h>
 
 // Slot layouts: which slots the host fills and which do nothing (up to 6; 0 ends the list); the others keep the guest's own functions
-enum { UE5, UE4_27, UE5_6 };
+enum { UE5, UE4_27, UE5_6, UE4_26 };
 static const struct { int nslot, malloc_, try_malloc, realloc_, try_realloc, free_, quantize, get_size, nothing[6]; } k_lay[] = {
     [UE5] = { 26, 6, 7, 8, 9, 10, 11, 12, { 13, 14, 15, 19 } },      // Trim, the TLS cache setup and teardown, DumpAllocatorStats
     [UE4_27] = { 21, 3, 4, 5, 6, 7, 8, 9, { 10, 11, 12, 16 } },
     [UE5_6] = { 32, 6, 7, 8, 9, 10, 13, 14, { 15, 16, 17, 18, 19, 23 } },   // Trim, the four TLS cache calls, DumpAllocatorStats
+    [UE4_26] = { 20, 3, 4, 5, 6, 7, 8, 9, { 10, 11, 12, 16 } },     // the 21 slots of UE 4.27 without OnMallocInitialized
 };
 static const struct { const char *build, *what; int layout; uint64_t obj, vtable, cut; } k_ue[] = {
     // Octopath Traveler 0 1.0.5: the FMallocBinned3 object (main+0x68022c8, bss), its vtable (main+0x5b06f38, 26 slots), the cut constructor call (main+0x12e40, a nop after the rewrite)
@@ -39,6 +44,8 @@ static const struct { const char *build, *what; int layout; uint64_t obj, vtable
     { "84e182f72ee1da4f477804bd05b54c15", "FINAL FANTASY RESONANCE 1.0.1", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
     // FINAL FANTASY RESONANCE 1.0.1 (Asian release): the same engine and the same addresses as the row above, in its own main build: the FMallocBinned3 object (main+0x77c6210, bss), its vtable (main+0x67df800, 32 slots), the cut constructor call (main+0x137f0)
     { "b7f965b9d7227db8e29f04e84ea7331b", "FINAL FANTASY RESONANCE 1.0.1 (Asian)", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
+    // It Takes Two 1.0.4: no fixed object (0: made by GCreateMalloc, given at the gate), its vtable (main+0xa566f70, 20 slots), the cut constructor call (main+0x349faf0)
+    { "ddd039e882dbcd1ca9509763dda7596b", "It Takes Two 1.0.4", UE4_26, 0, 0xa566f70, 0x349faf0 },
 };
 enum { NSLOT = 32 };
 

@@ -1383,7 +1383,10 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     kf = pkg.with_name(pkg.name + '.key')
     key = None if provisional or ALLOW_DAMAGED else fingerprint(('files', tool_files(repo)), ('files', profile_files(g)),
         *[x for r, m in zip(roms, mains) for x in (('files', [m]), ('tree', r), ('files', sorted((r.parent / 'glslc_capture').glob('*.glslc'))),
-                                                   ('files', sorted((r.parent / 'ue_shaders').glob('*.ushaderbytecode'))))], *([('tree', aoc)] if aoc else []))
+                                                   ('files', sorted((r.parent / 'ue_shaders').glob('*.ushaderbytecode'))),
+                                                   # the Unreal shaders the porter decoded (the shader code archives) and the programs the game hands the
+                                                   # driver at run time: a capture that grew is a different input, and the package must follow
+                                                   ('tree', r.parent / 'ue_inline'), ('tree', r.parent / 'ue_programs'))], *([('tree', aoc)] if aoc else []))
     if key and pkg.is_dir() and (note := reused(kf, key)) is not None:
         PROG.end(f'{note}, reused (inputs unchanged)'); return package_key(pkg)
     if oodle:   # the packs are decoded by the game's own Oodle in the Mac host (dm/host/hle_oodle.c)

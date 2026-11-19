@@ -60,8 +60,9 @@ uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
 //   T<x>x<y> = a touch at normalized picture coordinates (origin top left) for the hold time, and Shake = the controller shaken for the hold time (at least one whole shake);
 //   held 0.15 s by default, at most 1024 steps (counted after repeats are expanded). Goes through player 1's controller path (dm_pad_set), ORed with keyboard / touch, neither overrides the other. Times are counted from host start.
+//   A player index before the keys ("p2:A") drives that player's own controller path: a two-player game asks the second player to press a button to join (It Takes Two), and the second controller's path is the game's only way in
 //   An f before the time means a presented frame number ("f7600:A", and the repeat interval counts frames too): when the machine is busy seconds drift from the game's progress, frame numbers do not (used for the Zelda BotW opening route)
-typedef struct { double at, hold; uint64_t btn; int32_t lx, ly, rx, ry; int frame, tap; float tx, ty; } key_step;   // tap: a touch at (tx, ty), normalized
+typedef struct { double at, hold; uint64_t btn; int32_t lx, ly, rx, ry; int frame, tap, player; float tx, ty; } key_step;   // tap: a touch at (tx, ty), normalized; player: 0 = player 1
 #define KEY_STEPS 1024
 static key_step g_steps[KEY_STEPS]; static int g_nsteps;
 static void *keys_main(void *arg) {
@@ -71,7 +72,7 @@ static void *keys_main(void *arg) {
                    if (g_steps[i].frame ? (double)dm_guest_frame() >= g_steps[i].at : el >= g_steps[i].at) break; usleep(5000); }
         LOG("DM_KEYS: %s%.2f press %#llx (hold %.2f s)", g_steps[i].frame ? "frame " : "", g_steps[i].at, (unsigned long long)g_steps[i].btn, g_steps[i].hold);
         if (g_steps[i].tap) { dm_touch t = {0, g_steps[i].tx, g_steps[i].ty}; dm_touch_set(&t, 1); }
-        dm_pad_set(g_steps[i].btn, g_steps[i].lx, g_steps[i].ly, g_steps[i].rx, g_steps[i].ry); usleep((useconds_t)(g_steps[i].hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
+        dm_pad_set_player(g_steps[i].player, g_steps[i].btn, g_steps[i].lx, g_steps[i].ly, g_steps[i].rx, g_steps[i].ry); usleep((useconds_t)(g_steps[i].hold * 1e6)); dm_pad_set_player(g_steps[i].player, 0, 0, 0, 0, 0);
         if (g_steps[i].tap) dm_touch_set(NULL, 0);
     }
     return NULL;
@@ -79,6 +80,16 @@ static void *keys_main(void *arg) {
 // The keys of one step, "key[+key]" (the hold and repeat already cut off), into st
 static void parse_keys(char *spec, key_step *st) {
     static const char *names[16] = {"A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "Plus", "Minus", "Left", "Up", "Right", "Down"};
+    // A player index before the keys: "p2 a", "p2:a" drives player 2's own controller path (the game's way of taking a second player in)
+    if (*spec == 'p' || *spec == 'P') {
+        const char *q = spec + 1; int p = 0, n = 0;
+        while (*q >= '0' && *q <= '9') { p = p * 10 + (*q - '0'); q++; n++; }
+        if (n && p >= 1 && p <= DM_PLAYERS) {
+            st->player = p - 1;
+            spec = (char *)q;
+            while (*spec == ':' || *spec == ' ' || *spec == '\t') spec++;
+        }
+    }
     for (char *k = spec; k && *k;) { char *plus = strchr(k, '+'); if (plus) *plus = 0;
         int found = 0; for (int b = 0; b < 16; b++) if (!strcasecmp(k, names[b])) { st->btn |= 1ull << b; found = 1; }
         // left stick fully pushed: LLeft LUp LRight LDown (for games that move on the map by stick only, such as Super Mario 3D World)
@@ -117,7 +128,8 @@ void hid_keys_init(void) {
 }
 
 // DM_CTL=<file> (Mac, for driving a game step by step from a shell): the host reads the lines appended to the file (polled every 100 ms) and acts on each at once:
-//   "key[+key][~hold]" presses as a DM_KEYS step does (hold 0.15 s by default), "shot <path>" saves the next presented frame as a PNG (dm_gfx_shot_at), "passdump <n>" dumps the
+//   "key[+key][~hold]" presses as a DM_KEYS step does (hold 0.15 s by default), "p2 key" presses on player 2's own controller path (a game asks the second player to press a button to join),
+//   "shot <path>" saves the next presented frame as a PNG (dm_gfx_shot_at), "passdump <n>" dumps the
 //   render passes of the next n frames as DM_NVN_PASSDUMP does (to stderr, the run's log), "texdump <path with %d>" saves the colour targets of the next frame as DM_NVN_TEXDUMP does,
 //   "env KEY=VALUE" sets a switch read at the time of use (DM_NVN_SNAPRAW for the next texdump), "cvarf <main offset> <value>" sets an Unreal float console variable
 //   (hle_fpslock.c dm_ctl_cvar_f32; "cvari" an int one), "peek <address> <count>" logs that many floats of guest memory, "pokei <address> <value>" writes one int there, "memdump <address> <bytes> <path>" saves guest memory
@@ -163,9 +175,9 @@ static void *ctl_main(void *arg) {
                 }
                 key_step st = {0, 0.15, 0}; char *h = strchr(line, '~'); if (h) { *h = 0; st.hold = atof(h + 1); }
                 parse_keys(line, &st);
-                LOG("DM_CTL: press %#llx (hold %.2f s)", (unsigned long long)st.btn, st.hold);
+                LOG("DM_CTL: press %#llx (hold %.2f s)%s", (unsigned long long)st.btn, st.hold, st.player ? " on another player" : "");
                 if (st.tap) { dm_touch t = {0, st.tx, st.ty}; dm_touch_set(&t, 1); }
-                dm_pad_set(st.btn, st.lx, st.ly, st.rx, st.ry); usleep((useconds_t)(st.hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
+                dm_pad_set_player(st.player, st.btn, st.lx, st.ly, st.rx, st.ry); usleep((useconds_t)(st.hold * 1e6)); dm_pad_set_player(st.player, 0, 0, 0, 0, 0);
                 if (st.tap) dm_touch_set(NULL, 0);
             }
         }

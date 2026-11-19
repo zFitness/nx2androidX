@@ -224,7 +224,8 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                (s and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
     }
 
-    /** 一个手柄发了输入：它算「在用」，虚拟手柄不算（老前端也是这个规矩：issue #22） */
+    /** 一个手柄发了输入：它算「在用」，虚拟手柄不算（老前端也是这个规矩：issue #22）。
+     * 「在用」的手柄占着玩家 1 时，虚拟手柄（玩家 1 的那一份）让位 */
     private fun noteController(source: Int, deviceId: Int) {
         if ((source and (InputDevice.SOURCE_GAMEPAD or InputDevice.SOURCE_JOYSTICK)) == 0) return
         if (!isGamepad(deviceId)) return
@@ -235,8 +236,23 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
         val n = ctrlDevices.size
         if (n == ctrlCount) return
         ctrlCount = n
-        padView.setControllers(n)   // 有手柄在用：虚拟手柄让位
         runCatching { Native.padDevices(n) }   // 宿主还没载入时跳过
+        updatePadVisibility()
+    }
+
+    /**
+     * 虚拟手柄让不让位：玩家 1 被物理手柄占了才让。
+     *
+     * 玩家 1 永远是手机（抽屉的「谁玩谁」那一页这么写），虚拟按键是玩家 1 的手柄；物理手柄
+     * 指派给玩家 2 之后它就空出来了，两个人一起玩（双人成行那样）才凑得齐。在用的手柄按
+     * PadAssignment.playerOf 查：自动模式下没被指派走的手柄都算玩家 1。
+     */
+    private fun updatePadVisibility() {
+        if (!::padView.isInitialized) return
+        val assignment = padPlayers?.load() ?: PadAssignment()
+        val infos = GamepadScan.devices.value
+        val inUse = ctrlDevices.mapNotNull { id -> infos.firstOrNull { it.id == id }?.profileKey }
+        padView.setPlayer1Taken(assignment.player1Taken(inUse))
     }
 
     private fun watchControllers() {
@@ -915,6 +931,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
                 onPlayers = { assignment ->
                     padPlayers?.save(assignment)
                     pushPadMapping()   // 新的表立刻推给宿主：手柄换人，游戏里立刻就是新的玩家
+                    updatePadVisibility()   // 玩家 1 空出来了，虚拟按键回来（它是玩家 1 的手柄）
                 },
                 onLayoutEditor = { openEditor() },
                 onResetPadLayout = { resetPadLayout() },
@@ -984,7 +1001,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
 
     override fun onGenericMotionEvent(e: MotionEvent): Boolean {
         if (!gameUiReady) return super.onGenericMotionEvent(e)   // Loading 期：宿主还没载入，别碰它
-        noteController(e.source, e.deviceId)   // 手柄动了：它算「在用」，虚拟手柄让位
+        noteController(e.source, e.deviceId)   // 手柄动了：它算「在用」（玩家 1 被占时虚拟手柄让位）
         Native.motion(e.source, e.deviceId, e.action, IntArray(0), FloatArray(0), FloatArray(0), axes(e))
         return true
     }
@@ -1021,7 +1038,7 @@ class GameActivity : ComponentActivity(), SurfaceHolder.Callback {
             return true   // Back 只在宿主的面板开着时交给宿主
         }
         if (e.action == KeyEvent.ACTION_DOWN || e.action == KeyEvent.ACTION_UP) {
-            noteController(e.source, e.deviceId)   // 手柄按了键：它算「在用」，虚拟手柄让位
+            noteController(e.source, e.deviceId)   // 手柄按了键：它算「在用」（玩家 1 被占时虚拟手柄让位）
             // 宿主带扫描码（新的运行时）就用带扫描码的那个入口；老运行时只有旧的那个。
             // 扫描码是位置（出厂字典按它判），丢了它整套面键就会按 Android 的名字走 —— 所以
             // 这里以「真的发不出去」为准，不靠上面那个标志：标志掉了也照样先试带扫描码的那个。

@@ -99,6 +99,8 @@ static int g_samp_snap = 1;   // DM_NVN_SAMP_SNAP=0 (live): samplers as register
 static uint64_t g_x_flat[8]; static int g_x_flat_mode[8], g_x_nflat;   // DM_VK_X_FLAT_VS=<vertex shader key>[:mode][,...] (debugging; pipelines made after it is set): mode bits 1 solid magenta pixel shader, 2 no depth test, 4 no blending (7 when left out)
 // Additional diagnostic bits: 8 no alpha coverage, 16 no depth bias, 32 no depth test/write, 64 no stencil. The mode is part of the pipeline key so live changes take effect.
 static uint64_t g_x_logfs;   // DM_VK_LOG_FS=<fragment shader key> (live): one line per draw with it, with its samplers as the draw sees them
+static int g_x_logfs_max = 60;   // DM_VK_LOG_FS_MAX=<n> (live): how many lines that log has room for (60 by default)
+static uint64_t g_x_logtarget; static int g_logt_draw;   // DM_VK_LOG_TARGET=<colour target serial> (live): the draws that write that target, with their shaders and samplers, like DM_VK_LOG_FS
 static int g_rd_touch = 1, g_x_rdkeep, g_x_nskipvs; static uint64_t g_x_skipvs[8];   // DM_VK_RD_TOUCH, DM_VK_X_RDKEEP, DM_VK_X_SKIPVS (see prepare_draw)
 static char g_x_tracesize[40], g_x_traceframe[40]; static int g_x_traceframe_on;
 // DM_VK_WATCH=<pool offset, hex>[#n] (live): log the next n (20) uses of images at that offset of their pool (attachment, sampled, copy), with the pass and present
@@ -158,6 +160,7 @@ static void cpu_ready_config(void) {
     g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
 }
 static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+    { const char *e = getenv("DM_VK_DS_ASPECT"); g_vk_ds_aspect = e ? atoi(e) : 0; }   // live A/B: which plane a sampled depth-stencil view reads
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -179,7 +182,7 @@ static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_x_inflkeep = (e = getenv("DM_VK_UBD_KEEP")) && atoi(e); g_ubd_heap = !((e = getenv("DM_VK_UBD_HEAP")) && !atoi(e)); g_pool_slots = !((e = getenv("DM_VK_POOL_SLOTS")) && !atoi(e)); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
-    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log, g_vk_samp_log_boot; static int first = 1;   // the first read sees the start-up value, which mtl_reg_samp (game threads, no setenv there) may have taken already: not armed twice
+    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_logfs_max = (e = getenv("DM_VK_LOG_FS_MAX")) ? atoi(e) : 60; g_x_logtarget = (e = getenv("DM_VK_LOG_TARGET")) ? strtoull(e, NULL, 10) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log, g_vk_samp_log_boot; static int first = 1;   // the first read sees the start-up value, which mtl_reg_samp (game threads, no setenv there) may have taken already: not armed twice
       if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { if (!(first && atoi(e) == g_vk_samp_log_boot)) g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } first = 0; } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
 // ---------------- conditional rendering (profile render_cond) ----------------
@@ -480,6 +483,16 @@ static void pass_dump_depth(void) {   // the pass's depth (D24S8 / D32 / D16) as
     VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
     VkBufferImageCopy c = {0, 0, 0, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
     vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, d->b, 1, &c); vk_img_barrier_all(cb);
+    // DM_VK_PASSDUMP_STENCIL=1: the stencil of the same storage (the depth and the stencil of a depth-stencil texture are two aspects of one image)
+    { const char *e = getenv("DM_VK_PASSDUMP_STENCIL"); int on = e && atoi(e);
+      if (on && (im->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && g_npd < PD_MAX) {
+          pdump_t *s = &g_pd[g_npd++]; s->w = im->w; s->h = im->h; s->f = VK_FORMAT_R8_UINT; s->pass = g_sub_pass - 1; s->present = g_tex_frame;
+          VkBufferCreateInfo sbi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, (VkDeviceSize)im->w * im->h, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE};
+          VKCHK(vkCreateBuffer(V.dev, &sbi, NULL, &s->b)); VkMemoryRequirements srq; vkGetBufferMemoryRequirements(V.dev, s->b, &srq);
+          VkMemoryAllocateInfo sai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, srq.size, vk_mem_type(srq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0)};
+          VKCHK(vkAllocateMemory(V.dev, &sai, NULL, &s->m)); VKCHK(vkBindBufferMemory(V.dev, s->b, s->m, 0)); VKCHK(vkMapMemory(V.dev, s->m, 0, VK_WHOLE_SIZE, 0, &s->p));
+          VkBufferImageCopy sc = {0, 0, 0, {VK_IMAGE_ASPECT_STENCIL_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
+          vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, s->b, 1, &sc); vk_img_barrier_all(cb); } }
 }
 static inline float half2f(uint16_t h) { uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023, f;
     if (!e) { if (!m) f = s; else { e = 1; while (!(m & 1024)) { m <<= 1; e--; } m &= 1023; f = s | ((e + 112) << 23) | (m << 13); } } else if (e == 31) f = s | 0x7f800000 | (m << 13); else f = s | ((e + 112) << 23) | (m << 13);
@@ -532,9 +545,18 @@ void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every prese
                     v3[0] = half2f((uint16_t)((w & 0x7ff) << 4)); v3[1] = half2f((uint16_t)((w >> 11 & 0x7ff) << 4)); v3[2] = half2f((uint16_t)((w >> 22 & 0x3ff) << 5)); }
                 for (int c = 0; c < 3; c++) { float v = v3[c]; if (v != v || v > 65000.f || v < -65000.f) { bad++; v = 1; } if (v > mx) mx = v; if (v < mn) mn = v; sum += v; row[3 * x + c] = (uint8_t)(v <= 0 ? 0 : v >= 1 ? 255 : v * 255 + .5f); } }
             else if (d->f == VK_FORMAT_R8_UNORM) row[3 * x] = row[3 * x + 1] = row[3 * x + 2] = ((const uint8_t *)d->p)[(size_t)y * d->w + x];
+            else if (d->f == VK_FORMAT_R8_UINT) { uint8_t v = ((const uint8_t *)d->p)[(size_t)y * d->w + x]; row[3 * x] = row[3 * x + 1] = row[3 * x + 2] = v; }
             else if (d->f == VK_FORMAT_A2B10G10R10_UNORM_PACK32) { uint32_t w = ((const uint32_t *)d->p)[(size_t)y * d->w + x]; for (int c = 0; c < 3; c++) row[3 * x + c] = (uint8_t)((w >> (10 * c) & 0x3ff) >> 2); }
             else { const uint8_t *p = (const uint8_t *)d->p + ((size_t)y * d->w + x) * 4; int bgr = d->f == VK_FORMAT_B8G8R8A8_UNORM; row[3 * x] = p[bgr ? 2 : 0]; row[3 * x + 1] = p[1]; row[3 * x + 2] = p[bgr ? 0 : 2]; } }
             fwrite(row, 1, (size_t)d->w * 3, f); }
+        // the alpha channel beside it (a .pgm): a mask's strength (Unreal's character tint) lives there
+        { char ap[1100]; snprintf(ap, sizeof ap, "%s.pgm", path); FILE *af = fopen(ap, "wb");
+          if (af) { fprintf(af, "P5\n%u %u\n255\n", d->w, d->h);
+            for (uint32_t y = 0; y < d->h; y++) { for (uint32_t x = 0; x < d->w; x++) { uint8_t a = 255;
+                if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT) { const uint16_t *p = (const uint16_t *)d->p + ((size_t)y * d->w + x) * 4; float v = half2f(p[3]); a = (uint8_t)(v <= 0 ? 0 : v >= 1 ? 255 : v * 255 + .5f); }
+                else if (d->f == VK_FORMAT_R8G8B8A8_UNORM || d->f == VK_FORMAT_R8G8B8A8_SRGB || d->f == VK_FORMAT_B8G8R8A8_UNORM) a = ((const uint8_t *)d->p)[((size_t)y * d->w + x) * 4 + 3];
+                row[x] = a; } fwrite(row, 1, d->w, af); }
+            fclose(af); } }
         free(row); fclose(f);
         VKLOG("pass dump %02d: %ux%u format %d → %s%s", i, d->w, d->h, d->f, path, d->f == VK_FORMAT_R16G16B16A16_SFLOAT ? "" : "");
         if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) VKLOG("   NaN/inf channels %llu, finite values %.3f .. %.3f, mean %.5f", (unsigned long long)bad, mn, mx, sum / (3.0 * d->w * d->h));
@@ -1326,17 +1348,20 @@ static VkSampler samp_for(int st, const dmsv_bind *b, uint64_t texh, int nearest
     VkSampler vk_samp_by_id_nearest(int sid), vk_samp_at(int sid, uint64_t seq, int nearest); uint64_t mtl_samp_seq(void);
     if (!g_samp_snap || seq >= mtl_samp_seq()) seq = 0;   // no registration since the bind: the newest (the cached lookups)
     VkSampler s = !sid ? VK_NULL_HANDLE : seq ? vk_samp_at(sid, seq, nearest) : nearest ? vk_samp_by_id_nearest(sid) : samp_cached(sid);
-    static int nsl; if (g_tracing || (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && nsl++ < 60)) { char d[256]; void vk_samp_describe_at(int sid, uint64_t seq, char *out, size_t n); vk_samp_describe_at(sid, seq, d, sizeof d); VKLOG("  %sbinding %d: %s (texture handle %#llx, present %llu, pass %d, thread %d)", g_tracing ? "" : "logfs ", b->binding, d, (unsigned long long)texh, (unsigned long long)g_tex_frame, g_sub_pass - 1, (int)gettid()); }
+    static int nsl, nslt; int logb = (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs) || g_logt_draw; int *nc = g_logt_draw ? &nslt : &nsl;
+    if (g_tracing || (logb && (*nc)++ < g_x_logfs_max)) { char d[256]; void vk_samp_describe_at(int sid, uint64_t seq, char *out, size_t n); vk_samp_describe_at(sid, seq, d, sizeof d); VKLOG("  %sbinding %d: %s (texture handle %#llx, present %llu, pass %d, thread %d)", g_tracing ? "" : (g_logt_draw ? "logt " : "logfs "), b->binding, d, (unsigned long long)texh, (unsigned long long)g_tex_frame, g_sub_pass - 1, (int)gettid()); }
     return s ? s : vk_dummy_sampler();
 }
 // texture views by ID within a submission: a draw's texture arrays (32 slots) looked every slot up again, each through the registry's and the view table's
 // locks (NEO: about 2 ms a frame). An entry holds while no texture ID is registered again and no view is dropped (g_tex_gen)
 enum { TVC = 4096 };
-static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; } g_tvc[TVC];
+static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; VkImageAspectFlags asp; } g_tvc[TVC];
 // what a view's texels are, as gfx_vk_shader.c's integer-texel variants need it: 0 float, 1 uint (unsigned integer formats, a stencil), 2 int
 static int view_num(const tex_t *t, const view_t *v) {
+    const vkfmt_t *imf = vk_fmt(t->d.format);   // the image's own format: its aspect decides which plane a view of it reads
+    if (imf && imf->depth) return (imf->stencil && vk_ds_stencil(t, v)) ? 1 : 0;   // a combined image reads the plane the game asked for
+    if (imf && imf->stencil) return 1;   // a stencil-only image reads the stencil
     const vkfmt_t *f = vk_fmt(v && v->set_format ? v->format : t->d.format); if (!f) return 0;
-    if (f->depth || f->stencil) return f->stencil && (!f->depth || t->stencil || (v && v->set_dsmode && v->dsmode == 1));   // vk_tex_view's aspect
     return f->is_int ? (f->is_sint ? 2 : 1) : 0;
 }
 // the integer class a storage image binding's shader declares, from the SPIR-V image format the translator recorded (dmsv_bind.fmt, shader_vk.py): 1 uint, 2 sint,
@@ -1355,7 +1380,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h, 0); ii->imageView = VK_NULL_HANDLE;
     int sc = storage ? img_fmt_cls(b->fmt) : 0;   // FINAL FANTASY TACTICS' UI composite declares its window image r32ui over an RGBA8 texture: the view is in the shader's class
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1) ^ (unsigned)sc * 0x9E37u) % TVC;
-    int logfs = g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && st == 1; static int nlogfs; if (logfs && nlogfs >= 60) logfs = 0;
+    int logfs = ((g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs) || g_logt_draw) && st == 1; static int nlogfs, nlogt; if (logfs && (g_logt_draw ? nlogt : nlogfs) >= g_x_logfs_max) logfs = 0;
     if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1) && g_tvc[ck].sc == sc) {
         ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im);
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
@@ -1371,6 +1396,23 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
         vkimg_t *im = NULL; ii->imageView = vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
         if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
+        // A depth / stencil binding: which storage it reads and which aspect the view has (the stencil of a depth-stencil storage is a different aspect, and a
+        // stencil-mode texture (Unreal Engine 4.27's stencil shader resources) reads the stencil, not the depth)
+        if (im && (im->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
+            static int nds; static int nds_max = -1;
+            if (nds_max < 0) { const char *e = getenv("DM_VK_LOG_DS_MAX"); nds_max = e ? atoi(e) : 60; }   // how many such bindings the log takes (60 by default)
+            if (nds++ < nds_max) VKLOG("depth / stencil binding: shader %016llx binding %d: texture %d format %#x (stencil mode %d), the view's dsmode %d, the view's format %#x%s → the image %ux%u format %d aspect %d at pool %p +%lld, the view's aspect %d",
+                (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0), (int)b->binding, tid, t->d.format, t->stencil, (v && v->set_dsmode) ? v->dsmode : -1,
+                (v && v->set_format) ? v->format : 0, (v && v->set_format) ? "" : " (the texture's own)",
+                im->w, im->h, im->fmt, im->aspect, (void *)im->pool, (long long)im->off, vk_view_aspect);
+            // one line per shader and binding that reads a depth-stencil texture: what it reads and which plane (the aspect of the view in use, not of a later one)
+            { static uint64_t seen[64]; static int nseen; uint64_t k = ((uint64_t)(S.sh[1] ? S.sh[1]->key : 0) << 8) | (uint64_t)b->binding;
+              int i = 0; while (i < nseen && seen[i] != k) i++;
+              if (i == nseen && nseen < 64) { seen[nseen++] = k; VKLOG("depth / stencil reader: shader %016llx binding %d: texture %d format %#x, the view's aspect %d (%s), the image %ux%u, the texel class %d",
+                  (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0), (int)b->binding, tid, t->d.format, vk_view_aspect,
+                  vk_view_aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? "the depth" : vk_view_aspect == VK_IMAGE_ASPECT_STENCIL_BIT ? "the stencil" : "both",
+                  im->w, im->h, view_num(t, v)); } }
+        }
         // DM_VK_BIND_DUMP=<pixel shader key hex>:<binding>: write the storage of the texture that binding really resolved to (slots alone are polluted by stale
         // entries from earlier draws and say nothing about which binding reads which); deswizzle it offline with the dimensions in the line
         { static int bd_read; static const char *bd; if (!bd_read) { bd = getenv("DM_VK_BIND_DUMP"); bd_read = 1; }   // read once: this runs for every texture binding of every game
@@ -1390,7 +1432,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
                   }
               }
           } }
-        if (logfs) nlogfs++;
+        if (logfs) { if (g_logt_draw) nlogt++; else nlogfs++; }
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx (mem %p, flags %#x, pool flags %#x, packaged layout %d) → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (const void *)t->mem, (unsigned)t->d.flags, t->pool ? (unsigned)t->pool->flags : 0u, (int)t->has_layout, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? (int)im->gpu_w : -1, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
@@ -1903,8 +1945,24 @@ static int prepare_draw(int prim, int indexed) {
     if (var == 8) k.raster_discard = 1;   // no fragment shader in the pipeline
     int has_depth = (S.daspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0, has_stencil = (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
     k.dt = has_depth && S.ds.dt; k.dw = S.ds.dw; k.df = S.ds.df; k.st = has_stencil && S.ds.st;
-    static int npl; if (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && npl++ < 60) VKLOG("logfs: present %llu pass %d (%ux%u, %llu draws before): depth attachment %d test %d (state %d) func %u write %u; depth range %.9g %.9g; viewport %.1f %.1f %.1f %.1f",
+    static int npl; if (g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && npl++ < g_x_logfs_max) VKLOG("logfs: present %llu pass %d (%ux%u, %llu draws before): depth attachment %d test %d (state %d) func %u write %u; depth range %.9g %.9g; viewport %.1f %.1f %.1f %.1f",
         (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, (unsigned long long)g_pass_draws, has_depth, k.dt, S.ds.dt, k.df, k.dw, S.dnear, S.dfar, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]);
+    // DM_VK_LOG_TARGET=<colour target serial, its guest pool address + offset, or its host memory>: the draws that write that target, with their shaders and their samplers as the
+    // draw sees them (the pass numbers repeat per submission). The target's serial changes every frame (the game makes a new texture object), so the pool address + offset names it stably
+    g_logt_draw = g_x_logtarget && S.rt_has_col[0] && (S.rt_col[0].serial == g_x_logtarget ||
+        (uint64_t)(uintptr_t)S.rt_col[0].pool + S.rt_col[0].off == g_x_logtarget || (uint64_t)(uintptr_t)S.rt_col[0].mem == g_x_logtarget);
+    if (g_x_logtarget) {   // every distinct colour target the draws write, with the draw that writes it (keyed by the guest address: the serial changes every frame)
+        static uint64_t seen[64]; static int nseen; uint64_t ser = S.rt_has_col[0] ? (uint64_t)(uintptr_t)S.rt_col[0].pool + S.rt_col[0].off : 0;
+        int i = 0; while (i < nseen && seen[i] != ser) i++;
+        if (i == nseen && nseen < 64) { seen[nseen++] = ser; VKLOG("logtgt: colour target 0 serial %llu (mem %p, pool %#llx+%#llx, %ux%u format %#x), pass %d, shaders %016llx %016llx",
+            (unsigned long long)(S.rt_has_col[0] ? S.rt_col[0].serial : 0), S.rt_has_col[0] ? (void *)S.rt_col[0].mem : NULL, S.rt_has_col[0] ? (unsigned long long)(uintptr_t)S.rt_col[0].pool : 0ull,
+            S.rt_has_col[0] ? (unsigned long long)S.rt_col[0].off : 0ull,
+            S.rt_has_col[0] ? S.rt_col[0].d.width : 0, S.rt_has_col[0] ? S.rt_col[0].d.height : 0,
+            S.rt_has_col[0] ? S.rt_col[0].d.format : 0, g_sub_pass - 1, (unsigned long long)(S.sh[0] ? S.sh[0]->key : 0), (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0)); } }
+    static int nplt, nplt_pass = -1; if (g_sub_pass - 1 != nplt_pass) { nplt_pass = g_sub_pass - 1; nplt = 0; }   // the count is per pass: a pass's draws are all logged
+    if (g_logt_draw && nplt++ < g_x_logfs_max) VKLOG("logtarget: present %llu pass %d (%ux%u): shaders %016llx %016llx %016llx, %d colour target(s), %llu draws before, viewport %.1f %.1f %.1f %.1f",
+        (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, (unsigned long long)(S.sh[0] ? S.sh[0]->key : 0), (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0),
+        (unsigned long long)(S.sh[2] ? S.sh[2]->key : 0), S.ncol, (unsigned long long)g_pass_draws, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]);
     // A depth buffer that a fragment shader wrote through gl_FragDepth: Adreno's early culling (LRZ) then rejects whole triangles of later draws that test it, in some frames
     // and not others, with the same draws, state and depth contents. Hades II downsamples its scene depth into a 640x360 D24S8 with such a shader (Blit2DDepth), then
     // draws its lights into it with the depth test on and no depth write: the lights went out in turn every 24-48 frames (whole halves of light quads missing in pass dumps),
@@ -2706,10 +2764,11 @@ static int rt_same(const p_set_rt *r) {   // the targets the open pass draws int
     return 1;
 }
 static void set_rt(const p_set_rt *r) {
-    if (g_x_tracepass == -2) {   // (DM_VK_TRACE_PASS=-2 lists the render target changes too: each target's serial and memory)
+    if (g_x_tracepass == -2) {   // (DM_VK_TRACE_PASS=-2 lists the render target changes too: each target's serial, memory and guest address)
         char t[512]; int o = 0; for (int i = 0; i < r->n && i < 8 && o < 400; i++) { const tex_t *c = r->color[i]; o += snprintf(t + o, sizeof t - (size_t)o, " c%d %s", i, c && c->magic == MAGIC('T', 'E', 'X', 0) ? "" : "-");
-            if (c && c->magic == MAGIC('T', 'E', 'X', 0)) o += snprintf(t + o, sizeof t - (size_t)o, "#%llu@%p", (unsigned long long)c->serial, (void *)c->mem); }
-        const tex_t *d = r->depth; VKLOG("--- set targets:%s depth %s#%llu@%p%s", t, d && d->magic == MAGIC('T', 'E', 'X', 0) ? "" : "(none) ", d ? (unsigned long long)d->serial : 0ull, d ? (void *)d->mem : NULL,
+            if (c && c->magic == MAGIC('T', 'E', 'X', 0)) o += snprintf(t + o, sizeof t - (size_t)o, "#%llu@%p+%#llx", (unsigned long long)c->serial, (void *)c->mem, (unsigned long long)(uintptr_t)c->pool + (unsigned long long)c->off); }
+        const tex_t *d = r->depth; VKLOG("--- set targets:%s depth %s#%llu@%p+%#llx%s", t, d && d->magic == MAGIC('T', 'E', 'X', 0) ? "" : "(none) ", d ? (unsigned long long)d->serial : 0ull, d ? (void *)d->mem : NULL,
+                                         d ? (unsigned long long)(uintptr_t)d->pool + (unsigned long long)d->off : 0ull,
                                          S.pass_open && !g_x_nokeep && rt_same(r) ? " (the same: the pass goes on)" : ""); }
     if (S.pass_open && !g_x_nokeep && rt_same(r)) { g_vkst.rt_kept++; return; }   // the same targets again (Unity sets them before many draws): the pass goes on
     vk_end_pass();
@@ -2734,6 +2793,21 @@ static void bind_handles_rec(uint32_t op, const void *a) {
         else if (op == OP_BIND_SAMP) { if (slot >= 0 && slot < 128) { d = &S.samp[st][slot]; q = &S.samp_sseq[st][slot]; } }
         else if (op == OP_BIND_IMG) { if (slot >= 0 && slot < 32) d = &S.img[st][slot]; }
         if (d && (*d != b->h[i] || (q && *q != b->sseq))) { *d = b->h[i]; if (q) *q = b->sseq; g_bind_gen[st]++; }   // only a change counts: games bind the same handles again before many draws (stage_set's memo)
+        // DM_VK_LOG_SLOT=<slot>[,<slot>...] (live): the texture binds of those slots (the game's own records, as they are replayed): the stage, the slot, the handle and the texture
+        if (op == OP_BIND_TEX || op == OP_BIND_TEX1) {
+            static long long want[8]; static int nwant; static char last[64];
+            const char *e = getenv("DM_VK_LOG_SLOT");
+            if (!e) e = "";
+            if (strcmp(e, last)) { snprintf(last, sizeof last, "%s", e); nwant = 0; for (const char *q = e; *q && nwant < 8;) { char *nx; long v = strtol(q, &nx, 10); if (nx == q) break; want[nwant++] = v; q = *nx ? nx + 1 : nx; } }
+            for (int k = 0; k < nwant; k++) if (want[k] == slot) {
+                uint64_t h = b->h[i]; int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
+                vk_tex_by_id(tid, &v, &t);
+                VKLOG("bind: stage %d slot %d handle %#llx id %d: %s", st, slot, (unsigned long long)h, tid,
+                      t ? "the texture" : "not registered");
+                if (t) VKLOG("bind:   stage %d slot %d texture %d %ux%u format %#x serial %llu pool %p+%#llx%s", st, slot, tid, t->d.width, t->d.height, t->d.format,
+                             (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, t->stencil ? " (the stencil mode)" : "");
+            }
+        }
     }
 }
 uint32_t g_sub_ops[64];   // record ops replayed in the open submission, by op (logged when the driver refuses it)
@@ -2799,8 +2873,10 @@ static void exec_ops(const uint8_t *p) {
         case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
         case OP_CALL: { uint64_t t; memcpy(&t, a, 8); exec_ops((const uint8_t *)(uintptr_t)t); break; }
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
-        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); mtl_sub_counter(ad, (uint32_t)t); break; }
-        case OP_RESET_COUNTER: break;
+        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad);
+            if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) { vk_occ_report(ad); break; }   // an occlusion query: the count comes from the GPU (the samples passed)
+            mtl_sub_counter(ad, (uint32_t)t); break; }
+        case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (g_x_tracepass == -2) VKLOG("--- reset counter type %#llx", (unsigned long long)t); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) { vk_occ_reset(); if (getenv("DM_VK_OCCL_LOG")) VKLOG("occlusion query: the counter is reset"); } break; }
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8);
             if (!sync_replay_fence(s, mtl_last_fence() + 1)) { static int n; if (n++ < 4) VKLOG("fence on sync %p skipped: the game has finalized or freed it (nvn_obj.h sync_replay_fence)", (void *)s); }
             break; }

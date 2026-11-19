@@ -41,6 +41,14 @@ data class PadAssignment(
         return if (p1 == key) 0 else -1
     }
 
+    /**
+     * 玩家 1 被这些手柄占住了吗（触屏的虚拟按键是玩家 1 的那份：它被占住时让位）。
+     *
+     * 给的是在用手柄的指纹。自动模式下没被指派走的手柄都算玩家 1，所以有一只没指派走时
+     * 玩家 1 就是被占着的；把它指派给玩家 2 之后玩家 1 空出来，虚拟按键回来（两个人一起玩）。
+     */
+    fun player1Taken(keys: Collection<String>): Boolean = keys.any { playerOf(it) == 0 }
+
     /** 指派一只手柄给某个玩家（它从原来那个玩家手里挪走；"" 是「没有手柄」）。 */
     fun assign(player: Int, key: String): PadAssignment {
         if (player !in 0..3) return this

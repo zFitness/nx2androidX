@@ -1,0 +1,18 @@
+# It Takes Two on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# EA / Hazelight, Unreal Engine 4 (EA's "Nuts" branch) on SDK 13.3.5; base game 1.0.0 + update 1.0.4 (v1). 1,878 shaders, all translated; the shaders are the
+# programs the game hands the NVN driver at run time (the host's DM_NVN_SHDUMP captured them on the device).
+# On the Y700 (2026-11-19), driven with DM_CTL: the title, offline play, the second player joining, a saved game, the character select and a level, and then
+# 42 minutes of continuous play (one process throughout, 29/30 fps, about 2.8 GB resident and no growth, no new red log line). The screenshots are in the
+# device's work/010092A0172E4000_build/screens folder.
+# Status wip: playable, but the partner character is a flat block of the player colour. The paint is the character material's own per-pixel X-ray branch (it reads a
+# 1920x1080 BGRA8 mask texture's blue channel; non-zero means "occluded"), and the mask is driven by the custom depth pass's stencil: with that pass's stencil test off
+# (DM_VK_X_FLAT_VS=7c308fd6ac365833:64) both characters keep their textures. The host's depth/stencil sampling, the stencil reference values (1/2 = the players), the
+# G-buffer and the mark pass all check out; which pass writes the mask and why the partner's side is always non-zero is still open. The game also uses NVN occlusion
+# queries heavily (10+ thousand resets a session), which the Vulkan backend did not implement at all - it does now (gfx_vk_core.c, the occlusion query pool), but
+# the counts it captures are still empty and their relation to the mask is unknown. Notes: my-docs/踩坑/20-伙伴纯色剪影是材质的逐像素遮罩分支.md
+status	wip
+tested	v1 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.t010092a0172e4000
+orientation	landscape
+requires	bcn
+graphics	nvn

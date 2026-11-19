@@ -47,6 +47,7 @@ import base64, collections, concurrent.futures as cf, hashlib, json, mmap, os, r
 from forkpool import fork_map   # the pool without semaphores (no /dev/shm, as on Android)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import ue_inline
 from shader_stage import CS_MAGIC, GFX_MAGIC, glslc_stage, sph_stage   # the stage rules (the Vulkan translator reads them too, without the split's readers)
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
@@ -1277,6 +1278,37 @@ def ue_inline_shaders(d, label, out):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
         if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]): take(d[i:i + n], i)
 
+def ue_records(d, label, out):
+    """The shader records of a cooked package that keeps them inline (It Takes Two: the pak holds no shader code archive, every shader sits in the .uexp file that needs it,
+    and the engine's global shaders in the global shader cache). The records are read by ue_inline.py: what the reader walks on are the markers they carry (the NVN
+    program's magic, the control section's magic, the source's version line), since nothing in them sits at a fixed offset. This generation's records are not the old layout
+    (uepak.lslg): their control section is 111 to 158 bytes, not 0x880, so the translation chain does not take them yet → the records are counted and the build stops"""
+    sizes = []
+    for r in ue_inline.records(d, warn=lambda at, why: red(f'{label}: the shader record at {at:#x}: {why}')):
+        tag, names, params, code, ctl, source, tail = ue_inline.parts(d, r)
+        st = UE_TAG.get(tag)
+        if not st: red(f'{label}: the shader record at {r["start"]:#x} has stage tag {tag}')
+        out.append((f'{label}#UE{r["start"]:x}', st, ctl, code)); sizes.append(len(ctl))
+    return sizes
+
+def ue_runtime_programs(folder, out):
+    """The programs the game hands the NVN driver at run time, captured on the device (the host's DM_NVN_SHDUMP writes every program it is given: the 0x880-byte control section
+    the driver reads, then the code area). Unreal Engine 4.27 keeps its shaders inline (ue_records above) and expands them into this form when it creates the program, so the
+    expansion is the engine's own work; the programs are the old layout the translation chain takes, so a game with them is built from these"""
+    n = 0
+    for name in sorted(os.listdir(folder)):
+        if not (name.startswith('program_') and name.endswith('.bin')): continue
+        with open(os.path.join(folder, name), 'rb') as f: data = f.read()
+        label = f'/ue_programs/{name}'
+        r = ue_inline.program(data)
+        if not r: red(f'{label}: the dump does not read as a program (the control section or the code area does not)'); continue
+        st, ctl, code = r
+        why = check(label, st, ctl, code)
+        if why: red(f'{label}: {why}')
+        out.append((label, st, ctl, code)); n += 1
+    return n
+
+
 def ue_modern_pack(path):
     """Whether the file is an Unreal modern pak (version 11) or an IoStore container (.utoc / .ucas): the shaders of a modern Unreal game live in the shader code archives the decode stage
     wrote (ue_shaders), not in the file, and these are the biggest files of its RomFS (FINAL FANTASY RESONANCE's are 8.9 GB) — reading them whole finds nothing and fills the device's
@@ -1844,14 +1876,32 @@ def main():
         if not names and has(img, b'#version ') and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
             print(f'[RED] main holds GLSL sources and imports glslcCompile, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
         for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
-        # Unreal Engine shader code archives decoded on the Mac (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS; needed when the RomFS has Unreal paks
+        # Unreal Engine's shaders, decoded by the porter (uepak.py): the shader code archives of the paks in <version dir>/ue_shaders (or DM_UE_SHADERS), or the cooked packages
+        # that hold the records inline in <version dir>/ue_inline (or DM_UE_INLINE)
         ued = os.environ.get('DM_UE_SHADERS') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_shaders')
+        inl = os.environ.get('DM_UE_INLINE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_inline')
+        # The programs the game hands the driver at run time, captured on the device (the porter boots the game with DM_NVN_SHDUMP): <version dir>/ue_programs (or DM_UE_PROGRAMS).
+        # A game whose engine expands its inline records into the driver's form at run time (Unreal Engine 4.27) is built from these: they are the layout the chain takes
+        progs = os.environ.get('DM_UE_PROGRAMS') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_programs')
         names = sorted(f for f in os.listdir(ued) if f.endswith('.ushaderbytecode')) if os.path.isdir(ued) else []
-        if not names and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
+        inline = sorted(os.path.join(dp, f) for dp, _, fs in os.walk(inl) for f in fs if not f.endswith('stamp')) if os.path.isdir(inl) else []
+        if not names and not inline and not os.path.isdir(progs) and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shaders in {ued} or {inl} (the porter writes them)')
         for nm in names:
             # the archive mapped, not read: its shaders are read one by one (FINAL FANTASY RESONANCE's libraries hold 74,244 of them)
             with open(os.path.join(ued, nm), 'rb') as f:
                 with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: found += ue_shaders(d, f'/ue_shaders/{nm}')
+        if inline and not os.path.isdir(progs):
+            sizes = []
+            for path in inline:
+                rel = os.path.relpath(path, inl).replace(os.sep, '/')
+                # the package mapped, not read: a cooked package can be a hundred megabytes
+                with open(path, 'rb') as f:
+                    with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d: sizes += ue_records(d, f'/ue_inline/{rel}', found)
+            red(f'{len(found):,} shader records read from the cooked packages, but this generation\'s records are not the layout the translation chain takes (their control '
+                f'sections are {min(sizes):,} to {max(sizes):,} bytes, not 0x880): the chain needs a form for them')
+        if os.path.isdir(progs):
+            n = ue_runtime_programs(progs, found)
+            if not n: red(f'{progs} holds no program dump: the game must be booted with DM_NVN_SHDUMP so the programs it hands the driver are saved')
         uniq = {skey(c, k): (w, s, c, k) for w, s, c, k in found}
         uniq = {k: (w, s, *spill(c, d, k)) for k, (w, s, c, d) in uniq.items()}   # the payloads to the spill file
         results.append(('main', uniq, var_pairs(found), {}))

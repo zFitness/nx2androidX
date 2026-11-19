@@ -1077,16 +1077,26 @@ static VkQueryPool g_tsq; uint64_t g_gpu_ns;
 // the size holds steady
 enum { CQ = 64 };
 static VkQueryPool g_cq;
+// Occlusion queries (NVN_COUNTER_TYPE_SAMPLES_PASSED): the counter is cumulative on the queue - a reset zeroes it, every draw after it adds to it, and a
+// report writes the value at that moment (the Metal route sums its visibility buffers; nvn_mtl.m "Occlusion queries"). Vulkan's occlusion query counts the
+// samples of the draws between begin and end, so a reset begins one, a report ends it, and a query that would cross a command buffer boundary is cut into
+// parts whose counts are summed (the parts of earlier command buffers are known when the report's submission completes).
+enum { OQ = 32 };          // occlusion queries per submission slot
+enum { OQ_PARTS = 24 };    // parts one counter can be cut into
+static VkQueryPool g_oq;
+void vk_occ_open_cb(void);   // a command buffer begins: the counting continues in it
+void vk_occ_close_cb(void);  // a command buffer ends: an open query ends here
 #define SCRATCH_BLOCK (8u << 20)
 typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
 typedef struct { int kind; void *a; void *b; } dfree_t;   // 0 buffer+memory, 1 image+memory, 2 view
-typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; } post_op;   // q: a timestamp counter's query in g_cq, or -1
+typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; void *a; } post_op;   // q: a timestamp counter's query in g_cq, or -1; kind 3: an occlusion query (a = its occ_rep)
 struct vksub {
     VkCommandPool pool; VkCommandBuffer up, main; int up_used;
     VkCommandBuffer mains[MAIN_CBS]; int nmain_alloc, nmain_used, cb_err;
     VkCommandBuffer ups[MAIN_CBS]; int nup_alloc, nup_used; int nmain_sent;   // upload command buffers in order (one per part sent early), main buffers already submitted   // the submission's main command buffers in order (vk_cmd_split); main = the one being recorded
     uint64_t fence;   // the fence this slot last committed with (0 = never)
     int ncq;          // timestamp counter queries used in this submission (g_cq)
+    int noq;          // occlusion queries used in this submission (g_oq)
     scratch_blk *blk; int nblk, capblk;
     VkDescriptorPool *dp; int ndp, capdp, dp_cur;
     uint32_t dp_used[9], dp_sets; int dp_counted; int no_ts;   // what pool dp_cur has given out (vk_alloc_set)
@@ -1201,6 +1211,8 @@ static void slots_init(void) {
     if (V.props.limits.timestampComputeAndGraphics && vkCreateQueryPool(V.dev, &qi, NULL, &g_tsq)) g_tsq = VK_NULL_HANDLE;
     VkQueryPoolCreateInfo cqi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * CQ};
     if (!g_tsq || vkCreateQueryPool(V.dev, &cqi, NULL, &g_cq)) g_cq = VK_NULL_HANDLE;
+    { VkQueryPoolCreateInfo oqi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_OCCLUSION, NSLOT * OQ};
+      if (vkCreateQueryPool(V.dev, &oqi, NULL, &g_oq)) g_oq = VK_NULL_HANDLE; }
     { const char *e = getenv("DM_VK_PASS_TIMES"); if (e && atoi(e)) { VkQueryPoolCreateInfo pq = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * PASSQ * 2}; if (vkCreateQueryPool(V.dev, &pq, NULL, &g_pq)) g_pq = VK_NULL_HANDLE; } }
     for (int i = 0; i < NSLOT; i++) {
         // not TRANSIENT, and reset by command buffer (see slot_recycle)
@@ -1256,6 +1268,7 @@ void vk_cmd_split(void) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; st
 static void vk_cmd_split_(void) {
     vksub_t *s = cur(); if (s->nmain_used == MAIN_CBS || s->nup_used == MAIN_CBS) return;
     pools_readback_barrier(s->main);
+    vk_occ_close_cb();   // a query cannot stay active when its command buffer ends: its count is a part of the counter
     if (vkEndCommandBuffer(s->main) < 0) { s->cb_err = 1; static int n; if (n++ < 3) VKLOG("[RED] a part of a long submission was refused at its end (part %d)", s->nmain_used); }
     // what is recorded so far goes to the GPU now, as a submission of its own (with its uploads first): Adreno refuses a single submission past about
     // 700 draws (NEO's handheld frames: VK_ERROR_OUT_OF_HOST_MEMORY at vkEndCommandBuffer whatever the draws were, and in one command buffer or several)
@@ -1281,6 +1294,7 @@ static void vk_cmd_split_(void) {
         VKCHK(vkAllocateCommandBuffers(V.dev, &ai, &s->mains[s->nmain_alloc])); s->nmain_alloc++; }
     s->main = s->mains[s->nmain_used++];
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
+    vk_occ_open_cb();   // the counting (if a reset is open) continues in this part
 }   // outside a submission nothing may be recorded (present, a pool finalized between frames)
 VkCommandBuffer vk_cmd(void) { return cur()->main; }
 int vk_cmd_parts_left(void) { vksub_t *s = cur(); return MAIN_CBS - (s->nmain_used > s->nup_used ? s->nmain_used : s->nup_used); }   // parts vk_cmd_split can still begin (gfx_vk_exec.c pass splits)
@@ -1440,16 +1454,66 @@ static void begin_segment(int continuing) {
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
     s->ncq = 0;
+    if (g_oq) vkCmdResetQueryPool(s->main, g_oq, (uint32_t)g_cur * OQ, OQ);   // the slot's occlusion queries: each is used once per submission
+    s->noq = 0;
+    vk_occ_open_cb();   // a reset that is still open counts into this command buffer too
     g_npass[g_cur] = 0; if (pass_times_on()) vkCmdResetQueryPool(s->main, g_pq, (uint32_t)(g_cur * PASSQ * 2), PASSQ * 2);
     if (continuing) vk_exec_resume(); else vk_exec_reset();
 }
 void mtl_sub_begin(void) { begin_segment(0); }
 void vk_sub_resume(void) { begin_segment(1); }
-void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, -1}); }
+void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, -1, NULL}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) {
     vksub_t *s = cur(); int q = -1;
     if (g_cq && (type == 0 || type == 0x10) && s->ncq < CQ) { q = g_cur * CQ + s->ncq++; vkCmdWriteTimestamp(vk_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_cq, (uint32_t)q); }
-    post((post_op){2, NULL, 0, 0, addr, type, q});
+    post((post_op){2, NULL, 0, 0, addr, type, q, NULL});
+}
+
+// ---------------- occlusion queries (NVN_COUNTER_TYPE_SAMPLES_PASSED) ----------------
+// The counter is cumulative on the queue: a reset zeroes it, every draw after it adds to it, a report writes the value at that moment. Vulkan's occlusion query
+// counts the samples of the draws between begin and end, so the reset begins one and the report ends it; a query that would cross a command buffer boundary is
+// cut into parts (a query cannot stay active when its command buffer ends), and the counts of the parts are summed when the report's submission completes.
+// The reports of one reset epoch add up (the counter keeps its value), so the epoch's running total is kept here, by the completion thread.
+typedef struct { int n; uint32_t q[OQ_PARTS]; uint64_t epoch; uint64_t held; } occ_rep;
+static uint64_t gpu_ticks(void);   // the guest clock the reports carry (defined with the completion thread)
+static uint32_t g_occ_parts[OQ_PARTS]; static int g_occ_nparts;   // the queries counted since the last report
+static int g_occ_counting, g_occ_open; static uint32_t g_occ_q;   // counting: a reset happened and no report yet; open: a query is active in the command buffer recorded
+static uint64_t g_occ_epoch;                                     // the reset's number (the reports of one epoch add up)
+static uint64_t g_occ_tot[16];                                   // the running total per epoch (the completion thread)
+static void occ_alloc(void) {
+    vksub_t *s = cur();
+    if (!g_oq || !vkCmdBeginQuery || !vkCmdEndQuery || s->noq >= OQ) { static int n; if (n++ < 3) VKLOG("[RED] no occlusion query left in this submission (the count of that query is missing)"); return; }
+    g_occ_q = (uint32_t)g_cur * OQ + (uint32_t)s->noq++;
+    vkCmdBeginQuery(vk_cmd(), g_oq, g_occ_q, VK_QUERY_CONTROL_PRECISE_BIT);   // the 1.0 signature (the pipeline stage of the 1.2 one only matters for pipeline statistics)
+    g_occ_open = 1;
+}
+void vk_occ_open_cb(void) {   // a command buffer begins: the counting (if a reset is open) continues in it
+    if (g_occ_counting && !g_occ_open) occ_alloc();
+}
+void vk_occ_close_cb(void) {  // a command buffer ends: an open query ends here, and its count is a part of the counter
+    if (!g_occ_open) return;
+    if (vkCmdEndQuery) vkCmdEndQuery(vk_cmd(), g_oq, g_occ_q);
+    if (g_occ_nparts < OQ_PARTS) g_occ_parts[g_occ_nparts++] = g_occ_q;
+    g_occ_open = 0;
+}
+void vk_occ_reset(void) {      // a reset zeroes the counter: the draws after it are the ones counted
+    vk_occ_close_cb();
+    g_occ_nparts = 0; g_occ_counting = 1; g_occ_epoch++;
+    occ_alloc();   // the counting starts here, in the middle of the command buffer that holds the reset
+}
+void vk_occ_report(uint64_t addr) {   // a report writes the counter's value: the sum of the counts since the last reset
+    vk_occ_close_cb();
+    if (!g_occ_epoch) {   // no reset ever: the counter counts the queue's draws, which are not tracked here (and a zero would read as "fully occluded")
+        uint64_t rec[2] = {1u << 20, gpu_ticks()}; memcpy((void *)(uintptr_t)addr, rec, sizeof rec); return; }
+    occ_rep *r = malloc(sizeof *r);
+    if (!r) return;
+    r->n = g_occ_nparts; memcpy(r->q, g_occ_parts, sizeof r->q); r->epoch = g_occ_epoch;
+    r->held = 0;   // what the address held before the write (the game reads it after the report; a game that zeroes it first reads a zero)
+    { volatile uint64_t *a = (volatile uint64_t *)(uintptr_t)addr; r->held = *a; }
+    g_occ_nparts = 0; g_occ_counting = 0;
+    if (!g_oq) {   // no query pool: the count is unknown, and a zero would read as "fully occluded" (the game would cull the object)
+        uint64_t rec[2] = {1u << 20, gpu_ticks()}; memcpy((void *)(uintptr_t)addr, rec, sizeof rec); free(r); return; }
+    post((post_op){3, NULL, 0, 0, addr, 0, -1, r});
 }
 static VkMemoryBarrier2 full_barrier(void) {
     return (VkMemoryBarrier2){VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, NULL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -1705,11 +1769,19 @@ static void *completion_main(void *a) {
         for (int i = 0; i < c->n; i++) {
             post_op *o = &c->ops[i];
             if (o->kind == 1) { if (o->mode == 1) *o->val += o->v; else *o->val = o->v; continue; }
+            if (o->kind == 3) {   // an occlusion query: the samples passed since the last reset, added to the epoch's total (the counter is cumulative)
+                occ_rep *r = (occ_rep *)o->a; uint64_t sum = 0;
+                for (int k = 0; k < r->n; k++) { uint64_t v = 0;
+                    if (vkGetQueryPoolResults(V.dev, g_oq, r->q[k], 1, 8, &v, 8, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS) sum += v; }
+                uint64_t *tot = &g_occ_tot[r->epoch & 15]; *tot += sum;
+                uint64_t rec[2] = {*tot, now}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
+                if (getenv("DM_VK_OCCL_LOG")) VKLOG("occlusion query: %llu samples passed (%llu in %d part(s)), reported to %#llx (it held %llu before)", (unsigned long long)*tot, (unsigned long long)sum, r->n, (unsigned long long)o->addr, (unsigned long long)r->held);
+                free(r); continue; }
             uint64_t ts = now, tq;
             if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq <= tend) {
                 uint64_t back = (uint64_t)((double)(tend - tq) * V.props.limits.timestampPeriod * 12 / 625); if (back < now) ts = now - back; }
             // render_cond: a timestamp report's counter field is 0, as on the GPU (gfx_vk_exec.c render_cond evaluates conditions on it)
-            uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : o->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? (1u << 20) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
+            uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
         }
         pthread_mutex_lock(&g_cmu); g_ch = c->next; if (!g_ch) g_ct = NULL; pthread_mutex_unlock(&g_cmu);
         if (g_prereset > 0 && c->rslot >= 0) { vksub_t *s = &g_slot[c->rslot];   // its command buffers reset here (slot_recycle); the slot is not taken before g_done passes this fence
@@ -1749,6 +1821,7 @@ uint64_t mtl_sub_commit(void) {
     { void vk_prof_end(void); vk_prof_end(); }
     vksub_t *s = cur();
     vk_end_pass_land();
+    vk_occ_close_cb();   // the submission's last command buffer ends here: an open query ends with it
     pools_readback_barrier(s->main);
     if (g_tsq) vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur + 1);
     VkResult er = vkEndCommandBuffer(s->main); if (s->cb_err && er >= 0) er = VK_ERROR_OUT_OF_HOST_MEMORY;

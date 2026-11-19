@@ -462,6 +462,71 @@ def job(romfs, main_nso, work, decode=None):
     json.dump(dict(archives=listing, records=[(n, i) for n, i, _, _ in recs]), open(os.path.join(work, 'job.json'), 'w'), indent=1)
     return listing, len(recs)
 
+def inline_job(pak, pk, names):
+    """The Oodle job of the blocks of the given files of a pak, for the game that keeps its shaders inline in the cooked packages (It Takes Two: no shader code archive, the
+    records sit in the .uexp files, which are Oodle-compressed in blocks; only the game's own decoder reads them). The job's records are the blocks in the order they are read
+    (the game decodes them one at a time) → (the job's bytes, the manifest: the file and the block each record belongs to, with the block's raw length)"""
+    job, manifest = bytearray(), []
+    with open(pak, 'rb') as f:
+        for name in names:
+            e = pk.entry(name)
+            left = e['raw']
+            for i, (start, n) in enumerate(e['blocks']):
+                raw = min(left, e['block_size']); left -= raw
+                f.seek(e['off'] + start); comp = f.read(n)
+                if len(comp) != n: raise ValueError(f'{name}: the pak is short of block {i}')
+                manifest.append(dict(file=name, block=i, raw=raw, stored=n))
+                job += struct.pack('<II', n, raw) + comp
+    return struct.pack('<II', JOB_MAGIC, len(manifest)) + bytes(job), manifest
+
+def form(listing):
+    """The form of an Unreal game's shaders, from what job() found: 'archive' (the shader code archives of the paks), 'iostream' (the shader libraries of IoStore containers) or
+    'inline' (neither: the records sit in the cooked packages, It Takes Two)"""
+    if not listing: return 'inline'
+    if any(x.get('compression', '').startswith('IoStore') for x in listing): return 'iostream'
+    return 'archive'
+
+def inline_files(pk):
+    """The files of a pak that can hold shader records when the game keeps its shaders inline: the cooked packages (the .uexp of an asset holds its shader map) and the engine's
+    global shader cache (It Takes Two: Engine/GlobalShaderCache-GLSL_SWITCH.bin, 1,488 records)"""
+    return sorted(x for x in pk.files if x.endswith('.uexp') or x.endswith('GlobalShaderCache-GLSL_SWITCH.bin'))
+
+def has_record(path):
+    """Whether the file holds a shader record (the marker every record starts with), read in pieces: a cooked package can be a hundred megabytes"""
+    with open(path, 'rb') as f:
+        tail = b''
+        while True:
+            b = f.read(1 << 20)
+            if not b: return False
+            if b'LSLG' in tail + b: return True
+            tail = b[-3:]
+
+def inline_finish(answer, manifest, out):
+    """The decoded blocks of an inline job (inline_job), put back into the files they belong to: a file that holds shader records is written into out, the rest is dropped (the cooked
+    packages of a game are mostly lighting and geometry data, and they do not fit on the phone). The answer is read in pieces: it is as big as the whole batch of packages.
+    → the files written"""
+    os.makedirs(out, exist_ok=True)
+    fhs, paths = {}, {}
+    with open(answer, 'rb') as f:
+        magic, n = struct.unpack_from('<2I', f.read(8))
+        if magic != OUT_MAGIC or n != len(manifest): raise ValueError('the job output does not match the job')
+        for m in manifest:
+            ln = struct.unpack_from('<I', f.read(4))[0]; data = f.read(ln)
+            if len(data) != ln: raise ValueError('the job output is short')
+            p = m['file']
+            if p not in fhs:
+                path = os.path.join(out, *p.split('/'))
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                fhs[p] = open(path + '.partial', 'wb'); paths[p] = path
+            fhs[p].write(data)
+    kept = []
+    for p, f in fhs.items():
+        f.close()
+        if has_record(paths[p] + '.partial'):    # a file with a shader record in it
+            os.replace(paths[p] + '.partial', paths[p]); kept.append(p)
+        else: os.remove(paths[p] + '.partial')
+    return kept
+
 def finish(work, out):
     """The decoded archives into out, from <work>/oodle.job.out (the host's results, in job order)"""
     meta = json.load(open(os.path.join(work, 'job.json')))

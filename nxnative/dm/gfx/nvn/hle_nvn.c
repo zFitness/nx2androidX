@@ -696,7 +696,23 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
         if (g_nvn_on_shader && (k->ok >> i & 1)) { uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4); g_nvn_on_shader(k->key[i], sd[i].control, sd[i].data, ncode); }
         // DM_NVN_SHDUMP (debugging): keep a copy of the control section so the replay layer can save shaders missing from the map (never freed)
-        if (dump && sd[i].control) { void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c; }
+        if (dump && sd[i].control) {
+            void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c;
+            // ... and save the program itself here: the control section is only the game's to read during this call, and only the programs the game binds
+            // reach the replay layer's dump (a game that creates thousands of them at boot - Unreal: 1,581 - would leave three samples behind)
+            uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4);
+            char hex[17]; for (int b = 0; b < 8; b++) sprintf(hex + b * 2, "%02x", (k->ok >> i & 1) ? k->key[i][b] : 0);
+            const char *dir = getenv("DM_ROOT"); char path[1024];
+            snprintf(path, sizeof path, "%s/program_%s_%u.bin", dir ? dir : ".", hex, i);
+            FILE *f = fopen(path, "wb");
+            if (f) {
+                fwrite(c, 1, 0x880, f);
+                // the code area only when it is in a mapped pool: its address is the game's, and the guest's memory is not mapped until the pool is
+                void *mb; uint64_t mo;
+                if ((k->ok >> i & 1) && ncode && ncode < (1u << 24) && mtl_addr(sd[i].data, ncode, &mb, &mo)) fwrite((const void *)(uintptr_t)sd[i].data, 1, ncode, f);
+                fclose(f);
+            }
+        }
     }
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
