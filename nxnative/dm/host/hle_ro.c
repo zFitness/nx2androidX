@@ -46,6 +46,11 @@ HLE_FORCE("_ZN2nn2ro13GetBufferSizeEPmPKv", "the bss size from the NRO header, a
     return 0;
 }
 
+// A game whose profile asks for it (game.tsv `online_sdk 1`, android.tsv `env DM_ONLINE_SDK=1`) loads its own online SDK (Epic Online Services): the host cannot serve
+// Epic's services, but the game needs the SDK's code to get past its own start-up (Teenage Mutant Ninja Turtles: Shredder's Revenge calls a null online object otherwise)
+// The default stays "refuse": every other game plays offline, as before
+static int online_sdk_ok(void) { const char *e = getenv("DM_ONLINE_SDK"); return e && atoi(e); }
+
 HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "load an NRO rewritten offline (loader.c): found by the image's SHA-256, relocated against the loaded modules, its init called",
           Result, h_ro_LoadModule, void *mod, const void *image, void *buf, size_t size, int flag) {
     const uint8_t *h = image;
@@ -61,7 +66,7 @@ HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "load an NRO rewritten o
     pthread_mutex_lock(&g_ro_mu);
     module_t *m = nro_find(sha);
     if (!m) { pthread_mutex_unlock(&g_ro_mu); LOG("[RED] ro::LoadModule: no rewritten NRO with SHA-256 %s… (%u bytes): it is not in the patched modules' nro.tsv", hx, n); return RO_FAIL; }
-    if (module_sym(m, "EOS_Platform_Create")) { pthread_mutex_unlock(&g_ro_mu); LOG("ro::LoadModule: refused %s (%s…): an online SDK (Epic Online Services), not loaded; the game plays offline", m->name, hx); return RO_FAIL; }
+    if (module_sym(m, "EOS_Platform_Create") && !online_sdk_ok()) { pthread_mutex_unlock(&g_ro_mu); LOG("ro::LoadModule: refused %s (%s…): an online SDK (Epic Online Services), not loaded; the game plays offline", m->name, hx); return RO_FAIL; }
     if (m->loaded) { pthread_mutex_unlock(&g_ro_mu); LOG("[RED] ro::LoadModule: %s (%s…) is loaded already", m->name, hx); return RO_FAIL; }
     if (m->nro_size != n) LOG("[RED] ro::LoadModule: %s is %u bytes, nro.tsv says %u", m->name, n, m->nro_size);
     nro_load(m);
@@ -99,7 +104,7 @@ HLE_FORCE("_ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv", "register
     for (uint32_t i = 0; i < cnt; i++) refused += nro_refused(r + off + 32 * i);
     // An NRR that registers only online SDKs the host refuses (Hades and Hades II: game.nrr with the one EOS SDK hash) fails as every registration did before the host loaded NROs,
     // so such a game takes the path it took then (it never asked for the module)
-    if (cnt && refused == cnt) { LOG("ro::RegisterModuleInfo: refused an NRR that registers only online SDKs (%u hashes), as before NROs were loaded; the game plays offline", cnt); return RO_FAIL; }
+    if (cnt && refused == cnt && !online_sdk_ok()) { LOG("ro::RegisterModuleInfo: refused an NRR that registers only online SDKs (%u hashes), as before NROs were loaded; the game plays offline", cnt); return RO_FAIL; }
     static int n; if (n++ < 20) LOG("ro::RegisterModuleInfo: NRR with %u hashes", cnt);
     (void)info;
     return 0;

@@ -13,7 +13,7 @@ with — the game is not missing on Android.
 
 These have an official Android release too, and are ported here anyway: Unpacking.
 
-**79 / 193 ported**
+**80 / 194 ported**
 
 This file is generated: `python3 docs/gen_tables.py` reads the profiles and writes it. The facts
 in a row are the profile's own — the name and the version from `game.tsv`, the status, the note
@@ -186,6 +186,7 @@ the author of the commit that introduced them.
 - [x] Tales of Berseria Remastered · `01003FD01F22E000` · playable · v262144 (1.0.5) Sony XQ-DQ72 (Adreno 740) and OnePlus 15 (Snapdragon 8 Elite Gen 5) · ported by @C1oudust
 - [x] Tales of Eternia Remastered · `010006E0230AC000` · playable · update 2.0.0 · 60 fps · ported by @shirai91
 - [ ] Team Sonic Racing · `010092B0091D0000` · 1.0.3
+- [x] Teenage Mutant Ninja Turtles: Shredder's Revenge · `0100BB8017F24000` · experimental · v1.0.9 Xiaomi 23117RK66C (Snapdragon 8 Gen 3, Adreno 750, Android 16)
 - [ ] The Binding of Isaac: Rebirth · `01009BC00C38A000` · 1.0
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · 1.0.0
 - [x] The Great Ace Attorney Chronicles · `0100D7F00FAAA000` · wip · v0 OPPO Pad OPD2101 (Snapdragon 870, Adreno 650, Android 15) · ported by @qzj112223

@@ -83,6 +83,7 @@ ONLINE_SDKS = {'EOS_Platform_Create': 'Epic Online Services SDK'}
 
 
 def online_sdk(body):   # the online SDK an NRO is (by its exports), or None
+    if os.environ.get('NX2A_ALLOW_ONLINE_SDK') == '1': return None   # the profile's `online_sdk 1`: the game needs its online SDK's code (Teenage Mutant Ninja Turtles: Shredder's Revenge crashes without it)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import nso_syms
     try: names = {n for n, defined, _ in nso_syms.dynsyms(body) if defined}
