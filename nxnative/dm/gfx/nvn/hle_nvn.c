@@ -320,6 +320,12 @@ NVN(nvnTextureBuilderSetPackagedTextureLayout, void, NVNtextureBuilder *b, const
     TB(b)->d.pkg_block_h = l ? l->layout[0] + 1 : 0;
 }
 NVN(nvnTextureBuilderGetFlags, NVNtextureFlags, const NVNtextureBuilder *b) { return (NVNtextureFlags)((const tex_builder_t *)b)->d.flags; }
+// The storage a builder was given. A game makes a second texture on a texture's storage from these, one object to write as an image and one to sample (Trails in the Sky 1st
+// Chapter: the tone map's exposure texture, written by a compute shader and sampled by the tone map): with no pool the second texture was not known to share the first one's
+// storage, the sampler read what nothing had written (zeros), fmod(colour, 0) = NaN, and the whole scene went black (upstream PR #411, the same title, the same cause).
+// The header's prototype returns the pool by value, which no caller can use; the pointer goes back in x0, as nvnTextureGetMemoryPool's does
+NVN_NOPROTO(nvnTextureBuilderGetMemoryPool, NVNmemoryPool *, const NVNtextureBuilder *b) { return (NVNmemoryPool *)((const tex_builder_t *)b)->pool; }
+NVN(nvnTextureBuilderGetMemoryOffset, ptrdiff_t, const NVNtextureBuilder *b) { return (ptrdiff_t)((const tex_builder_t *)b)->off; }
 static uint64_t g_layout_logged;
 static void log_layout(const tex_builder_t *b, const nvn_texlayout *L) {
     if (b->has_layout && g_layout_logged++ < 16)
@@ -741,6 +747,7 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; stat
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
+NVN_NOPROTO(nvnCommandBufferSetZCullZF32CompressionEnable, void, NVNcommandBuffer *c, uint32_t on) { (void)c; (void)on; }   // no ZCull in the host, nothing to compress (upstream PR #411)
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
     // Under asynchronous replay a sync is fenced while the replay thread records the command buffer the game just submitted, so an immediate
