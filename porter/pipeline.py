@@ -86,6 +86,7 @@ class Options:
     romfs_push: bool = False           # with romfs_at: push the pack's RomFS into that folder first
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
     no_lsfg: bool = False              # build the host without the frame generation (the lsfg/ code, dm/android/build.py --no-lsfg): the host is then smaller and the frame generation reports "not in this build"
+    skip_oodle: bool = False           # a diagnostic build: the Oodle entries of the game's own archives are counted and left out (their shaders are missing, so the game draws nothing): the rest of the port (the profile, the rewriter, the SDK patches) gets its shakedown without the decoder
 
     @classmethod
     def from_args(cls, a, **over):
@@ -733,13 +734,17 @@ class Port:
         """Check graphics support and device requirements for shader preparation before rewriting or compiling."""
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
+        skip_oodle = getattr(getattr(self, 'o', None), 'skip_oodle', False)   # a diagnostic build (--skip-oodle)
         # OpenGL ES: the device's own GL driver runs it (dm/android/gl_android.c); no shaders to translate, the game compiles its GLSL ES at run time
         self.gl = gfx == 'gl'
         if self.gl: say(f"{self.app_name} renders with OpenGL ({src['graphics'][1]}): the Android host hands its GL calls to the device's OpenGL ES driver"); return
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN or OpenGL ES only so far')
-        # Game Freak's GFPAKs and Trinity packs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle), or on this machine when the porter
-        # runs on the phone app (local_oodle); PKZ packs still need the Mac host
-        self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
+        # Game Freak's GFPAKs, Trinity packs and PlatinumGames' PKZ packs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle), or on this machine when the porter
+        # runs on the phone app (local_oodle). A PKZ pack is the same decoder's job, but one entry at a time through a pipe instead of one job file (oodle_serve): a job over every entry of a
+        # 14 GB PKZ set would be another 14 GB of job file and 14 GB of answer.
+        self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] else ''
+        self.oodle_kind = src.get('oodle_kind', ('', ''))[0]
+        self.oodle_serve_why = self.oodle_why if self.oodle_kind == 'pkz' else ''
         # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle too (device_ue)
         self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
         # Already decoded UE archives need no device: rebuilding an APK's keyboard or host must also work after the player disconnects adb.
@@ -756,19 +761,28 @@ class Port:
         self.oodle_run, self.oodle_local, self.oodle_where = None, False, ''
         if why:
             where = oodle_where(self.tools)
-            if where == 'local':   # the phone app's porter IS the device: the game's own decoder runs here, with no adb and no second device
-                self.oodle_local, self.oodle_where = True, 'here'
-            elif where == 'device':
-                try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
-                except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
-                                                                   f'the Android device, so connect it (adb) and port again ({e})') from e
-                self.oodle_where = 'on the device'
+            if skip_oodle and self.oodle_why and not (self.ue_why and not ue_cached):
+                # a diagnostic build: the split counts the Oodle entries and leaves them out (their shaders are missing, so the game draws nothing)
+                say(f'[RED] --skip-oodle: the Oodle entries are left out ({self.oodle_why}); their shaders are missing and the game draws nothing')
+                self.oodle_where = 'nowhere (--skip-oodle)'
             else:
-                raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on the Android "
-                                 f'device, so it needs adb and the device even without installing. {NO_ADB}; then connect the device (USB debugging on) and port again')
-            # The split needs the game's own decoder only for the Oodle entries of GFPAK / Trinity packs. A pure Unreal game's shader code archives are decoded by device_ue (its own
-            # rounds), so the split gets no decoder: it would boot the game for a job of zero entries (and crash on a dump whose build the profile does not register).
-            self.oodle_run = self.device_oodle if self.oodle_why else None
+                if self.oodle_serve_why and where != 'local':
+                    # the PKZ entries are decoded one at a time over a pipe, and the pipe is this process's own: the phone app's porter IS the device, so the pipe is there
+                    raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed PKZ packs ({self.oodle_serve_why}): the split decodes them one entry at a time through the game's own "
+                                     f"decoder over a pipe, so port it with the phone app (there the porter IS the device). A porter on a desktop would have to carry that pipe over adb")
+                if where == 'local':   # the phone app's porter IS the device: the game's own decoder runs here, with no adb and no second device
+                    self.oodle_local, self.oodle_where = True, 'here'
+                elif where == 'device':
+                    try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
+                    except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
+                                                                       f'the Android device, so connect it (adb) and port again ({e})') from e
+                    self.oodle_where = 'on the device'
+                else:
+                    raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on the Android "
+                                     f'device, so it needs adb and the device even without installing. {NO_ADB}; then connect the device (USB debugging on) and port again')
+                # The split needs the game's own decoder only for the Oodle entries of GFPAK / Trinity / PKZ packs. A pure Unreal game's shader code archives are decoded by device_ue (its own
+                # rounds), so the split gets no decoder: it would boot the game for a job of zero entries (and crash on a dump whose build the profile does not register).
+                self.oodle_run = self.oodle_serve if self.oodle_serve_why else (self.device_oodle if self.oodle_why else None)
         # A game that compiles shaders with its own GLSLC at boot (Fire Emblem: Three Houses, Catherine: Full Body): the outputs are in no game file, so the port runs the game's own
         # compiler to get them, the way it runs the game's own decoder for the Oodle entries
         self.glslc_why = src['glslc_capture'][1] if src['glslc_capture'][0] else ''
@@ -1027,6 +1041,17 @@ class Port:
         if not answer.is_file(): raise BuildError(f"the game's Oodle decoder wrote no answer (see {self.logs / 'android_oodle_job.log'})")
         shutil.move(str(answer), str(out))
         nsp.rmtree(job)   # the job file is up to 4.4 GB: the phone has no room to keep it
+
+    def oodle_serve(self):
+        """The game's own decoder for the Oodle entries of a PKZ pack (Bayonetta 3): the split streams one entry at a time to a host of its own per worker process (shader_split.py oodle,
+        DM_OODLE_SERVE), so neither a job file nor a decoded copy is ever written — a job over every entry of a 14 GB PKZ set would be the size of the whole RomFS. The same host the job path
+        builds, built once. → the split's environment"""
+        PROG.set(step="building the host as a tool for the game's Oodle decoder")
+        dmhost = getattr(self, 'oodle_host_path', None)
+        if not dmhost:
+            dmhost = self.oodle_host(); self.oodle_host_path = dmhost
+        os.chmod(dmhost, 0o755)   # a file the App unpacked is not executable: the phone's own exec bit
+        return {'DM_OODLE_HOST': str(dmhost), 'DM_OODLE_MODULES': str(self.patched)}
 
     # ---- Unreal Engine shader code archives decoded with the game's own Oodle (the Mac does it in decode_ue_shaders) ----
     UE_ROUNDS = 4

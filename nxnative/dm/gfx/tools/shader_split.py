@@ -29,7 +29,7 @@
 #   · dvdbnd (FromSoftware, Dark Souls Remastered): GLSLC outputs in the BND3 archives (DCX zlib entries) of the .bdt files, indexed by the .bhd5 beside each, see bhd5_entries and bdt_shaders
 #   · data.arc (Super Smash Bros. Ultimate, smash_arc.py): GLSLC outputs in its SSBH shader databases and BNSH in its effects and UI layouts, each of its current files (zstd) scanned, see smash_arc_jobs
 #   · PKZ (PlatinumGames, Bayonetta 3): shader objects (VSO / PSO / CSO / HSO / DSO, a control section and a code area each) in the DAT archives of the PKZ entries (Oodle Kraken, decoded by the
-#       game's own decoder in the Mac host), see pkz_entries, pgdat_members and pg_shader
+#       game's own decoder: one entry at a time over a pipe, DM_OODLE_HOST), see pkz_entries, pgdat_members and pg_shader
 #   · Monolith archives (Xenoblade Chronicles 3: bf3.arh index + bf3.ard data): HCPS shader archives (a control section and a code area per stage, vertex / pixel per program) in the files and in
 #       their xbc1 streams (zstd / zlib), see arh_entries, ard_shaders and spch_shaders
 #   · control sections loose in main, in no GLSLC output or BNSH file (Advance Wars 1+2: Re-Boot Camp's Bink 2 shaders): paired with their code areas by data records or adjacency, see raw_shaders
@@ -599,16 +599,19 @@ def pkz_jobs(files, parts=64):
     return jobs, {p for p, _, _ in pk}
 
 def pkz_shaders(path, rel, ents, out):
-    """A range of PKZ entries (pkz_jobs), each decoded and scanned like a loose file: Oodle Kraken through the game's own decoder in the Mac host (oodle)"""
+    """A range of PKZ entries (pkz_jobs), each decoded and scanned like a loose file: Oodle Kraken through the game's own decoder (oodle, DM_OODLE_HOST), else left out with a red line and a count"""
+    skipped = 0
     with open(path, 'rb') as f:
         for name, comp, off, csz, usz in ents:
             f.seek(off); c = f.read(csz)
             if comp == 'None': d = c
-            elif comp == 'OodleKraken': d = oodle(c, usz)
+            elif comp == 'OodleKraken' and os.environ.get('DM_OODLE_HOST'): d = oodle(c, usz)
+            elif comp == 'OodleKraken': skipped += 1; continue
             elif comp == 'ZStandard': d = zstd_mod().decompress(c)
             else: red(f'/{rel}/{name}: compression {comp!r} is not known')
             if len(d) != usz: red(f'/{rel}/{name}: {len(d)} bytes decoded, the entry says {usz}')
             scan_blob(d, f'/{rel}/{name}', out)
+    if skipped: print(f'[RED] /{rel}: {skipped} of {len(ents)} entries are Oodle Kraken and nothing decodes them (DM_OODLE_HOST): their shaders are left out', flush=True)
 
 # CPK and binding-table readers adapted from seedds/nxnative's shader_split.py.
 # The local NieR 1.0.3 DAT census matches its 1,371 objects / 1,225 distinct keys.
@@ -1138,16 +1141,19 @@ def smash_arc_shaders(path, rel, ents, out):
 
 _OODLE = None
 def oodle(comp, n):
-    """The game's own decoder: OodleLZ_Decompress (Trinity's packs are Oodle Mermaid, and Oodle is linked into main), or LZ5_decompress_safe (DRAGON QUEST XI S's legacy Unreal paks):
-    one Mac host per worker process in its tool mode (dm/host/hle_oodle.c, DM_OODLE_SERVE), fed over a pipe. DM_OODLE_HOST = the host, DM_OODLE_MODULES = the rewritten modules it loads
-    (the NSP script sets both for a game with Trinity packs or legacy Unreal paks, profile_guess.py shader_sources)"""
+    """The game's own decoder: OodleLZ_Decompress (Trinity's packs are Oodle Mermaid, and Oodle is linked into main), its streaming decoder (a main that has none: PlatinumGames' PKZ
+    archives, Bayonetta 3), or LZ5_decompress_safe (DRAGON QUEST XI S's legacy Unreal paks): one host per worker process in its tool mode (dm/host/hle_oodle.c, DM_OODLE_SERVE), fed over
+    a pipe. DM_OODLE_HOST = the host, DM_OODLE_MODULES = the rewritten modules it loads (the NSP script sets both for a game with Trinity packs or legacy Unreal paks, profile_guess.py
+    shader_sources; the Android porter for a PKZ game, its oodle_serve)"""
     global _OODLE
     if _OODLE is None:
         import tempfile
         host, mods = os.environ.get('DM_OODLE_HOST'), os.environ.get('DM_OODLE_MODULES')
-        if not host or not mods: red('Oodle- or LZ5-compressed game files: set DM_OODLE_HOST (the Mac host, make -C dm/host GAME=<id> dmhost) and DM_OODLE_MODULES (the rewritten modules) to decode them with the game\'s own decoder')
+        if not host or not mods: red('Oodle- or LZ5-compressed game files: set DM_OODLE_HOST (the host, dm/host/hle_oodle.c in its tool mode) and DM_OODLE_MODULES (the rewritten modules) to decode them with the game\'s own decoder')
         err = tempfile.TemporaryFile()
-        _OODLE = (subprocess.Popen([host, mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=dict(os.environ, DM_OODLE_SERVE='1')), err)
+        env = dict(os.environ, DM_OODLE_SERVE='1')
+        env.pop('LD_LIBRARY_PATH', None)   # the guest's glibc libraries are none of the bionic host's business: its own are in /system/lib64
+        _OODLE = (subprocess.Popen([host, mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=env), err)
     p, err = _OODLE
     try:
         p.stdin.write(struct.pack('<QQ', len(comp), n)); p.stdin.write(comp); p.stdin.flush()
@@ -2097,7 +2103,7 @@ def main():
     ue_jobs, uep = ue_legacy_jobs(files)   # legacy Unreal paks: DRAGON QUEST XI S's decoded by the game's own LZ5 in the Mac host, OCTOPATH TRAVELER's zlib by uepak
     bd_jobs, bdts = bdt_jobs(files)   # Dark Souls Remastered's dvdbnd archives: the entries of each .bdt by its .bhd5 index, in ranges
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
-    pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
+    pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder, one entry at a time over a pipe
     ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
     cp_jobs, cpks = cpk_jobs(files)   # CRI CPK entries, decoded and scanned recursively (PlatinumGames DATs)
     ls_jobs, lspks = lspk_jobs([(p, r) for p, r in files if p not in paks])   # Divinity: Original Sin 2's Larian packages (and their footerless _N parts)

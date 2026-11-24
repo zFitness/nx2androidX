@@ -511,11 +511,13 @@ class OwnDecoder(unittest.TestCase):
                   glslc_capture=(False, ''), ue_legacy=(False, ''))
     SRC_GFPAK = dict(graphics=('nvn', 'NVN'), oodle_packs=(True, "Game Freak's GFPAK archives"), ue_decode=(False, ''),
                      glslc_capture=(False, ''), ue_legacy=(False, ''))
+    SRC_PKZ = dict(graphics=('nvn', 'NVN'), oodle_packs=(True, '52 PlatinumGames PKZ archive(s) with Oodle Kraken entries'), ue_decode=(False, ''),
+                    glslc_capture=(False, ''), ue_legacy=(False, ''), oodle_kind=('pkz', 'the kind of the Oodle archive'))
 
     def tearDown(self): os.environ.pop('DM_GAMES_DIR', None)
 
-    def port(self, src, lost=()):
-        p = pipeline.Port(pipeline.Options(Path(tempfile.mkdtemp(prefix='nx2a_test_port_'))))
+    def port(self, src, lost=(), where='local', options=None):
+        p = pipeline.Port(pipeline.Options(Path(tempfile.mkdtemp(prefix='nx2a_test_port_')), **(options or {})))
         d = profile_dir([('status', 'boots')])
         p.g = game.load(d.name)
         p.game = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
@@ -523,7 +525,7 @@ class OwnDecoder(unittest.TestCase):
         p.app_name, p.tools, p.lost = 'Test Game', {}, list(lost)
         p.versions, p.dirs = ['v1'], {'v1': p.game}   # the extraction (no ue_shaders stamp: the archives are not decoded yet)
         with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=src), \
-             mock.patch.object(pipeline, 'oodle_where', return_value='local'):
+             mock.patch.object(pipeline, 'oodle_where', return_value=where):
             p.check_graphics()
         return p
 
@@ -536,6 +538,20 @@ class OwnDecoder(unittest.TestCase):
         p = self.port(self.SRC_GFPAK)
         self.assertIsNotNone(p.oodle_run)
         self.assertTrue(p.oodle_why)
+
+    def test_a_pkz_game_is_not_refused_and_gets_the_streaming_decoder(self):
+        p = self.port(self.SRC_PKZ)
+        self.assertEqual(p.oodle_run, p.oodle_serve)   # one entry at a time over a pipe, not a job file
+        self.assertTrue(p.oodle_why)
+
+    def test_a_pkz_game_on_a_desktop_porter_says_what_it_needs(self):
+        with self.assertRaises(pipeline.BuildError) as e:
+            self.port(self.SRC_PKZ, where='device')
+        self.assertIn('phone app', str(e.exception))
+
+    def test_skip_oodle_leaves_the_entries_out(self):
+        p = self.port(self.SRC_PKZ, options={'skip_oodle': True})
+        self.assertIsNone(p.oodle_run)   # no decoder is built: the split counts the entries and leaves them out
 
     def test_a_dump_the_profile_does_not_register_stops_before_the_decoder(self):
         with self.assertRaises(pipeline.BuildError) as e:

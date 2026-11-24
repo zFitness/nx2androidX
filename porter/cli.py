@@ -74,6 +74,10 @@ def _parser():
     po.add_argument('--no-lsfg', action='store_true',
                     help='build the host without the frame generation (the lsfg/ code): the host is then smaller and the frame generation '
                          'reports "not in this build" (dm/android/build.py --no-lsfg)')
+    po.add_argument('--skip-oodle', action='store_true',
+                    help='a diagnostic build: the Oodle entries of the game\'s own archives (GFPAK, Trinity, PKZ) are counted and left out instead of decoded with the game\'s own '
+                         'decoder, so the port needs no decoder build. Their shaders are missing: the game draws nothing. The rest of the port (the profile, the rewriter, the SDK '
+                         'patches, the host) gets its shakedown')
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line, for the GUI')
     rt = sub.add_parser('rebuild-runtime', help='rebuild a pack runtime without the original game files')
     rt.add_argument('pack')
