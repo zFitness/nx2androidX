@@ -30,6 +30,34 @@ _unimpl_entry:
     ldp x29, x30, [sp], #96
     ret
 
+    // The gate's dispatch runs on the host stack (dm_gate_stack), not on the guest's: a guest thread's stack can be nearly spent (Fire Emblem: Three Houses: a thread with
+    // a 4 KB stack, 1.8 KB left, and the host's printf -- __vfprintf's frame is 0x2c0 bytes -- ran off its end: SIGSEGV one page below the guest's stack).
+    // The gate's frame itself stays on the guest's stack (the handler writes the guest's registers back into it, and a thread stopped inside an SVC reads its context from it).
+    // x19-x23 carry the values across the call: the C code keeps them (they are callee-saved), and the gate restores the guest's own x19-x23 from the frame afterwards.
+    .globl _dm_gate_call
+    .p2align 2
+_dm_gate_call:              // x0 = the gate's return point (the identifier), x1 = the registers frame (on the guest's stack)
+    mov x19, x0              // the gate's identifier
+    mov x20, x1              // the registers frame
+    mov x21, sp              // the guest's stack, to come back to
+    mov x22, x30             // the return address into the gate
+    mov x0, sp
+    bl _dm_gate_stack        // this thread's host stack top, or 0 to stay where we are
+    mov x23, x0
+    cbz x23, 1f
+    mov sp, x23              // the dispatch runs on the host stack
+    mov x0, x19
+    mov x1, x20
+    bl _gate_dispatch
+    mov sp, x21              // back to the guest's stack
+    mov x30, x22
+    ret
+1:  mov x0, x19              // no host stack (a host thread, or a thread already on one): the dispatch runs where we are
+    mov x1, x20
+    bl _gate_dispatch
+    mov x30, x22
+    ret
+
     .globl _dm_gate
     .p2align 2
 _dm_gate:
@@ -75,7 +103,7 @@ _dm_gate:
     str x9, [sp, #784]
     mov x0, x30              // Return point = gate identifier
     mov x1, sp               // regs
-    bl _gate_dispatch
+    bl _dm_gate_call         // the dispatch runs on the host stack (the guest's stack can be nearly spent)
     ldr x9, [sp, #784]
     msr fpcr, x9
     ldr x9, [sp, #776]

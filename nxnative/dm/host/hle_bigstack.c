@@ -36,6 +36,16 @@ uintptr_t dm_bigstack_top(uintptr_t sp) {
     return (uintptr_t)top;
 }
 
+// The gate's dispatch (entry.S's _dm_gate_call) runs on the host stack too: a guest thread's stack can be nearly spent -- a 4 KB one, with the handler's and printf's
+// frames (0x2c0 bytes for __vfprintf's alone) running past its end (Fire Emblem: Three Houses: SIGSEGV in __vfprintf, the first store of its frame, a page below
+// the guest's stack). The host stack is the one the take-over functions use; a thread already on it stays where it is (the frame at its top belongs to the caller).
+uintptr_t dm_gate_stack(uintptr_t sp) {
+    pthread_once(&g_bs_once, bs_init);
+    uint8_t *top = pthread_getspecific(g_bs_key);
+    if (top) { if (sp >= (uintptr_t)top - BS_SIZE - BS_GUARD && sp <= (uintptr_t)top) return 0; return (uintptr_t)top; }
+    return dm_bigstack_top(sp);
+}
+
 // x16 = implementation. Frame (on the original stack, 0xa0 bytes): +0x00 x0-x8, x16, +0x50 d0-d7, +0x90 x29 / x30. After the switch the original sp is stored at the new stack top and restored when the implementation returns
 __asm__(
     ".text\n"
