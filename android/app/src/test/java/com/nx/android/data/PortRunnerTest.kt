@@ -11,9 +11,11 @@ class PortRunnerTest {
     private fun args(aliasHeadroom: Int, touch: Boolean = false, fps60: Boolean = false,
                      experimental: Boolean = false, noLsfg: Boolean = false,
                      sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
-                     deviceLanguage: String = "", lowMem: Boolean = false): List<String> =
+                     deviceLanguage: String = "", lowMem: Boolean = false,
+                     container: Boolean = false): List<String> =
         PortRunner.portArgs("/sdcard/game.nsp", "/keys/prod.keys", touch, fps60,
-            experimental, aliasHeadroom, noLsfg, sharedFont, firmware, mtReplay, deviceLanguage, lowMem)
+            experimental, aliasHeadroom, noLsfg, sharedFont, firmware, mtReplay, deviceLanguage,
+            lowMem, container)
 
     @Test
     fun `Auto passes no address space at all`() {
@@ -21,6 +23,12 @@ class PortRunnerTest {
         assertFalse("no --alias-headroom on Auto", a.contains("--alias-headroom"))
         assertEquals(listOf("-m", "porter", "port", "/sdcard/game.nsp", "-k", "/keys/prod.keys",
             "--progress", "json", "--app"), a)
+    }
+
+    @Test
+    fun `reading the game file in place passes the container option`() {
+        assertTrue("the option is there", args(-1, container = true).contains("--romfs-container"))
+        assertFalse("off by default", args(-1).contains("--romfs-container"))
     }
 
     @Test

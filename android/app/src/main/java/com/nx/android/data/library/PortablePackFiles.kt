@@ -39,6 +39,8 @@ object PortablePackFiles {
         val folder = File(targetDir, PortablePack.folderName(name))
         if (folder.exists()) return PortablePack.Result.fail("exists")
         val manifest = PortablePack.readManifest(pack) ?: return PortablePack.Result.fail("no_manifest")
+        // the game's files stay where the player keeps them: the pack names them, it does not carry them
+        if (manifest.optBoolean("container")) return PortablePack.Result.fail("container")
         // the game's files: the workspace's RomFS (an app-mode pack does not carry them), or the
         // pack's own RomFS/ (an old pack has them already)
         val romfs = if (romfsAt.isNotEmpty()) File(romfsAt) else File(pack, PortablePack.ROMFS)

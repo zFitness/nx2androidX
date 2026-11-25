@@ -314,6 +314,92 @@ class DataPack(unittest.TestCase):
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
+    def test_a_container_app_pack_has_no_romfs_to_point_at(self):   # --romfs-container on the phone: the pack lists the player's NSPs and reads them in place (no RomFS at all)
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
+        try:
+            port = pipeline.Port(pipeline.Options(t))
+            port.g = game.load(NEO); port.app_name = 'NEO'; port.work_root = t / 'work'; port.o.app = True; port.o.out = t
+            port.o.romfs_container = True
+            port.work = t / 'work'
+            port.so = t / 'libdmplay.so'; port.so.write_bytes(b'ELF')
+            port.game = t / 'game'; port.game.mkdir()
+            port.fps_files = {}; port.fps_env = []; port.ap = None; port.pkg_ver = 'v196608'; port.display = '1.03'
+            port.patched = None; port.dmsv = None; port.aoc = None; port.sysdata = []
+            port.lang = 'en-US'; port.package = 'org.nx2a.test'
+            port.container_push = [('romfs.nsp', str(t / 'game.nsp'), 100)]
+            port.container_keys = [('prod.keys', str(t / 'prod.keys'), 1)]
+            captured = {}
+            def build(dst, **kw):
+                captured.update(kw); return {'files': 1, 'bytes': 1}
+            with mock.patch.object(pipeline.datapack, 'build', side_effect=build), \
+                 mock.patch.object(port, 'button_font', return_value=([], {})), \
+                 mock.patch.object(port, 'shared_font', return_value=([], {})), \
+                 mock.patch.object(port, 'theme_files', return_value={}), \
+                 mock.patch.object(port, 'icon_png', return_value=None), \
+                 mock.patch.object(port, 'drivers', return_value=[]), \
+                 mock.patch.object(port, 'loader_libs', return_value=[]), \
+                 mock.patch.object(port, 'lists', return_value={}):
+                port.data()
+            self.assertIsNone(captured['romfs']); self.assertIsNone(captured['romfs_at'])
+            self.assertTrue(captured['container'])
+            self.assertIn(f'DM_ROMFS_CONTAINER={t / "game.nsp"}', captured['env'])
+            self.assertIn(f'DM_PROD_KEYS={t / "prod.keys"}', captured['env'])
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
+    def _container_app_port(self, t):
+        port = pipeline.Port(pipeline.Options(t))
+        port.g = game.load(NEO); port.app_name = 'NEO'; port.work_root = t / 'work'; port.o.app = True; port.o.out = t
+        port.o.romfs_container = True
+        port.work = t / 'work'
+        port.so = t / 'libdmplay.so'; port.so.write_bytes(b'ELF')
+        port.game = t / 'game'; port.game.mkdir()
+        port.fps_files = {}; port.fps_env = []; port.ap = None; port.pkg_ver = 'v196608'; port.display = '1.03'
+        port.patched = None; port.dmsv = None; port.aoc = None; port.sysdata = []
+        port.lang = 'en-US'; port.package = 'org.nx2a.test'
+        port.container_push = [('romfs.nsp', str(t / 'game.nsp'), 100)]
+        port.container_keys = [('prod.keys', str(t / 'prod.keys'), 1)]
+        return port
+
+    def _run_data(self, port, captured):
+        def build(dst, **kw):
+            captured.update(kw); return {'files': 1, 'bytes': 1}
+        with mock.patch.object(pipeline.datapack, 'build', side_effect=build), \
+             mock.patch.object(port, 'button_font', return_value=([], {})), \
+             mock.patch.object(port, 'shared_font', return_value=([], {})), \
+             mock.patch.object(port, 'theme_files', return_value={}), \
+             mock.patch.object(port, 'icon_png', return_value=None), \
+             mock.patch.object(port, 'drivers', return_value=[]), \
+             mock.patch.object(port, 'loader_libs', return_value=[]), \
+             mock.patch.object(port, 'lists', return_value={}):
+            port.data()
+
+    def test_a_container_app_pack_reads_a_named_dlc_where_it_is(self):   # an <index>.nsp beside the dump: DM_AOC_DIR points at that folder, no copy
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
+        try:
+            (t / 'dlc').mkdir(); dlc = t / 'dlc' / '2.nsp'; dlc.write_bytes(b'NSP')
+            port = self._container_app_port(t)
+            port.container_push.append(('aoc/2.nsp', str(dlc), 3))
+            captured = {}
+            self._run_data(port, captured)
+            self.assertIn(f'DM_AOC_DIR={t / "dlc"}', captured['env'])
+            self.assertNotIn('aoc/2.nsp', captured['files'])
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
+    def test_a_container_app_pack_copies_a_dlc_named_otherwise(self):   # a download's [DLC][…].nsp: copied into the pack as <index>.nsp, DM_AOC_DIR points there
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
+        try:
+            (t / 'dlc').mkdir(); dlc = t / 'dlc' / '[DLC][0100B8A026F15002][v0].nsp'; dlc.write_bytes(b'NSP')
+            port = self._container_app_port(t)
+            port.container_push.append(('aoc/2.nsp', str(dlc), 3))
+            captured = {}
+            self._run_data(port, captured)
+            self.assertEqual(Path(captured['files']['aoc/2.nsp']), dlc)
+            self.assertTrue(any(str(v).endswith('/aoc') for v in captured['env'] if v.startswith('DM_AOC_DIR=')))
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
     def test_a_leftover_half_made_pack(self):   # a port killed mid-way leaves one behind: it must not stop the next port (the log of 2026-11-09: FileNotFoundError, then exit 139)
         from unittest import mock
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
@@ -736,6 +822,7 @@ class Misc(unittest.TestCase):
             (d / 'g.nsp').write_bytes(b'\0' * 2**20)
             work = d / 'build'
             card = d / 'card/ports'
+            card.mkdir(parents=True)   # a mounted card's ports folder is there; the check asks that volume
             p = self.space_port(d, {'base': d / 'g.nsp', 'updates': [], 'dlc': []}, work, pack_dir=card)
             real = shutil.disk_usage
             try:
@@ -1207,6 +1294,72 @@ class SubfolderScan(unittest.TestCase):   # the updates and the DLC in a subfold
         self.assertEqual([u['folder'] for u in info['updates']], [''])       # next to the base game
         self.assertEqual([d['folder'] for d in info['dlc']], ['1DLC'])        # in the subfolder
         self.assertEqual([d['file'] for d in info['dlc']], ['DLC [v0].nsp'])
+
+
+class Relink(unittest.TestCase):   # an in-place pack pointed at the game's files where they are now: env.txt only, nothing built again
+    BASE = 0x0100B8A026F14000
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp(prefix='nx2a_test_relink_')
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        self.root = Path(tmp); self.game = self.root / 'game'
+        self.keys = self.root / 'prod.keys'; self.keys.write_text('', encoding='utf-8')
+        self.pack = self.root / 'Game-data'; self.pack.mkdir()
+
+    def dump(self, name, tid):
+        """an NSP whose ticket names the title ID"""
+        files = [(f'{tid:016x}0000000000000000.tik', bytes(16))]
+        path = self.game / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(dumps.pfs0_header([n for n, _ in files], [len(d) for _, d in files]) + b''.join(d for _, d in files))
+        return path
+
+    def manifest(self, version='v65536'):
+        (self.pack / 'nx2a-data.json').write_text(json.dumps({'title_id': f'{self.BASE:016X}', 'version': version, 'container': True, 'files': 1, 'bytes': 1}), encoding='utf-8')
+        (self.pack / 'env.txt').write_text('DM_FPS_TARGET=60\nDM_ROMFS_CONTAINER=/old/romfs.nsp\nDM_ROMFS_UPDATE=/old/update.nsp\nDM_PROD_KEYS=/old/prod.keys\n', encoding='utf-8')
+
+    def test_it_points_at_the_new_folder(self):
+        base = self.dump('romfs.nsp', self.BASE)
+        upd = self.dump('update.nsp', self.BASE + 0x800)
+        self.dump('aoc/2.nsp', self.BASE + 0x1002)
+        self.manifest()
+        pipeline.relink(self.pack, base, self.keys)
+        env = (self.pack / 'env.txt').read_text(encoding='utf-8')
+        self.assertIn(f'DM_ROMFS_CONTAINER={base}', env)
+        self.assertIn(f'DM_ROMFS_UPDATE={upd}', env)
+        self.assertIn(f'DM_AOC_DIR={base.parent / "aoc"}', env)   # an index-named DLC is read where it is
+        self.assertIn(f'DM_PROD_KEYS={self.keys}', env)
+        self.assertIn('DM_FPS_TARGET=60', env)
+        self.assertNotIn('/old/', env)
+        self.assertFalse((self.pack / 'aoc').exists())
+        self.assertGreaterEqual(json.loads((self.pack / 'nx2a-data.json').read_text(encoding='utf-8'))['files'], 2)
+
+    def test_a_dlc_named_otherwise_is_copied_as_its_index(self):
+        base = self.dump('romfs.nsp', self.BASE)
+        self.dump('update.nsp', self.BASE + 0x800)
+        self.dump('dlc/[DLC][0100B8A026F15002][v0].nsp', self.BASE + 0x1002)
+        self.manifest()
+        pipeline.relink(self.pack, base, self.keys)
+        self.assertTrue((self.pack / 'aoc' / '2.nsp').is_file())
+        self.assertIn(f'DM_AOC_DIR={self.pack}/aoc', (self.pack / 'env.txt').read_text(encoding='utf-8'))   # a device path: '/' on every host
+
+    def test_an_update_the_pack_was_built_with_must_be_there(self):
+        from porter.upstream import BuildError
+        base = self.dump('romfs.nsp', self.BASE)
+        self.manifest()
+        with self.assertRaises(BuildError): pipeline.relink(self.pack, base, self.keys)
+
+    def test_a_pack_built_without_an_update_does_not_take_one(self):
+        from porter.upstream import BuildError
+        base = self.dump('romfs.nsp', self.BASE); self.dump('update.nsp', self.BASE + 0x800)
+        self.manifest(version='v0')
+        with self.assertRaises(BuildError): pipeline.relink(self.pack, base, self.keys)
+
+    def test_another_game_is_refused(self):
+        from porter.upstream import BuildError
+        other = self.dump('other.nsp', 0x0100B8A026F24000)
+        self.manifest()
+        with self.assertRaises(BuildError): pipeline.relink(self.pack, other, self.keys)
 
 
 if __name__ == '__main__':

@@ -70,6 +70,11 @@ def _parser():
                          '"AllocateAddressRegion refused (0x1803)" before it crashes; it uses no memory (default: 8 for a game version the profile was not '
                          'brought up on, none for one it was)')
     _romfs_at(po, 'with --install: ')
+    po.add_argument('--romfs-container', action='store_true',
+                    help='have the app read the game\'s files straight out of your own NSP or XCI instead of an extracted RomFS / DLC copy (DM_ROMFS_CONTAINER): the data pack '
+                         'keeps no copy, and the build reads the game\'s files out of it as well (nothing is extracted, so the build folder needs no room for the RomFS); porter install '
+                         'pushes your base game (NSP or XCI), its update and the DLC to the device as they are (from this folder, or from beside the pack) and the app reads them in '
+                         'place; prod.keys goes to the device the same way, never into the pack. --romfs-at does not apply')
     po.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     po.add_argument('--low-mem', action='store_true',
                     help='low-memory devices: the shader translation runs with at most two workers (the number follows the memory the device has '
@@ -117,6 +122,11 @@ def _parser():
     hs.add_argument('--package', default='', help='the app (default: the only ported game installed)')
     hs.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)')
     hs.add_argument('--jobs', type=int, default=os.cpu_count() or 8); hs.add_argument('--json', action='store_true')
+    rl = sub.add_parser('relink', help="point an in-place pack (--romfs-container) at the game's files where they are now: only env.txt changes (and the pack's own aoc/ copies), nothing is built again")
+    rl.add_argument('pack', help='the data pack (<App>-data)')
+    rl.add_argument('game', help='the game file (NSP / XCI) in its new place: the update and the DLC beside it are taken')
+    rl.add_argument('-k', '--keys', help='prod.keys (default: the configured one)')
+    rl.add_argument('--json', action='store_true')
     return ap
 
 
@@ -207,6 +217,7 @@ def cmd_port(a):
         try: offset = int(env)
         except ValueError: print(f'NX2A_VERCODE_OFFSET is not a number: {env}', file=sys.stderr); return 2
     if (a.romfs_at is not None or a.romfs_push) and not a.install: print('--romfs-at and --romfs-push are install options: add --install, or run porter install after the port', file=sys.stderr); return 2
+    if a.romfs_container and (a.romfs_at is not None or a.romfs_push): print('--romfs-at and --romfs-push do not apply to --romfs-container: the app reads the game\'s files out of your own NSPs', file=sys.stderr); return 2
     from porter import install
     from porter.upstream import BuildError
     try: install.romfs_target(a.romfs_at)   # a folder the app cannot read fails now, not after the shaders
@@ -318,6 +329,18 @@ def cmd_saves(a):
     return 0
 
 
+def cmd_relink(a):
+    from porter import pipeline
+    from porter.upstream import BuildError
+    try: out = pipeline.relink(a.pack, a.game, a.keys)
+    except BuildError as e:
+        if a.json: _print_json({'error': str(e)})
+        else: print(e, file=sys.stderr)
+        return 1
+    if a.json: _print_json(out)
+    return 0
+
+
 def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt without the game files
     import contextlib
     from porter import config, driver, host, paths, saves, toolchain
@@ -342,4 +365,4 @@ def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt 
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'rebuild-runtime': cmd_rebuild_runtime, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver, 'host': cmd_driver}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'rebuild-runtime': cmd_rebuild_runtime, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver, 'host': cmd_driver, 'relink': cmd_relink}[a.cmd](a)

@@ -70,6 +70,22 @@ class GameConfigJsonTest {
         assertTrue(back.lowMem)
     }
 
+    /** 直读配共享存储落点：两项都记得住，老配置读出来是关 */
+    @Test
+    fun `the shared-storage destination survives the round trip`() {
+        val c = GameConfig(container = true, sharedStorage = true)
+        val back = GameConfigJson.decode(GameConfigJson.encode(c))
+        assertTrue(back.container)
+        assertTrue(back.sharedStorage)
+    }
+
+    @Test
+    fun `a config from before the shared-storage option reads it as off`() {
+        val c = GameConfigJson.decode(JSONObject().put("cont", true))
+        assertTrue(c.container)
+        assertFalse(c.sharedStorage)
+    }
+
     @Test
     fun `legacy filename config migrates to title ID while explicit title config wins`() {
         val legacy = GameConfig(touch = true, fps60 = true)

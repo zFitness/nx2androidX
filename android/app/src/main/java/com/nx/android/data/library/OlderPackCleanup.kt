@@ -25,7 +25,8 @@ object OlderPackCleanup {
         val seen = HashSet<String>()
         for (dir in portsDirs) {
             for (old in dir.listFiles() ?: emptyArray()) {
-                if (!old.isDirectory || old.name == newPack.name) continue
+                // 只跳过新包自己：同一个包名可能还留在另一个卷上（数据包改放到共享存储/卡），那也是旧包
+                if (!old.isDirectory || old.absolutePath == newPack.absolutePath) continue
                 val key = old.absolutePath
                 if (!seen.add(key)) continue
                 val oldTitle = LibraryFileScanner.manifestTitleId(old) ?: continue   // not a pack (no manifest): leave it alone

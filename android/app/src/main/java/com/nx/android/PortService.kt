@@ -12,6 +12,7 @@ import android.os.IBinder
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import com.nx.android.appstate.LibraryOperationCoordinator
+import com.nx.android.appstate.LibraryState
 import com.nx.android.appstate.PortState
 import com.nx.android.appstate.porting.PortCompletionCoordinator
 import com.nx.android.core.storage.AppPaths
@@ -47,8 +48,10 @@ class PortService : Service() {
         const val CHANNEL = "nx2a_port"
         const val ACTION_START = "com.nx.android.port.START"
         const val ACTION_CANCEL = "com.nx.android.port.CANCEL"
+        const val ACTION_RELINK = "com.nx.android.port.RELINK"
         const val GAME = "game";
         const val KEYS = "keys"
+        const val PACK = "pack"
         const val TOUCH = "touch";
         const val FPS60 = "fps60";
         const val EXP = "exp"
@@ -58,6 +61,7 @@ class PortService : Service() {
         const val MT = "mt";
         const val LOW_MEM = "lowmem"
         const val PACK_DIR = "packDir"
+        const val CONT = "cont"
         // The Intent's extras: the port's parameters, handed over from the UI to the service
         // Intent 的 extra：移植的参数，从界面交到服务手里
 
@@ -71,6 +75,7 @@ class PortService : Service() {
             sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
             packDir: String? = null,
             lowMem: Boolean = false,
+            container: Boolean = false,
         ) {
             val i = Intent(ctx, PortService::class.java)
                 .setAction(ACTION_START)
@@ -82,6 +87,7 @@ class PortService : Service() {
             if (mtReplay) i.putExtra(MT, true)
             if (lowMem) i.putExtra(LOW_MEM, true)
             if (!packDir.isNullOrBlank()) i.putExtra(PACK_DIR, packDir)
+            if (container) i.putExtra(CONT, true)
             ContextCompat.startForegroundService(ctx, i)
         }
 
@@ -91,6 +97,15 @@ class PortService : Service() {
          */
         fun cancel(ctx: Context) {
             ctx.startService(Intent(ctx, PortService::class.java).setAction(ACTION_CANCEL))
+        }
+
+        /**
+         * Points a direct-read pack at the game's files where they are now: a short run (scan and env.txt), not a port
+         * 直接读取的包重新关联游戏文件：只扫一遍、改 env.txt，不是一次移植
+         */
+        fun relink(ctx: Context, pack: String, game: String, keys: String) {
+            ctx.startService(Intent(ctx, PortService::class.java).setAction(ACTION_RELINK)
+                .putExtra(PACK, pack).putExtra(GAME, game).putExtra(KEYS, keys))
         }
     }
 
@@ -110,6 +125,8 @@ class PortService : Service() {
     lateinit var completionCoordinator: PortCompletionCoordinator
     @Inject
     lateinit var paths: AppPaths
+    @Inject
+    lateinit var library: LibraryState
 
     /** Nothing binds to it: the service is started with Intents only. 没有谁绑定它：服务只用 Intent 启动 */
     override fun onBind(intent: Intent?): IBinder? = null
@@ -144,6 +161,7 @@ class PortService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
+        if (intent?.action == ACTION_RELINK) return startRelink(intent)
         val game = intent?.getStringExtra(GAME) ?: return stop()
         if (port.running) return START_NOT_STICKY
         val keys = intent.getStringExtra(KEYS) ?: return stop()
@@ -157,6 +175,7 @@ class PortService : Service() {
             sharedFont = intent.getStringExtra(FONT) ?: "",
             mtReplay = intent.getBooleanExtra(MT, false),
             lowMem = intent.getBooleanExtra(LOW_MEM, false),
+            container = intent.getBooleanExtra(CONT, false),
         )
         val began = try { operations.beginBuild(game, cfg) } catch (e: Exception) {
             AppLog.line("[RED] Build history could not be saved: ${e.message}")
@@ -189,7 +208,7 @@ class PortService : Service() {
                 intent.getIntExtra(ALIAS, ALIAS_AUTO),
                 intent.getStringExtra(FONT) ?: "", intent.getStringExtra(FIRMWARE) ?: "",
                 intent.getBooleanExtra(MT, false), intent.getStringExtra(PACK_DIR),
-                intent.getBooleanExtra(LOW_MEM, false),
+                intent.getBooleanExtra(LOW_MEM, false), intent.getBooleanExtra(CONT, false),
             ) {
                 handler.post {
                     if (runner === taskRunner) {
@@ -218,6 +237,39 @@ class PortService : Service() {
     /** The extras are missing: there is nothing to start, so the service ends at once. 参数缺失：没什么可启动的，服务直接结束 */
     private fun stop(): Int {
         stopSelf(); return START_NOT_STICKY
+    }
+
+    /**
+     * A direct-read pack pointed at the game's files where they are now: the porter scans the picked file's folder and rewrites
+     * env.txt; nothing is built. Short, so it runs without the foreground notification (the UI that asked for it is in front).
+     */
+    private fun startRelink(intent: Intent): Int {
+        val pack = intent.getStringExtra(PACK)
+        val game = intent.getStringExtra(GAME)
+        val keys = intent.getStringExtra(KEYS)
+        if (pack.isNullOrBlank() || game.isNullOrBlank() || keys.isNullOrBlank()) return stop()
+        if (port.running) return START_NOT_STICKY   // a port owns the tools: not while one is running
+        val handler = Handler(mainLooper)
+        lateinit var taskRunner: PortRunner
+        taskRunner = PortRunner(environmentSetup, guestLauncher, locale::str) { line ->
+            handler.post { if (runner === taskRunner) AppLog.line(line) }
+        }
+        runner = taskRunner
+        taskRunner.relink(pack, game, keys) { code ->
+            handler.post {
+                if (runner === taskRunner) {
+                    runner = null
+                    if (code == 0) {
+                        library.noteDone(game, pack)   // the new source path; the library rescans
+                        Toast.makeText(this, locale.str(R.string.lib_relink_done), Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, locale.str(R.string.lib_relink_failed, code), Toast.LENGTH_LONG).show()
+                    }
+                    stopSelf()
+                }
+            }
+        }
+        return START_NOT_STICKY
     }
 
     private fun stopShown() {

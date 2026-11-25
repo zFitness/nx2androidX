@@ -28,6 +28,15 @@ object PortablePack {
     /** The player's own exported save backups: they stay behind. */
     const val SAVES = "saves"
 
+    /** The DLC copies a container pack may hold: a relink re-copies them, so a backup leaves them out. */
+    const val AOC = "aoc"
+
+    /** The env rows that name the exporting phone's own files: a backup drops them, a relink writes them again. */
+    private val DEVICE_ROWS = setOf("DM_ROMFS_CONTAINER", "DM_ROMFS_UPDATE", "DM_PROD_KEYS")
+
+    /** The env rows of the build workspace (desktop builds): they do not travel either. */
+    private val BUILD_ROWS = setOf("DM_ROMFS", "DM_ROMFS_MOUNTS", "DM_ROMFS_EXE")
+
     /**
      * A folder the player imported: the path is its identity, and the record survives the folder
      * going away (a card that is not plugged in).
@@ -61,6 +70,10 @@ object PortablePack {
         val failure: String? = null,
         val titleId: String = "",
         val name: String = "",
+        /** The pack an import landed (a zip: the folder under ports/), when it did. */
+        val pack: File? = null,
+        /** The manifest says the pack reads the player's own game file (its env rows come from a relink). */
+        val container: Boolean = false,
     )
 
     /**
@@ -86,6 +99,42 @@ object PortablePack {
         val out = JSONObject(manifest.toString())
         out.remove("romfs_at")
         return out
+    }
+
+    /**
+     * The manifest a backup carries: no workspace pointer, and no counts of the DLC copies it leaves
+     * out (a relink copies them back from the player's own files).
+     */
+    fun manifestForZip(manifest: JSONObject, files: Int, bytes: Long): JSONObject {
+        val out = JSONObject(manifest.toString())
+        out.remove("romfs_at")
+        out.optJSONObject("parts")?.let { parts ->
+            parts.remove(AOC)
+            if (parts.length() == 0) out.remove("parts")
+        }
+        out.put("files", files).put("bytes", bytes)
+        return out
+    }
+
+    /**
+     * The env.txt a backup carries: the rows that name the exporting phone's own files are gone (a
+     * relink writes them again), and the rows that point inside the pack follow [folder] — the folder
+     * the backup lands in, or null while the backup is written (an import rewrites them).
+     */
+    fun envForZip(env: String, folder: File? = null): String {
+        val base = folder?.absolutePath?.trimEnd('/')
+        val kept = env.lineSequence().mapNotNull { line ->
+            if (line.trimStart().startsWith("#") || !line.contains('=')) return@mapNotNull line
+            val key = line.substringBefore('=', "").trim()
+            if (key in DEVICE_ROWS || key in BUILD_ROWS) return@mapNotNull null
+            val value = line.substringAfter('=')
+            // a DLC folder outside the pack is the exporting player's own: it does not travel
+            if (key == "DM_AOC_DIR" && !value.endsWith("/aoc")) return@mapNotNull null
+            val suffix = PACK_PATHS.firstOrNull { value.endsWith(it) && value.length > it.length } ?: return@mapNotNull line
+            if (base == null) return@mapNotNull line   // rewritten when the backup lands
+            "$key=$base$suffix"
+        }.toList()
+        return kept.joinToString("\n").trimEnd('\n') + "\n"
     }
 
     /**
@@ -127,5 +176,35 @@ object PortablePack {
         if (!titleId.matches(Regex("[0-9A-Fa-f]{16}"))) return Validation(false, "bad_title_id")
         if (!File(dir, ROMFS).isDirectory) return Validation(false, "no_romfs")
         return Validation(true, null, titleId.uppercase(), manifest.optString("name"))
+    }
+
+    /**
+     * What a backup holds: a container manifest (the pack reads the player's own game file, so it
+     * carries no `RomFS/`), a title ID, and nothing that points outside the folder it lands in.
+     */
+    fun validateContainer(dir: File): Validation {
+        if (!dir.isDirectory) return Validation(false, "not_a_folder", pack = dir)
+        val manifest = readManifest(dir) ?: return Validation(false, "no_manifest", pack = dir)
+        if (!manifest.optBoolean("container", false)) return Validation(false, "not_container", pack = dir)
+        val titleId = manifest.optString("title_id")
+        if (!titleId.matches(Regex("[0-9A-Fa-f]{16}"))) return Validation(false, "bad_title_id", pack = dir)
+        return Validation(true, null, titleId.uppercase(), manifest.optString("name"), dir, container = true)
+    }
+
+    /**
+     * Whether a container pack's own game file is linked: the env row names a file that is there.
+     * A backup carries no such row (it would name the exporting phone's file), so a freshly imported
+     * pack needs one relink.
+     */
+    fun containerLinked(pack: File): Boolean {
+        val env = File(pack, ENV)
+        if (!env.isFile) return false
+        return try {
+            val value = env.readLines().firstOrNull { it.startsWith("DM_ROMFS_CONTAINER=") }
+                ?.substringAfter('=')?.trim().orEmpty()
+            value.isNotEmpty() && value != "-" && File(value).isFile
+        } catch (e: Exception) {
+            false
+        }
     }
 }

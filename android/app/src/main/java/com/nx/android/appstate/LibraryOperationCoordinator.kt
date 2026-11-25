@@ -93,6 +93,14 @@ class LibraryOperationCoordinator @Inject constructor(
     fun exportPack(entry: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result =
         repository.exportPack(entry, targetDir, onProgress)
 
+    /** 导出一个直读包的备份：一个 zip */
+    fun exportZipPack(entry: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result =
+        repository.exportZipPack(entry, targetDir, onProgress)
+
+    /** 导入一个直读包的备份 */
+    fun importZipPack(zip: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Validation =
+        repository.importZipPack(zip, onProgress)
+
     /** 登记一个导入的文件夹（路径就是它的身份） */
     fun registerImported(dir: File, validation: PortablePack.Validation): PortablePack.Imported? =
         repository.registerImported(dir, validation)

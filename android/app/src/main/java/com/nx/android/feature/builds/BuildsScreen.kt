@@ -229,6 +229,7 @@ private fun TaskDetail(lib: LibraryState, record: PortState.Record, viewModel: B
                 stringResource(R.string.builds_touch_game).takeIf { config.touch },
                 stringResource(R.string.builds_60fps).takeIf { config.fps60 },
                 stringResource(R.string.builds_experimental).takeIf { config.experimental },
+                stringResource(R.string.builds_container_short).takeIf { config.container },
                 if (config.aliasHeadroom >= 0) stringResource(R.string.builds_alias_short, config.aliasHeadroom) else null,
                 config.sharedFont.takeIf { it.isNotBlank() }?.let { stringResource(R.string.builds_shared_font_short, File(it).name) },
                 stringResource(R.string.builds_mt_replay).takeIf { config.mtReplay },
@@ -357,6 +358,15 @@ private fun TargetCard(lib: LibraryState, port: BuildsUiState, viewModel: Builds
                 ConfigRow(stringResource(R.string.builds_touch_game), cfg.touch) { cfg = cfg.copy(touch = it); lib.setConfig(f, cfg) }
                 ConfigRow(stringResource(R.string.builds_60fps), cfg.fps60) { cfg = cfg.copy(fps60 = it); lib.setConfig(f, cfg) }
                 ConfigRow(stringResource(R.string.builds_experimental), cfg.experimental) { cfg = cfg.copy(experimental = it); lib.setConfig(f, cfg) }
+                ConfigRow(stringResource(R.string.builds_container), cfg.container) { cfg = cfg.copy(container = it); lib.setConfig(f, cfg) }
+                Hint(stringResource(R.string.builds_container_hint), size = 11.sp)
+                // 落点跟着直读走：几十个大文件过共享存储的 FUSE 影响很小，换来数据线和文件管理器能直接看到
+                if (cfg.container) {
+                    ConfigRow(stringResource(R.string.builds_shared_pack), cfg.sharedStorage) {
+                        cfg = cfg.copy(sharedStorage = it); lib.setConfig(f, cfg)
+                    }
+                    Hint(stringResource(R.string.builds_shared_pack_hint), size = 11.sp)
+                }
                 AliasRow(cfg.aliasHeadroom) { cfg = cfg.copy(aliasHeadroom = it); lib.setConfig(f, cfg) }
                 Hint(stringResource(R.string.builds_alias_hint), size = 11.sp)
                 // 玩家自己的覆盖：系统字体、固件 dump、多线程回放

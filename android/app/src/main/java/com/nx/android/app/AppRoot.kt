@@ -97,6 +97,7 @@ import com.nx.android.domain.EnvCheck
 import com.nx.android.domain.GAME_FILE_EXTENSIONS
 import com.nx.android.domain.GameConfig
 import com.nx.android.domain.GameEntry
+import com.nx.android.domain.PortablePack
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import com.nx.android.domain.GameIdentity
@@ -180,6 +181,8 @@ data class AppActions(
     val onRunRebuild: (pack: File, name: String) -> Unit = { _, _ -> },
     // 桌面快捷方式：管理下拉里的「发送到桌面」（只对已完成的游戏出现）
     val onSendToDesktop: (GameEntry) -> Unit = { },
+    // 直接读取的包：把游戏文件重新关联到它现在的位置（只改 env.txt，不重建）
+    val onRelinkPack: (pack: File, game: File) -> Unit = { _, _ -> },
     val onToast: (String) -> Unit,
     val version: () -> String,
     val keys: () -> String,
@@ -521,8 +524,10 @@ fun MainScreen(
     // 设置是一整页，盖住顶栏与下面的页面：从顶栏的设置图标进来，关掉才回到底下的页面
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsSection by remember { mutableStateOf(SettingsSection.ENVIRONMENT) }
-    // 导入别人导出的数据包：顶栏的加号先进这个说明框，框里的按钮再去选文件夹
+    // 导入数据包：顶栏的加号先进这个说明框，框里再去选备份（zip）或老的文件夹导出
     var importPackHelp by remember { mutableStateOf(false) }
+    // 刚导入的备份：它不带游戏数据，框里请玩家关联一次自己的游戏文件
+    var importedBackup by remember { mutableStateOf<PortablePack.Validation?>(null) }
     // 导入要读那个文件夹：不在主线程上做
     val scope = rememberCoroutineScope()
     // 常见问题：也是一整页，从顶栏设置旁边的那个图标进来
@@ -802,31 +807,73 @@ fun MainScreen(
         if (gameListOpen) {
             SupportedGamesOverlay(onClose = { gameListOpen = false })
         }
-        // 导入的说明框：顶栏那个加号先进这里，框里的按钮再去选文件夹
+        // 导入的说明框：顶栏那个加号先进这里，框里再去选备份（zip）或老的文件夹导出
         if (importPackHelp) {
             AlertDialog(
                 onDismissRequest = { importPackHelp = false },
                 title = { Text(locale.str(R.string.lib_pack_import_title)) },
                 text = { Text(locale.str(R.string.lib_pack_import_text)) },
                 confirmButton = {
-                    TextButton(onClick = {
-                        importPackHelp = false
-                        onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
-                            locale.str(R.string.lib_pack_import_pick),
-                            onPicked = { dir ->
-                                // 登记要读那个文件夹（还要把包自己的行指到它现在的位置）：不在主线程上做
-                                scope.launch {
-                                    val result = withContext(Dispatchers.IO) { lib.importPack(dir) }
-                                    actions.onToast(
-                                        if (result.ok) locale.str(R.string.lib_pack_import_done, result.name.ifEmpty { result.titleId })
-                                        else locale.str(importFailureText(result.failure))
-                                    )
-                                }
-                            }))
-                    }) { Text(locale.str(R.string.lib_pack_import_pick)) }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // 备份（zip）：直读包足够小，能带走；落地后在自己的游戏文件上关联一次
+                        TextButton(onClick = {
+                            importPackHelp = false
+                            onRequest(PickerRequest(PickerMode.FILE, setOf("zip"), File("/storage"),
+                                locale.str(R.string.lib_pack_import_zip_pick),
+                                onPicked = { file ->
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) { lib.importZipPack(file) }
+                                        if (result.ok) {
+                                            actions.onToast(locale.str(R.string.lib_pack_import_zip_done, result.name.ifEmpty { result.titleId }))
+                                            importedBackup = result
+                                        } else {
+                                            actions.onToast(locale.str(importZipFailureText(result.failure)))
+                                        }
+                                    }
+                                }))
+                        }) { Text(locale.str(R.string.lib_pack_import_zip_action)) }
+                        // 老的文件夹导出：游戏文件就在那个文件夹里，原地跑
+                        TextButton(onClick = {
+                            importPackHelp = false
+                            onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
+                                locale.str(R.string.lib_pack_import_pick),
+                                onPicked = { dir ->
+                                    // 登记要读那个文件夹（还要把包自己的行指到它现在的位置）：不在主线程上做
+                                    scope.launch {
+                                        val result = withContext(Dispatchers.IO) { lib.importPack(dir) }
+                                        actions.onToast(
+                                            if (result.ok) locale.str(R.string.lib_pack_import_done, result.name.ifEmpty { result.titleId })
+                                            else locale.str(importFailureText(result.failure))
+                                        )
+                                    }
+                                }))
+                        }) { Text(locale.str(R.string.lib_pack_import_pick)) }
+                    }
                 },
                 dismissButton = {
                     TextButton(onClick = { importPackHelp = false }) { Text(locale.str(R.string.common_cancel)) }
+                },
+            )
+        }
+        // 刚导入的备份：它不带游戏数据，请玩家选一次自己的 NSP/XCI（就是一次 relink，之后就能跑）
+        importedBackup?.let { v ->
+            AlertDialog(
+                onDismissRequest = { importedBackup = null },
+                title = { Text(locale.str(R.string.lib_pack_import_zip_title)) },
+                text = { Text(locale.str(R.string.lib_pack_import_zip_relink)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        val pack = v.pack
+                        importedBackup = null
+                        if (pack != null) {
+                            onRequest(PickerRequest(PickerMode.FILE, GAME_FILE_EXTENSIONS, File("/storage"),
+                                locale.str(R.string.builds_choose_game_file),
+                                onPicked = { f -> actions.onRelinkPack(pack, f) }))
+                        }
+                    }) { Text(locale.str(R.string.lib_relink_action)) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { importedBackup = null }) { Text(locale.str(R.string.lib_pack_import_zip_later)) }
                 },
             )
         }
@@ -875,6 +922,16 @@ private fun importFailureText(code: String?): Int = when (code) {
     "bad_title_id" -> R.string.lib_pack_import_bad_id
     "no_romfs" -> R.string.lib_pack_import_no_romfs
     "already_imported" -> R.string.lib_pack_import_already
+    else -> R.string.lib_pack_import_failed
+}
+
+private fun importZipFailureText(code: String?): Int = when (code) {
+    "not_a_file", "not_a_zip", "bad_zip" -> R.string.lib_pack_import_zip_not_zip
+    "no_manifest" -> R.string.lib_pack_import_no_manifest
+    "not_container" -> R.string.lib_pack_import_zip_not_container
+    "bad_title_id" -> R.string.lib_pack_import_bad_id
+    "exists" -> R.string.lib_pack_import_zip_exists
+    "no_space" -> R.string.lib_pack_import_zip_no_space
     else -> R.string.lib_pack_import_failed
 }
 

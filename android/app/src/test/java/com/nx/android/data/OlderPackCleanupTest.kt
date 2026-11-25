@@ -55,6 +55,19 @@ class OlderPackCleanupTest {
         assertTrue(lines.any { it.contains("delete it by hand") })
     }
 
+    /** 包名相同也算旧包：数据包改放到另一个卷（共享存储 / 卡）之后，原来那份要收走 */
+    @Test
+    fun `the same pack name on another volume is removed too`() {
+        val privatePorts = tmpDir()
+        val sharedPorts = tmpDir()
+        val old = pack(privatePorts, "Game-data", "0100000000010000")
+        val new = pack(sharedPorts, "Game-data", "0100000000010000")
+        val lines = OlderPackCleanup.removeOlderPacks(new, listOf(privatePorts, sharedPorts))
+        assertFalse(old.exists())
+        assertTrue(new.exists())
+        assertTrue(lines.any { it.contains("removed the older pack") })
+    }
+
     /** 另一个游戏（区域版有自己的 title ID）：不碰 */
     @Test
     fun `another game is untouched`() {

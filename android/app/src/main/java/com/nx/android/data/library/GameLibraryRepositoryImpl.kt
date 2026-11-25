@@ -54,6 +54,15 @@ class GameLibraryRepositoryImpl @Inject constructor(
                 byTitleInternal[titleId] = chosen.second
             }
         }
+        // 共享存储上「构建到共享存储」建的包：同样是手机自己的存储（FUSE），可移动卡之后再看
+        paths.sharedPorts?.let { dir ->
+            for ((titleId, candidate) in LibraryFileScanner.outIndex(dir, paths.runtimes)) {
+                val chosen = LibraryLogic.preferPack(byTitle[titleId], byTitleInternal[titleId] == true,
+                    candidate, candidateInternal = true)
+                byTitle[titleId] = chosen.first
+                byTitleInternal[titleId] = chosen.second
+            }
+        }
         for ((titleId, candidate) in LibraryFileScanner.outIndex(paths.ports, paths.runtimes)) {
             val chosen = LibraryLogic.preferPack(byTitle[titleId], byTitleInternal[titleId] == true,
                 candidate, candidateInternal = true)
@@ -81,7 +90,8 @@ class GameLibraryRepositoryImpl @Inject constructor(
         else GameEntry(record.titleId, null, null, null, record)
     }
 
-    override fun portsDirs(): List<File> = listOf(paths.ports) + StorageVolumes.removablePortsDirs(context).map { it.second }
+    override fun portsDirs(): List<File> =
+        listOfNotNull(paths.ports, paths.sharedPorts) + StorageVolumes.removablePortsDirs(context).map { it.second }
 
     /**
      * 库里每个游戏的占用来源：工作区与它的数据包。
@@ -251,6 +261,17 @@ class GameLibraryRepositoryImpl @Inject constructor(
         val pack = entry.pack ?: return PortablePack.Result.fail("no_pack")
         return PortablePackFiles.export(pack.pack, pack.romfsAt, targetDir, entry.label, onProgress)
     }
+
+    /** A container pack's backup: a zip that carries no game data (a relink brings it back). */
+    override fun exportZipPack(entry: GameEntry, targetDir: File,
+                               onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result {
+        val pack = entry.pack ?: return PortablePack.Result.fail("no_pack")
+        return PortablePackZip.export(pack.pack, targetDir, entry.label, onProgress)
+    }
+
+    /** A backup lands in the app's own ports folder, as a container pack that needs one relink. */
+    override fun importZipPack(zip: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Validation =
+        PortablePackZip.import(zip, paths.ports, onProgress)
 
     private fun loadMemories() {
         packPaths = readMap(LIB_PACKS)

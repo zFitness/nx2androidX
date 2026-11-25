@@ -103,7 +103,8 @@ object LibraryFileScanner {
                       hostDeclared = hostDeclared,
                       noLsfg = if (man.has("no_lsfg")) man.optBoolean("no_lsfg") else null,
                       profileH = man.optString("profile_h"),
-                      marker = marker)
+                      marker = marker,
+                      container = man.optBoolean("container", false))
     }
 
     /** the build marker a runtime folder carries (build.json), or null without one */

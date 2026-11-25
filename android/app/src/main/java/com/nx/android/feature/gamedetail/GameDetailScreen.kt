@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteForever
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SdCard
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewAgenda
 import androidx.compose.material.icons.outlined.VideogameAsset
@@ -385,7 +387,11 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
             exportProgress = null
             actions.onToast(
                 if (r.ok) locale.str(R.string.lib_pack_export_done, r.folder)
-                else locale.str(R.string.lib_pack_export_failed, r.failure ?: "")
+                else locale.str(R.string.lib_pack_export_failed, when (r.failure) {
+                    "container" -> locale.str(R.string.lib_pack_export_container)
+                    "no_romfs" -> locale.str(R.string.lib_pack_export_no_romfs)
+                    else -> r.failure ?: ""
+                })
             )
         }
     }
@@ -399,6 +405,35 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
         onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
             locale.str(R.string.lib_pack_export_pick),
             onPicked = { target -> doExport(target) }))
+    }
+
+    /** 真的写备份（后台线程：卡上写入很慢） */
+    fun doBackupZip(target: File) {
+        exporting = true
+        exportProgress = null
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { lib.exportZipPack(e, target) { exportProgress = it } }
+            exporting = false
+            exportProgress = null
+            actions.onToast(
+                if (r.ok) locale.str(R.string.lib_pack_backup_done, r.folder)
+                else locale.str(R.string.lib_pack_backup_failed, when (r.failure) {
+                    "not_container" -> locale.str(R.string.lib_pack_backup_not_container)
+                    "exists" -> locale.str(R.string.lib_pack_backup_exists)
+                    else -> r.failure ?: ""
+                })
+            )
+        }
+    }
+
+    /**
+     * 备份：玩家选一个落点，App 写 <游戏名>.zip。直读包足够小（没有 RomFS），带着它走到另一台机器，
+     * 在自己的游戏文件上关联一次就能跑。
+     */
+    fun askBackupZip() {
+        onRequest(PickerRequest(PickerMode.DIR, emptySet(), File("/storage"),
+            locale.str(R.string.lib_pack_backup_pick),
+            onPicked = { target -> doBackupZip(target) }))
     }
 
     /** 游戏运行日志：宿主把它写在了数据包里（上一轮的在 log.prev.txt），打成日志包再发出去 */
@@ -492,6 +527,20 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                                     else shareGameLog(p)
                                 },
                             )
+                            // 直接读取的包：游戏文件被挪走或改了名，选一次它现在的位置就能救回来（porter 只改 env.txt，不重建）
+                            if (ported?.container == true) {
+                                DropdownMenuItem(
+                                    text = { Text(locale.str(R.string.lib_relink_action)) },
+                                    leadingIcon = { Icon(Icons.Filled.Sync, null, Modifier.size(18.dp)) },
+                                    onClick = {
+                                        menuOpen = false
+                                        val p = ported
+                                        onRequest(PickerRequest(PickerMode.FILE, GAME_FILE_EXTENSIONS, File("/storage"),
+                                            locale.str(R.string.builds_choose_game_file),
+                                            onPicked = { f -> actions.onRelinkPack(p.pack, f) }))
+                                    },
+                                )
+                            }
                             // 发送到桌面：桌面快捷方式（pin shortcut），点击与库页卡片走同一扇门（已完成的游戏才有）
                             DropdownMenuItem(
                                 text = { Text(locale.str(R.string.lib_pin_shortcut)) },
@@ -513,10 +562,13 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                             // 导出：把这个移植变成一个文件夹（数据包 + 散装的游戏文件）
                             // 导入的包本身就是那个文件夹了（还是玩家自己的文件）：再导出只是原样拷一遍
                             if (e.exportable) {
+                                // 直读包足够小，能带走：备份成一个 zip（不带游戏数据，换台机器关联一次游戏文件就能跑）。
+                                // 带游戏文件的包还是导出成文件夹（zip 只会多一道拷贝）。
+                                val backup = ported?.container == true
                                 DropdownMenuItem(
-                                    text = { Text(locale.str(R.string.lib_pack_export_action)) },
-                                    leadingIcon = { Icon(Icons.Filled.FolderOpen, null, Modifier.size(18.dp)) },
-                                    onClick = { menuOpen = false; askExport() },
+                                    text = { Text(locale.str(if (backup) R.string.lib_pack_backup_action else R.string.lib_pack_export_action)) },
+                                    leadingIcon = { Icon(if (backup) Icons.Filled.Archive else Icons.Filled.FolderOpen, null, Modifier.size(18.dp)) },
+                                    onClick = { menuOpen = false; if (backup) askBackupZip() else askExport() },
                                 )
                             }
                             if (!cacheLocked && !e.isImported) {
@@ -579,6 +631,17 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                         Hint(locale.str(R.string.lib_artifact_missing_state))
                     } else {
                         Hint(locale.str(R.string.builds_artifact_path, ported.pack.absolutePath), size = 11.sp)
+                        // 直读包：还没关联玩家的游戏文件（刚导入的备份就是这样）。摆一次关联，关联完就能跑。
+                        if (ported.container && !PortablePack.containerLinked(ported.pack)) {
+                            Spacer(Modifier.height(6.dp))
+                            Hint(locale.str(R.string.lib_pack_relink_hint), size = 11.sp)
+                            Spacer(Modifier.height(6.dp))
+                            QuietButton(locale.str(R.string.lib_relink_action), onClick = {
+                                onRequest(PickerRequest(PickerMode.FILE, GAME_FILE_EXTENSIONS, File("/storage"),
+                                    locale.str(R.string.builds_choose_game_file),
+                                    onPicked = { f -> actions.onRelinkPack(ported.pack, f) }))
+                            }, modifier = Modifier.fillMaxWidth())
+                        }
                         Spacer(Modifier.height(8.dp))
                         RunOptions(installedDrivers, detailState.runOptions,
                             detailState.runOptionsFailure, onSelectLanguage, onSelectDriver)

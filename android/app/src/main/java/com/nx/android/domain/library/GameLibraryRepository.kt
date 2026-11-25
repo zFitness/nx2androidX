@@ -35,4 +35,8 @@ interface GameLibraryRepository {
     fun importedPacks(): List<PortablePack.Imported>
     /** 导出一个完成的移植：一个文件夹（数据包 + 散装游戏文件） */
     fun exportPack(entry: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result
+    /** 导出一个直读包（container）的备份：一个 zip，不带游戏数据、不带导出机自己的路径 */
+    fun exportZipPack(entry: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Result
+    /** 导入一个直读包的备份：解到半成品名的文件夹、校验 container 清单、改名落地 */
+    fun importZipPack(zip: File, onProgress: (PortablePack.Progress) -> Unit): PortablePack.Validation
 }

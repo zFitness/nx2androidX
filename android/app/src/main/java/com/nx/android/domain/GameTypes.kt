@@ -80,6 +80,13 @@ data class GameConfig(
     val mtReplay: Boolean = false,
     /** 低内存模式：着色器翻译最多两个进程（慢一些，但内存紧张的机器不会被系统杀掉） */
     val lowMem: Boolean = false,
+    /** 直接读取游戏文件（NSP/XCI）本身：不再解包一份 RomFS，游戏的这些文件要留在原处 */
+    val container: Boolean = false,
+    /**
+     * 数据包建到共享存储（Android/data/<pkg>/files/ports）：数据线和文件管理器能直接看到，方便调试。
+     * 配合直读：那样的包里只有几十个大文件，共享存储的 FUSE 慢不了多少。
+     */
+    val sharedStorage: Boolean = false,
 )
 
 /**
@@ -94,11 +101,12 @@ object GameConfigJson {
         .put("touch", c.touch).put("fps60", c.fps60).put("exp", c.experimental)
         .put("alias", c.aliasHeadroom)
         .put("font", c.sharedFont).put("mt", c.mtReplay)
-        .put("lowmem", c.lowMem)
+        .put("lowmem", c.lowMem).put("cont", c.container).put("shared", c.sharedStorage)
 
     fun decode(o: JSONObject): GameConfig = GameConfig(
         o.optBoolean("touch"), o.optBoolean("fps60"), o.optBoolean("exp"), o.optInt("alias", ALIAS_AUTO),
-        o.optString("font", ""), o.optBoolean("mt", false), o.optBoolean("lowmem", false))
+        o.optString("font", ""), o.optBoolean("mt", false), o.optBoolean("lowmem", false),
+        o.optBoolean("cont", false), o.optBoolean("shared", false))
 }
 
 /** Moves filename-keyed legacy options to title IDs once the library can identify their games. */
@@ -140,6 +148,7 @@ data class Ported(
     val noLsfg: Boolean? = null, // 清单里的 no_lsfg（构建指纹的一部分；老的数据包没有这一项）
     val profileH: String = "", // 清单里的 profile_h（这个包的运行库按哪份档案编的）：与目录侧标记比对
     val marker: RuntimeBuildMarker? = null, // 统一目录侧的构建标记（新格式才有；启动判断只读目录侧）
+    val container: Boolean = false, // 清单里的 container：游戏的文件不放进包里，运行时按 env.txt 的绝对路径读玩家自己的 NSP/XCI（可「重新关联」到新位置）
 ) {
     /** The pack has its runtime (a legacy pack's host file in place; a new-format one its folder marker): it is a port, not a leftover manifest. */
     val hasHost: Boolean get() = if (hostDeclared) host.isFile else marker != null

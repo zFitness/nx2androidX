@@ -176,6 +176,25 @@ class LibraryState @Inject constructor(private val port: PortState,
         operations.exportPack(e, targetDir, onProgress)
 
     /**
+     * 导出一个直读包（container）的备份：一个 zip，里面没有游戏数据，也没有这台机器上的路径。
+     *
+     * 导出不动 App 里的任何东西：游戏照常能玩。
+     */
+    fun exportZipPack(e: GameEntry, targetDir: File, onProgress: (PortablePack.Progress) -> Unit = {}): PortablePack.Result =
+        operations.exportZipPack(e, targetDir, onProgress)
+
+    /**
+     * 导入一个直读包的备份：半成品名落地，成功后扫库一次。
+     *
+     * 备份不带游戏数据：落地后要在游戏页给玩家自己的 NSP/XCI 关联一次。
+     */
+    fun importZipPack(zip: File, onProgress: (PortablePack.Progress) -> Unit = {}): PortablePack.Validation {
+        val v = operations.importZipPack(zip, onProgress)
+        if (v.ok) rescan()
+        return v
+    }
+
+    /**
      * 导入一个别人导出的文件夹：登记它的路径，游戏在它原来的地方原地跑。
      *
      * 那个文件夹里的游戏数据一个字节都不动；App 只把这个包自己的管理文件（env.txt）指到它现在的位置。
