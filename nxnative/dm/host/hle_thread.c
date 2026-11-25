@@ -385,6 +385,52 @@ static void ctx_fill(const thr_t *t, hz_ctx_t *o) {   // holding G, t is stopped
     }
 }
 
+// ---- parking the guest's threads (the game is held: the app is in the background) ----
+// The host freezes the clock and the graphics while the game is held, but the game's own threads keep running: the game keeps working (it loads its assets, it makes Vulkan memory pools: "memory pools live" grows and the App's memory grows with it) while the app is in the background. The front end parks the guest's threads then, and lets them run again when the app comes back.
+// The park is the pause SetThreadActivity uses (IL2CPP's garbage collector stops the world with it): a thread inside an SVC stops at the SVC's exit, a thread in guest code stops in the SIGUSR2 handler (its registers are saved there), and a thread in host code is asked again until it is back in guest code (a thread that does not stop in time keeps running: it is asked no more, so it never stops at a later, worse moment).
+static _Atomic int g_guest_parked;   // 1: the guest's threads are parked
+static int thr_park_one(thr_t *t) {   // 1: the thread is stopped; 0: it keeps running
+    uint64_t t0 = now_ns();
+    for (;;) {
+        G_lock();
+        if (t->exited) { pthread_mutex_unlock(&G); return 0; }
+        if (t->paused) { pthread_mutex_unlock(&G); return 1; }
+        pthread_mutex_unlock(&G);
+        pthread_kill(t->pt, SIGUSR2);
+        struct timespec ts = {0, 20 * 1000 * 1000}; nanosleep(&ts, NULL);
+        if (now_ns() - t0 > 2000000000ull) {   // two seconds: the thread is in host code and does not come back
+            atomic_store(&t->pause_req, 0); atomic_fetch_and(&t->svc_state, ~2);   // it must not stop later, in the middle of the game's next work
+            LOG("[RED] the guest thread %#x did not stop within 2 s (it is in host code): it keeps running", t->handle);
+            return 0;
+        }
+    }
+}
+void dm_guest_threads_park(void) {
+    if (atomic_exchange(&g_guest_parked, 1)) return;
+    thr_t *list[256]; int n = 0, stopped = 0;
+    G_lock();
+    for (thr_t *t = g_all; t && n < 256; t = t->all) {
+        if (!t->started || t->exited || t->host_owned) continue;
+        atomic_store(&t->pause_req, 1);
+        int st = atomic_fetch_or(&t->svc_state, 2);
+        if (st & 1) t->paused = 1;   // inside an SVC: it stops at the SVC's exit
+        list[n++] = t;
+    }
+    pthread_mutex_unlock(&G);
+    for (int i = 0; i < n; i++) stopped += thr_park_one(list[i]);
+    LOG("[hold] the guest's threads are parked (%d of %d stopped)", stopped, n);
+}
+void dm_guest_threads_unpark(void) {
+    if (!atomic_exchange(&g_guest_parked, 0)) return;
+    G_lock();
+    for (thr_t *t = g_all; t; t = t->all) {
+        if (!t->pause_req) continue;
+        atomic_store(&t->pause_req, 0); atomic_fetch_and(&t->svc_state, ~2); pthread_cond_broadcast(&t->pcv);
+    }
+    pthread_mutex_unlock(&G);
+    LOG("[hold] the guest's threads run again");
+}
+
 // Register the main thread and return its handle (passed to nnosInitialize as the main thread handle)
 uint32_t svc_thread_main_init(void) {
     pthread_key_create(&g_keythr, NULL);
