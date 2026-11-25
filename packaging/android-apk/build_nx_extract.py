@@ -20,6 +20,34 @@ REPO = Path(__file__).resolve().parent.parent.parent
 DEFAULT_OUT = Path(__file__).resolve().parent / '.cache' / 'assets' / 'tool' / 'tools' / 'nx_extract'
 
 
+def invariant_runtime(out):
+    """The phone has no ICU: .NET 9+ needs the invariant mode declared in the runtime config."""
+    import json
+    for rc in Path(out).parent.glob('*/' + '*.runtimeconfig.json'):
+        d = json.loads(rc.read_text())
+        props = d.setdefault('runtimeOptions', {}).setdefault('configProperties', {})
+        props['System.Globalization.Invariant'] = True
+        rc.write_text(json.dumps(d, indent=2))
+
+
+def copy_prebuilt(src, out):
+    """Reuse linux-arm64 tools from NX2A_CSHARP_PREBUILT when no SDK is installed.
+
+    The cache is outside the assets tree, which build_assets.py clears on every build. An explicit
+    environment variable keeps stale tools from being picked up silently when the sources change.
+    """
+    for name, exe in (('nx_extract', 'nx_extract'), ('dmsh_xlate', 'dmsh_xlate')):
+        source = Path(src) / name
+        target = Path(out) if name == 'nx_extract' else Path(out).parent / name
+        if not (source / exe).is_file():
+            return False
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(source, target)
+        (target / exe).chmod(0o755)
+        print(f'>> {name} from {source} (no .NET SDK needed)')
+    return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=str(DEFAULT_OUT))
@@ -29,7 +57,12 @@ def main():
     out = Path(a.out)
     dotnet = a.sdk
     if not Path(dotnet).is_file():
-        print(f'>> the .NET SDK is missing: {dotnet} (install it with dot.net, or set DOTNET=/path/to/dotnet)')
+        prebuilt = os.environ.get('NX2A_CSHARP_PREBUILT', '')
+        if prebuilt and copy_prebuilt(prebuilt, out):
+            invariant_runtime(out)
+            return 0
+        print(f'>> the .NET SDK is missing: {dotnet} (install it with dot.net, '
+              'or set DOTNET=/path/to/dotnet or NX2A_CSHARP_PREBUILT=/path/to/tools)')
         return 1
     # nx_extract (the extractor) and the shader translator (dmsh_xlate): the phone runs both, it builds neither
     for name, project in (('nx_extract', REPO / 'nxnative' / 'dm' / 'tools' / 'nx_extract'),
@@ -54,14 +87,7 @@ def main():
             return 1
         # the apphost is a Linux program: it has to be executable (the phone cannot exec a 0644 file)
         exe.chmod(0o755)
-    # the phone has no ICU: the runtime needs the invariant mode, and .NET 9+ wants it declared here
-    # (with the environment variable alone the runtime stops the program)
-    import json
-    for rc in Path(a.out).parent.glob('*/' + '*.runtimeconfig.json'):
-        d = json.loads(rc.read_text())
-        props = d.setdefault('runtimeOptions', {}).setdefault('configProperties', {})
-        props['System.Globalization.Invariant'] = True
-        rc.write_text(json.dumps(d, indent=2))
+    invariant_runtime(out)
     # The environment travels in one archive, and a tar carries the permissions with the files: the tools keep
     # the mode they have here (the executable one above).
     return 0
