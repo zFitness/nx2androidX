@@ -1032,13 +1032,33 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
             tsv, cuts = fpslocker.convert(text, bytes(img), self.BID)
         rows = [l.split('\t') for l in tsv.splitlines() if not l.startswith('#')]
         self.assertEqual(rows[1][2], '0x500')
-        self.assertEqual(rows[2][2], '0x104')   # [VARIABLE, dr_target] is main+the declared cell
+        self.assertEqual(len(rows), 2)   # the [VARIABLE, dr_target] row is baked into the cave, not written at runtime
         self.assertAlmostEqual(float(rows[1][4]), 1 / 60)
-        self.assertEqual([c[0] for c in cuts], [0x104, 0x400])
+        self.assertIn('declared variable', tsv)
+        self.assertEqual([c[0] for c in cuts], [0x104, 0x400])   # the cell is still baked into the cave
         vars_, consts, codes = fpsdecl.declarations(fpslocker.parse(text))
         self.assertAlmostEqual(vars_['dr_target'][1][60], 1 / 60)
         self.assertEqual(consts['c'], 0x3d088889)
         self.assertEqual(len(codes['getDr']), 3)
+
+    def test_declared_variable_rows_are_baked_not_written_at_runtime(self):
+        # A [VARIABLE, name] cell sits in the read-only executable cave. The host must not write it
+        # (hle_fpslock.c's memcpy would fault); the 60 fps value is assembled into the cave already.
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: dr\n    value_type: float\n'
+                '    default_value: 0.0166666666\n'
+                'ALL_FPS:\n  -\n    type: evaluate_write\n    address: [MAIN, 0x500]\n    value_type: float\n'
+                '    value: 1 / FPS_TARGET\n  -\n    type: write\n    address: [VARIABLE, dr]\n'
+                '    value_type: float\n    value: 0.0166666666\n')
+        img = bytearray(0x1000)
+        img[0x100:0x104] = b'\xc0\x03\x5f\xd6'   # ret, then padding
+        with mock.patch.object(fpsasm, 'assemble', side_effect=lambda sites: {o: b'\x89\x88\x88\x3c' for o, _ in sites}):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        rows = [l.split('\t') for l in tsv.splitlines() if not l.startswith('#')]
+        self.assertEqual(len(rows), 2)   # build line + the one MAIN row; the VARIABLE row is gone
+        self.assertEqual(rows[1][2], '0x500')
+        self.assertIn('declared variable', tsv)
+        self.assertIn(0x104, [c[0] for c in cuts])   # the cell is still baked into the cave
 
     def test_a_long_zero_run_after_a_branch_is_a_valid_cave(self):
         from porter import fpsasm
@@ -1052,6 +1072,33 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         img[0xfc:0x100] = b'\xff\xff\xff\xff'   # not a function terminator
         with self.assertRaises(fpsasm.AsmError):
             fpsasm.cave(bytes(img), 200)
+
+    def test_cave_search_skips_rodata(self):
+        from porter import fpsasm
+        img = bytearray(0x1000)
+        img[0xfc:0x100] = b'\xc0\x03\x5f\xd6'   # ret, then the text page ends at 0x400
+        self.assertEqual(fpsasm.cave(bytes(img), 64, text=(0, 0x400)), 0x100)
+        with self.assertRaises(fpsasm.AsmError):
+            fpsasm.cave(bytes(img), 64, text=(0, 0x100))   # the only run is outside text
+
+    def test_declarations_use_only_the_text_range(self):
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: dr\n    value_type: float\n'
+                '    default_value: 0.0166666666\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[ldr, s0, $dr]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'   # a zero run at 0x84, inside text
+        img[0xfc:0x100] = b'\xc0\x03\x5f\xd6'   # a zero run at 0x100, outside text (text ends at 0x100)
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(o for o, _ in sites)
+            return {o: b'\1' * 4 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x100))
+        self.assertEqual(tsv.count('\n'), 4)   # head, legend, build, one row (no routine => no note)
+        self.assertEqual([c[0] for c in cuts], [0x84, 0x200])
+        self.assertEqual(seen[2:], [0x84, 0x200])   # the first two sites are the measurement pass at 0x100
 
     def test_refresh_rate_entry_is_skipped_not_fatal(self):
         from porter import fpsasm, fpslocker

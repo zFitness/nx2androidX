@@ -40,13 +40,15 @@ def clang():
 
 
 def layout(path):
-    """(image, build id, text range) of an NSO: text is the first segment's memory range."""
+    """(image, build id, executable text range) of an NSO: text ends where rodata begins, including
+    the zero padding at the end of the text page. A cave in rodata would fault on instruction fetch."""
     from porter import fpslocker
     d = Path(path).read_bytes()
     if d[:4] != b'NSO0': raise AsmError(f'{path} is not an NSO')
     segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
     img, bid = fpslocker.nso_image(path)
-    return img, bid, (segs[0][1], segs[0][1] + segs[0][2])
+    end = segs[1][1] if len(segs) > 1 and segs[1][1] > segs[0][1] else segs[0][1] + segs[0][2]
+    return img, bid, (segs[0][1], min(end, len(img)))
 
 
 def _terminator(image, i):

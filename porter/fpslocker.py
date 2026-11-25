@@ -133,14 +133,15 @@ def parse(text):
     return y
 
 
-def convert(text, image, build_id, source=''):
-    """The config → (fpslock.tsv text, CUTS rows [(offset, original hex, new hex, reason)]). Raises Refused naming what the host cannot do"""
+def convert(text, image, build_id, source='', text_range=None):
+    """The config → (fpslock.tsv text, CUTS rows [(offset, original hex, new hex, reason)]). Raises Refused naming what the host cannot do.
+    text_range is the executable text page (lo, hi); assembled code must live there, not in rodata."""
     from porter import fpsdecl
     y = parse(text)
     unknown = set(y) - {'ALL_FPS', 'MASTER_WRITE', 'DECLARATIONS', 'unsafeCheck', 'Addons'}
     if unknown: raise Refused(f'unknown sections {", ".join(sorted(map(str, unknown)))}')
     if y.get('Addons'): raise Refused('it needs extra files (Addons)')
-    ctx = fpsdecl.build(y, image)
+    ctx = fpsdecl.build(y, image, text_range=text_range)
     rows, cuts, notes = [], list(ctx.cuts), list(ctx.notes)
     for i, e in enumerate(y.get('ALL_FPS') or []):
         what = f'ALL_FPS entry {i + 1}'
@@ -150,6 +151,15 @@ def convert(text, image, build_id, source=''):
             if e.get('what') != 'timing': raise Refused(f'{what}: block {e.get("what")!r}')
             continue
         if t not in ('write', 'evaluate_write', 'compare', 'evaluate_compare'): raise Refused(f'{what}: type {t!r}')
+        # A declared variable is a cell in the assembled cave, which lives in main's read-only
+        # executable text (fpsasm lays out code there so a `bl` can reach it). Its value is baked
+        # in at port time for the 60 fps build, so the host must not try to write it at runtime:
+        # the memcpy in hle_fpslock.c would fault on the read-only page. The game reads the cell
+        # through the code we patched, so the value is already in effect without this row.
+        addr = e.get('address')
+        if isinstance(addr, list) and len(addr) == 2 and addr[0] == 'VARIABLE':
+            notes.append(f"{what}: declared variable {addr[1]!r} is baked into the assembled code, not written at runtime")
+            continue
         kind = e.get('value_type')
         if kind is None and t.endswith('compare'):   # compare entries often omit it: the written value says
             v0 = e.get('value')

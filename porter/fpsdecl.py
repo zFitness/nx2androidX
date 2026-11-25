@@ -74,9 +74,10 @@ def _token(x, ctx, mem=False):
 
 
 class Context:
-    def __init__(self, y, image, vars_, consts, codes):
+    def __init__(self, y, image, vars_, consts, codes, text_range=None):
         self.vars, self.consts, self.codes = vars_, consts, codes
         self.image = image
+        self.text_range = text_range
         self.var_addr = {n: None for n in vars_}
         self.cuts, self.notes = [], []
         self.masters = []
@@ -143,7 +144,7 @@ class Context:
         except fpsasm.AsmError as e:
             raise Refused(f'the declarations do not assemble: {e}') from None
         need = len(measure[0x100])
-        off = fpsasm.cave(self.image, need, forbidden=[o for o, _, _ in self.masters])
+        off = fpsasm.cave(self.image, need, forbidden=[o for o, _, _ in self.masters], text=self.text_range)
         try:
             final = fpsasm.assemble(self._sites(off))
         except fpsasm.AsmError as e:
@@ -173,7 +174,7 @@ class Context:
         return a
 
 
-def build(y, image):
+def build(y, image, text_range=None):
     """The context a config needs; no declarations and no instruction patches need no assembler."""
     vars_, consts, codes = declarations(y)
-    return Context(y, image, vars_, consts, codes)
+    return Context(y, image, vars_, consts, codes, text_range=text_range)
