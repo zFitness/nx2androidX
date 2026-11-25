@@ -412,8 +412,25 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     pthread_mutex_unlock(&g_render_mu);
     return RES_OK;
 }
+// The AudioRenderSystem's offset inside AudioRendererImpl is not fixed: SDK 16 and 20 use +0x60, SDK 3.4 uses +0x50 (SteamWorld Dig). Taking +0x60 for the older SDK read other
+// fields as the execution mode and rendering device, so every render failed with 0x40299 and played silence. Read the add x0, #imm12 the SDK's own ExecuteAudioRendererRendering
+// puts before its first branch; anything that cannot be read keeps +0x60. The lookup is by symbol name, not by a game ID.
+static size_t impl_sys_off(void) {
+    static size_t off = 0, done;
+    if (done) return off;
+    off = 0x60;
+    const uint32_t *f = guest_sym("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv");
+    for (int i = 0; f && i < 16; i++) {
+        uint32_t w = f[i];
+        if ((w & 0xffc003e0u) == 0x91000000u) { off = (w >> 10) & 0xfff; break; }   // add xd, x0, #imm12
+        if ((w & 0x7c000000u) == 0x14000000u) break;   // b / bl: no offset before the first branch
+    }
+    done = 1;
+    LOG("audren: AudioRenderSystem at +%#zx in AudioRendererImpl", off);
+    return off;
+}
 HLE_FORCE("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv", "render one frame manually: SDK generates commands + CPU processing, the host takes the DeviceSink output",
-          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + 0x60, g_frame, &g_frame_n); }   // the AudioRenderSystem sits at +0x60 inside AudioRendererImpl
+          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + impl_sys_off(), g_frame, &g_frame_n); }
 // SDK 20 (The Legend of Zelda: Breath of the Wild 1.9.0): the public ExecuteAudioRendererRendering (sdk+0x221e90) calls the AudioRendererImpl version through the vtable (sdk+0x22ca88, just x0 += 0x60 and a jump through the PLT to here),
 // so the takeover above is never reached. The original generates commands here without the update lock; with the render thread on the original and the game thread's RequestUpdate rendering catch-up frames ("nothing rendered since the last update"),
 // both sides wrote the same command buffer at once and CommandListProcessor::Process sometimes read a half-written command list and crashed (once at 60 s and once at 134 s in the shrine). Taken over here, so rendering goes through the host's locked render as well
