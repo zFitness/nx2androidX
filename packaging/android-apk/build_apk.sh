@@ -60,7 +60,7 @@ fi
 
 # 2. the build tools
 echo ">> the build tools"
-"$py" "$here/fetch_debs.py" --out "$cache/debs" --cache "$cache/.deb-cache" glslc >/dev/null
+"$py" "$here/fetch_debs.py" --out "$cache/debs" --cache "$cache/.deb-cache" glslc zlib1g >/dev/null
 "$py" "$here/build_toolchain.py" --out "$cache/toolchain" --cache "$cache" --debs "$cache/debs"
 
 # 3. the payload the app ships
