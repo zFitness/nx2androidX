@@ -181,12 +181,15 @@ def payload_rootfs(payload: Path, out: Path, assets: Path, debs: Path | None = N
         if libdir.is_dir():
             import tarfile
             with tarfile.open(trimmed) as tf:
-                have = set(tf.getnames())
+                have = {n.lstrip('./') for n in tf.getnames()}
             with tarfile.open(trimmed, 'a') as tf:
                 for src in sorted(libdir.iterdir()):
                     name = f'usr/lib/aarch64-linux-gnu/{src.name}'
                     if name not in have:
-                        tf.add(src, arcname=name, recursive=False)
+                        info = tf.gettarinfo(str(src), arcname=name)
+                        if info.isfile():
+                            info.mode = 0o755
+                        tf.addfile(info, src.open('rb') if info.isfile() else None)
     import gzip
     with trimmed.open('rb') as src, gzip.open(target, 'wb', compresslevel=6) as f:
         shutil.copyfileobj(src, f, 1 << 20)
