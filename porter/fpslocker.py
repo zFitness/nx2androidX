@@ -127,6 +127,9 @@ def chain(a, what):   # [MAIN, off, …]: every offset but the last names a poin
 def parse(text):
     import yaml
     text = re.sub(r'(?m)([\[,]\s*):([A-Za-z_]\w*)', r'\1":\2"', text)   # asm labels (:goto1) are plain scalars to FPSLocker's parser, a syntax error to PyYAML
+    # A signed branch immediate is PC-relative (FORMAT.md:179), but PyYAML would drop its '+' sign.
+    # Quote it so fpsdecl can assemble it as '. + N' instead of an absolute address.
+    text = re.sub(r'(\[\s*(?:b|bl|cbz|cbnz|tbz|tbnz|b\.[a-z]+)\b[^\]]*?,\s*)([+-]\d+)(?=\s*\])', r'\1"\2"', text)
     try: y = yaml.safe_load(text)
     except yaml.YAMLError as e: raise Refused(f'the config does not parse: {str(e).splitlines()[0]}') from None
     if not isinstance(y, dict): raise Refused('the config is not a YAML mapping')
@@ -140,9 +143,12 @@ def convert(text, image, build_id, source='', text_range=None):
     y = parse(text)
     unknown = set(y) - {'ALL_FPS', 'MASTER_WRITE', 'DECLARATIONS', 'unsafeCheck', 'Addons'}
     if unknown: raise Refused(f'unknown sections {", ".join(sorted(map(str, unknown)))}')
-    if y.get('Addons'): raise Refused('it needs extra files (Addons)')
+    addons = [str(a) for a in (y.get('Addons') or [])]
     ctx = fpsdecl.build(y, image, text_range=text_range)
     rows, cuts, notes = [], list(ctx.cuts), list(ctx.notes)
+    # Addons name Switch-side files (e.g. an Atmosphere NPDM) that are meaningless here:
+    # Android needs neither Switch privileges nor those files to run the converted patch.
+    notes.extend(f'Addon {a!r} is a Switch-side file; not installed on Android' for a in addons)
     for i, e in enumerate(y.get('ALL_FPS') or []):
         what = f'ALL_FPS entry {i + 1}'
         if not isinstance(e, dict): raise Refused(f'{what} is not a mapping')

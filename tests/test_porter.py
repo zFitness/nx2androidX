@@ -1100,6 +1100,95 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         self.assertEqual([c[0] for c in cuts], [0x84, 0x200])
         self.assertEqual(seen[2:], [0x84, 0x200])   # the first two sites are the measurement pass at 0x100
 
+    def test_builtin_convert_tick_routine_is_assembled_into_the_cave(self):
+        from porter import fpsasm, fpslocker
+        text = ('MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _convertTickToTimeSpan()]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'   # ret, then padding inside text
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        cave = '\n'.join(seen[0])
+        self.assertIn('cntfrq_el0', cave)   # ticks → ns uses the device's timer frequency
+        self.assertIn('fcvtzu', cave)
+        self.assertIn('1 routine(s)', tsv)
+        self.assertEqual([c[0] for c in cuts], [0x84, 0x200])
+
+    def test_addons_and_builtin_sleep_routine_are_not_refused(self):
+        from porter import fpsasm, fpslocker
+        text = ('Addons:\n  - atmosphere/contents/0100F2C0115B6000/exefs/main.npdm\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[b, _setUserInactivityDetectionTimeExtended()]]\n'
+                'ALL_FPS:\n  -\n    type: write\n    address: [MAIN, 0x500]\n'
+                '    value_type: int32\n    value: 2\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        self.assertIn('Addon', tsv)
+        self.assertIn('not installed on Android', tsv)
+        self.assertIn('1 routine(s)', tsv)
+        self.assertEqual([c[0] for c in cuts], [0x84, 0x200])
+        self.assertEqual('\n'.join(seen[0]).count('\tret'), 1)   # no-op sleep stub
+
+    def test_float_compare_zero_immediate_is_spelled_for_gas(self):
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: code\n    name: check\n'
+                '    instructions: [[fcmp, s0, 0], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _check()]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        self.assertIn('\tfcmp s0, #0.0', seen[0])
+
+    def test_signed_branch_immediate_is_relative_not_absolute(self):
+        from porter import fpsasm, fpslocker
+        text = ('MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[b, +12], [cbnz, w0, -4]]\n')
+        y = fpslocker.parse(text)
+        ins = y['MASTER_WRITE'][0]['instructions']
+        self.assertEqual(ins, [['b', '+12'], ['cbnz', 'w0', '-4']])   # the '+' sign survives YAML
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        self.assertIn('\tb . + 12', seen[1])
+        self.assertIn('\tcbnz w0, . - 4', seen[1])
+
+    def test_writeback_flag_attaches_to_the_memory_operand(self):
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: code\n    name: push\n'
+                '    instructions: [[stp, x29, x30, [sp, -16], "!"], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _push()]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        self.assertIn('\tstp x29, x30, [sp, -16]!', seen[0])
+
     def test_refresh_rate_entry_is_skipped_not_fatal(self):
         from porter import fpsasm, fpslocker
         text = ('ALL_FPS:\n  -\n    type: write\n    address: [MAIN, 0x500]\n    value_type: int32\n    value: 2\n'

@@ -22,6 +22,47 @@ def number(v):
         except ValueError: raise Refused(f'{v!r} is not a number') from None
 
 
+# FORMAT.md's two built-in routines, callable from any B/BL in a config. convertTickToTimeSpan
+# takes a cntpct_el0 delta in x0 and returns nanoseconds; reading cntfrq_el0 makes the conversion
+# right on every device, not just the Switch's 19.2 MHz timer. The other routine blocks console
+# auto-sleep; Android has no such service, so its whole rule is a no-op return.
+BUILTINS = {
+    'convertTickToTimeSpan': [
+        ['mrs', 'x9', 'cntfrq_el0'],
+        ['ucvtf', 'd0', 'x0'],
+        ['ucvtf', 'd1', 'x9'],
+        ['fdiv', 'd0', 'd0', 'd1'],
+        ['movz', 'x9', 0xca00],
+        ['movk', 'x9', 0x3b9a, 16],   # 1,000,000,000 is not a single logical immediate
+        ['ucvtf', 'd2', 'x9'],
+        ['fmul', 'd0', 'd0', 'd2'],
+        ['fcvtzu', 'x0', 'd0'],
+        ['ret'],
+    ],
+    'setUserInactivityDetectionTimeExtended': [['ret']],
+}
+
+
+def _calls(x):
+    if isinstance(x, str) and x.startswith('_') and x.endswith('()'):
+        yield x[1:-2]
+    elif isinstance(x, list):
+        for i in x:
+            yield from _calls(i)
+
+
+def _add_builtins(codes, y):
+    """Pull the built-in routines a config calls into its code cave before it is laid out."""
+    todo = [[e.get('instructions') for e in (y.get(k) or []) if isinstance(e, dict)]
+            for k in ('DECLARATIONS', 'MASTER_WRITE', 'unsafeCheck')]
+    pending = [ins for group in todo for ins in group]
+    while pending:
+        for name in _calls(pending.pop()):
+            if name not in codes and name in BUILTINS:
+                codes[name] = BUILTINS[name]
+                pending.append(BUILTINS[name])
+
+
 def declarations(y):
     """(variables, constants, routines) of a config. variables: name → (type, {30: v, 60: v})."""
     vars_, consts, codes = {}, {}, {}
@@ -64,11 +105,14 @@ def _token(x, ctx, mem=False):
             if n not in ctx.codes: raise Refused(f'undefined routine _{n}()')
             return 'c_' + n
         if x.startswith(':'): return x[1:]     # a branch label, defined or referenced
+        if x[:1] in '+-' and x[1:].isdigit() and (ctx.mnem in ('b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz') or ctx.mnem.startswith('b.')):
+            return '. %s %s' % (x[0], x[1:])   # a signed branch immediate is PC-relative, not an address
         return x                              # register, mnemonic, condition
     if isinstance(x, bool): raise Refused(f'{x!r} is not an instruction operand')
     if isinstance(x, (int, float)):
         n = int(x) if isinstance(x, float) and x.is_integer() else x
         if ctx.mnem == 'movk' and n in (0, 16, 32, 48): return 'lsl #%d' % n   # movk's rotate syntax
+        if ctx.mnem in ('fcmp', 'fcmpe') and n == 0: return '#0.0'   # GAS spells the float-zero immediate this way
         return str(n) if mem or ctx.mnem in ('adrp', 'adr', 'b', 'bl', 'blr', 'br') or ctx.mnem.startswith('b.') else '#%s' % n
     raise Refused(f'instruction operand {x!r}')
 
@@ -120,7 +164,13 @@ class Context:
             self.mnem, self.shift = x[0], None
             for o in x[1:]:
                 if self.mnem == 'movk' and isinstance(o, int) and o in (0, 16, 32, 48): self.shift = o
-            out.append('\t' + x[0] + (' ' + ', '.join(_token(o, self) for o in x[1:]) if len(x) > 1 else ''))
+            parts = []
+            for o in x[1:]:
+                if o == '!':   # the writeback flag belongs to the preceding memory operand
+                    parts[-1] += '!' if parts else '!'
+                else:
+                    parts.append(_token(o, self))
+            out.append('\t' + x[0] + (' ' + ', '.join(parts) if parts else ''))
         return out
 
     def _sites(self, cave):
@@ -177,4 +227,5 @@ class Context:
 def build(y, image, text_range=None):
     """The context a config needs; no declarations and no instruction patches need no assembler."""
     vars_, consts, codes = declarations(y)
+    _add_builtins(codes, y)
     return Context(y, image, vars_, consts, codes, text_range=text_range)
