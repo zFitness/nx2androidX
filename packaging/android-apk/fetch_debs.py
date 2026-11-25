@@ -76,13 +76,27 @@ def extract_deb(data, dest):
         if not name.startswith('data.tar'): continue
         mode = 'r:gz' if name.endswith('.gz') else ('r:xz' if name.endswith('.xz') else ('r:bz2' if name.endswith('.bz2') else 'r:*'))
         with tarfile.open(fileobj=io.BytesIO(body), mode=mode) as t:
+            members = []
             for m in t.getmembers():
                 n = m.name.lstrip('./')
                 if not n or n.startswith('/'): continue
                 if any(n.startswith(p) for p in SKIP_FILES): continue
                 m.name = n
-                # the filter keyword only exists from the release that carries tar_filter (3.12, backported);
-                # a system python (macOS ships 3.9) rejects it even when the value is None
+                members.append(m)
+            # Python 3.14's tar_filter resolves the member's path with realpath(strict=ALLOW_MISSING).
+            # On Windows that raises WinError 123 when the member's parent directory does not exist
+            # yet, so make the whole tree first. Symlink targets are resolved the same way.
+            for m in members:
+                member_path = Path(dest) / m.name
+                member_path.parent.mkdir(parents=True, exist_ok=True)
+                # A stale symlink from an earlier unpack makes realpath() fail on Windows before
+                # the filter can replace it; the member's own extraction recreates it.
+                if member_path.is_symlink(): member_path.unlink()
+                if m.issym() and not Path(m.linkname).is_absolute():
+                    member_path.parent.joinpath(m.linkname).parent.mkdir(parents=True, exist_ok=True)
+            for m in members:
+                # The filter keyword only exists from the release that carries tar_filter (3.12,
+                # backported); a system python (macOS ships 3.9) rejects it even when the value is None.
                 t.extract(m, dest, **({'filter': 'tar'} if hasattr(tarfile, 'tar_filter') else {}))
         return
     raise RuntimeError('no data.tar in the .deb')
