@@ -413,6 +413,11 @@ def add_tree(out: tarfile.TarFile, source: Path, prefix: str) -> int:
         rel = path.relative_to(source).as_posix()
         member = out.gettarinfo(str(path), arcname=f'{prefix}/{rel}')
         if member.isreg():
+            # Windows has no execute bit: a tool that is executable on Linux is copied here with mode 0644.
+            # The guest runs these tools directly, so put the bit in the archive instead of the file system.
+            if not member.mode & 0o111 and not path.suffix and (
+                    'bin' in rel.parts or 'tools' in rel.parts or 'dmsh_xlate_bin' in rel.parts):
+                member.mode = 0o755
             with path.open('rb') as f:
                 out.addfile(member, f)
             size += member.size
