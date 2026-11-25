@@ -162,6 +162,12 @@ def main():
     llvm_tools(llvm_tar, out)
     debs_tools(debs, out)
     strip(list((out / 'clang' / 'bin').glob('*')))
+    # the stripper rewrites the files in place and can drop the executable bit (notably on Windows)
+    for p in (out / 'clang' / 'bin').glob('*'):
+        if p.is_file(): p.chmod(0o755)
+    for rel in ('bin/glslc', 'lib/libshaderc.so.1'):
+        p = out / rel
+        if p.is_file(): p.chmod(0o755)
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
     print(f'>> the toolchain at {out}: {size / 2**20:.0f} MB')
     return 0
