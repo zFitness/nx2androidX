@@ -1113,10 +1113,52 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
             tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
         cave = '\n'.join(seen[0])
-        self.assertIn('cntfrq_el0', cave)   # ticks → ns uses the device's timer frequency
-        self.assertIn('fcvtzu', cave)
+        self.assertNotIn('cntfrq_el0', cave)   # Android traps that system register at EL0
+        self.assertIn('udiv', cave)            # ticks * 625 / 12 = ns on the Switch's 19.2 MHz timer
         self.assertIn('1 routine(s)', tsv)
         self.assertEqual([c[0] for c in cuts], [0x84, 0x200])
+
+    def test_adrp_is_kept_when_its_page_base_is_used_later(self):
+        # Folding adrp+ldr into one literal load must not drop the page base when a later
+        # instruction (here a str to the same $var) still needs it — Xenoblade 2 faulted at 0.
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: x\n    value_type: uint32\n'
+                '    default_value: 1\n  -\n    type: code\n    name: touch\n'
+                '    instructions: [[adrp, x2, $x], [ldr, x1, [x2, $x]], [str, x0, [x2, $x]], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _touch()]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        cave = '\n'.join(seen[0])
+        self.assertIn('adrp x2, 0x0', cave)
+        self.assertIn('ldr x1, [x2, 0x100]', cave)
+        self.assertIn('str x0, [x2, 0x100]', cave)
+
+    def test_physical_counter_reads_use_the_virtual_counter(self):
+        # Android traps cntpct_el0 at EL0 (SIGILL on the first cave instruction in Xenoblade 2).
+        # The config's mrs must become an EL0-readable cntvct_el0, without a game-specific rule.
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: code\n    name: tick\n'
+                '    instructions: [[mrs, x0, cntpct_el0], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _tick()]]\n')
+        img = bytearray(0x1000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend(lines for _, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
+        cave = '\n'.join(seen[0])
+        self.assertNotIn('cntpct_el0', cave)
+        self.assertIn('cntvct_el0', cave)
 
     def test_addons_and_builtin_sleep_routine_are_not_refused(self):
         from porter import fpsasm, fpslocker

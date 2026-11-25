@@ -23,24 +23,27 @@ def number(v):
 
 
 # FORMAT.md's two built-in routines, callable from any B/BL in a config. convertTickToTimeSpan
-# takes a cntpct_el0 delta in x0 and returns nanoseconds; reading cntfrq_el0 makes the conversion
-# right on every device, not just the Switch's 19.2 MHz timer. The other routine blocks console
-# auto-sleep; Android has no such service, so its whole rule is a no-op return.
+# takes a cntpct_el0 delta in x0 and returns nanoseconds. The Switch's arch timer runs at 19.2
+# MHz, so ns = ticks * 1e9 / 19.2e6 = ticks * 625 / 12. Do not read cntfrq_el0 here: Android traps
+# that system register at EL0 (SIGILL at the first cave instruction on the Odin 3). The other
+# routine blocks console auto-sleep; Android has no such service, so its rule is a no-op return.
 BUILTINS = {
     'convertTickToTimeSpan': [
-        ['mrs', 'x9', 'cntfrq_el0'],
-        ['ucvtf', 'd0', 'x0'],
-        ['ucvtf', 'd1', 'x9'],
-        ['fdiv', 'd0', 'd0', 'd1'],
-        ['movz', 'x9', 0xca00],
-        ['movk', 'x9', 0x3b9a, 16],   # 1,000,000,000 is not a single logical immediate
-        ['ucvtf', 'd2', 'x9'],
-        ['fmul', 'd0', 'd0', 'd2'],
-        ['fcvtzu', 'x0', 'd0'],
+        ['mov', 'x9', 625],
+        ['mul', 'x9', 'x0', 'x9'],
+        ['mov', 'x10', 12],
+        ['udiv', 'x0', 'x9', 'x10'],
         ['ret'],
     ],
     'setUserInactivityDetectionTimeExtended': [['ret']],
 }
+
+
+def _reg_occurs(x, reg):
+    """Does a register appear anywhere in an instruction (including inside [base, ...])?"""
+    if isinstance(x, str): return x == reg
+    if isinstance(x, list): return any(_reg_occurs(i, reg) for i in x)
+    return False
 
 
 def _calls(x):
@@ -93,7 +96,15 @@ def _token(x, ctx, mem=False):
     if isinstance(x, str):
         if x.startswith('$'):
             n = x[1:]
-            if n in ctx.vars: return ':lo12:v_' + n if mem else 'v_' + n
+            if n in ctx.vars:
+                # The object file has unresolved relocations: symbol-based adrp/:lo12: pairs
+                # assemble with a zero offset. Emit the site's numeric addresses instead.
+                addr = (getattr(ctx, '_pass_addr', None) or {}).get(n)
+                if addr is not None:
+                    if ctx.mnem == 'adrp': return hex(addr & ~0xfff)
+                    if mem: return hex(addr & 0xfff)
+                    return hex(addr)
+                return ':lo12:v_' + n if mem else 'v_' + n
             if n in ctx.consts:
                 v = ctx.consts[n]
                 if ctx.mnem == 'mov': v &= 0xffff
@@ -105,6 +116,9 @@ def _token(x, ctx, mem=False):
             if n not in ctx.codes: raise Refused(f'undefined routine _{n}()')
             return 'c_' + n
         if x.startswith(':'): return x[1:]     # a branch label, defined or referenced
+        # Android traps the physical counter at EL0; the virtual counter is the EL0-readable
+        # arch timer (the kernel's own vDSO uses it). Both run at the SoC's arch-timer rate.
+        if ctx.mnem == 'mrs' and x == 'cntpct_el0': return 'cntvct_el0'
         if x[:1] in '+-' and x[1:].isdigit() and (ctx.mnem in ('b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz') or ctx.mnem.startswith('b.')):
             return '. %s %s' % (x[0], x[1:])   # a signed branch immediate is PC-relative, not an address
         return x                              # register, mnemonic, condition
@@ -148,7 +162,10 @@ class Context:
             a, b = ins[i], ins[i + 1] if i + 1 < len(ins) else None
             if (isinstance(a, list) and len(a) == 3 and a[0] == 'adrp' and str(a[2]).startswith('$')
                     and isinstance(b, list) and len(b) == 3 and b[0] == 'ldr' and isinstance(b[2], list)
-                    and len(b[2]) == 2 and b[2][0] == a[1] and str(b[2][1]) == str(a[2])):
+                    and len(b[2]) == 2 and b[2][0] == a[1] and str(b[2][1]) == str(a[2])
+                    # The adrp also leaves the page base in a[1] for later instructions (e.g. a
+                    # str to the same $var). Folding it away there would leave that base unset.
+                    and not any(_reg_occurs(x, a[1]) for x in ins[i + 2:])):
                 folded.append(['ldr', b[1], a[2]])
                 i += 2
                 continue
@@ -174,6 +191,12 @@ class Context:
         return out
 
     def _sites(self, cave):
+        self.base = cave
+        self._pass_addr = {}
+        at = cave
+        for n, (kind, _) in self.vars.items():
+            self._pass_addr[n] = at
+            at += 8 if kind == 'double' else 4
         cave_lines = []
         for n, (kind, vals) in self.vars.items():
             cave_lines.append('v_%s:' % n)
@@ -183,7 +206,7 @@ class Context:
                 cave_lines.append('\t.word 0x%08X' % struct.unpack('<I', struct.pack('<f', vals[60]))[0])
         for n, ins in self.codes.items():
             cave_lines.append('c_%s:' % n)
-            cave_lines.extend(self.lines(ins))
+            cave_lines.extend(self.lines(ins, False))   # no folded literal loads: they need a PC-relative relocation
         sites = [(cave, cave_lines)]
         sites.extend((off, self.lines(ins, False)) for off, ins, _ in self.masters)
         return sites
