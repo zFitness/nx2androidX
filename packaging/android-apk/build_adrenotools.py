@@ -30,6 +30,31 @@ API = '31'                       # the API the host is built for (dm/android/bui
 LOADER = 'libadrenotools.so'     # the one the host dlopens by name: it goes into the app's native library folder
 
 
+def copy_prebuilt(src, out, jni):
+    """Reuse the driver loader built on a machine that has the Android NDK.
+
+    NX2A_ADRENOTOOLS_PREBUILT may be the tool folder itself or the app's files/ tree; an explicit
+    variable keeps stale binaries from being used silently when the sources change.
+    """
+    src = Path(src)
+    nested = src / 'files' / 'tool' / 'tools' / 'adrenotools'
+    if not (src / LOADER).is_file() and (nested / LOADER).is_file():
+        src = nested
+    libs = sorted(src.glob('lib*.so'))
+    if not (src / LOADER).is_file() or len(libs) != 5:
+        return False
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    for lib in libs:
+        shutil.copy2(lib, out / lib.name)
+        (out / lib.name).chmod(0o755)
+        print(f'   {lib.name:32} {lib.stat().st_size / 1024:8.0f} KB')
+    jni.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(out / LOADER, jni / LOADER)
+    print(f'>> {LOADER} from {src} (no NDK needed)')
+    return True
+
+
 def find_ndk(given):
     """The NDK with the compiler: the one that was named, else the one in the environment, else the newest in the SDK.
     r27c is the one the repository's tools are built with (porter/config.py), so it is preferred when the SDK has it"""
@@ -56,6 +81,9 @@ def main():
     a = ap.parse_args()
     out = Path(a.out)
     jni = Path(a.jni_out)
+    prebuilt = os.environ.get('NX2A_ADRENOTOOLS_PREBUILT', '')
+    if prebuilt and copy_prebuilt(prebuilt, out, jni):
+        return 0
     ndk = find_ndk(a.ndk)
     if ndk is None:
         print('>> no Android NDK: the driver loader is not built (a driver the player imports will not load)')
