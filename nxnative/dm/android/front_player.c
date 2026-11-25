@@ -162,9 +162,14 @@ static void hold_sync(void) {
 }
 void dm_app_hold(int on) { atomic_store(&g_ui_on, on != 0); hold_sync(); }   // the app's panel is up (the layout editor): the game waits
 static void shake_sensor(int on);   // the accelerometer, off in the background (input, below)
+static void screen_keep(int on);   // the Activity's window keeps FLAG_KEEP_SCREEN_ON while the game runs (below)
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension
-    hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
-static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
+    hold_sync(); dm_gfx_suspend(1); shake_sensor(0);
+    dm_guest_threads_park();   // the guest's threads stop: while the game is held they keep running and keep making Vulkan memory pools
+    screen_keep(0); }   // the screen is not kept on any more: the app is in the background
+static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1);
+    if (!atomic_load(&g_ui_on) && !atomic_load(&g_tx_on)) dm_guest_threads_unpark();   // the guest's threads run again (unless the game is still held for another reason)
+    screen_keep(1); }   // the game is in front again: the screen stays on
 void dm_perf_gpu_release(void);   // perf_android.c: the GPU's clock control back to its governor (DM_GPU_TURBO)
 // the player's lifecycle (jni_android.h): the same dance
 void dm_java_lifecycle(int ev) {
@@ -620,6 +625,34 @@ static int64_t g_mo_next;             // the next read of the switches (the app'
 // the display's rotation, read through JNI (the Activity's window): 0..3 = 0, 90, 180, 270 degrees
 static JNIEnv *g_menv; static jobject g_display; static jmethodID g_mRotation; static int g_rot;
 static int jexc(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
+
+// ---- the screen stays on while the game runs: the Activity's window keeps FLAG_KEEP_SCREEN_ON ----
+// The device's screen timeout puts the Activity into the background, and the game dies there (the case file of
+// 010078D000F88000). The flag is set when the host starts and taken away when the app goes into the background.
+#define DM_FLAG_KEEP_SCREEN_ON 0x00000080   // android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+static jobject g_app_win; static jmethodID g_mWinAdd, g_mWinClear;
+static void screen_keep(int on) {
+    JavaVM *vm = g_app_vm; JNIEnv *E = NULL;
+    if (!vm || !g_app_act) return;
+    // the call can come from the Java thread (the start, the lifecycle) or from another one (the notice thread): the VM attaches it
+    if ((*vm)->AttachCurrentThread(vm, &E, NULL) != JNI_OK || !E) { LOG("[RED] [app] cannot reach the Java VM: the screen is not kept on"); return; }
+    if (!g_app_win) {
+        jclass cA = (*E)->GetObjectClass(E, g_app_act);
+        jmethodID mGetWindow = cA ? (*E)->GetMethodID(E, cA, "getWindow", "()Landroid/view/Window;") : NULL;
+        jobject w = mGetWindow ? (*E)->CallObjectMethod(E, g_app_act, mGetWindow) : NULL;
+        if (jexc(E) || !w) { LOG("[RED] [app] the Activity has no Window: the screen is not kept on"); return; }
+        jclass cW = (*E)->GetObjectClass(E, w);
+        g_mWinAdd = cW ? (*E)->GetMethodID(E, cW, "addFlags", "(I)V") : NULL;
+        g_mWinClear = cW ? (*E)->GetMethodID(E, cW, "clearFlags", "(I)V") : NULL;
+        if (jexc(E) || !g_mWinAdd || !g_mWinClear) { LOG("[RED] [app] the Window takes no flags: the screen is not kept on"); g_mWinAdd = g_mWinClear = NULL; return; }
+        g_app_win = (*E)->NewGlobalRef(E, w);
+        if (!g_app_win) { LOG("[RED] [app] the Window's reference is lost: the screen is not kept on"); g_mWinAdd = g_mWinClear = NULL; return; }
+    }
+    if (on) (*E)->CallVoidMethod(E, g_app_win, g_mWinAdd, (jint)DM_FLAG_KEEP_SCREEN_ON);
+    else (*E)->CallVoidMethod(E, g_app_win, g_mWinClear, (jint)DM_FLAG_KEEP_SCREEN_ON);
+    if (jexc(E)) { LOG("[RED] [app] the window's flag did not go through"); return; }
+    LOG("[app] the screen is %s", on ? "kept on" : "no longer kept on");
+}
 static void rotation_start(void) {
     JavaVM *vm = g_app_vm; JNIEnv *E;
     if (!vm || !g_app_act || (*vm)->AttachCurrentThread(vm, &E, NULL) != JNI_OK) { LOG("[RED] front end: the input thread cannot reach the Activity: motion keeps rotation 0"); return; }
@@ -844,6 +877,7 @@ int dm_java_start(const char *pack, const char *internal, const char *title_id, 
     // live switches (DM_LSFG* and friends) work in release builds too, with no adb key presses reachable
     { char ctl[700]; snprintf(ctl, sizeof ctl, "%s/ctl-%s.txt", internal, title_id && title_id[0] ? title_id : "game"); setenv("DM_CTL", ctl, 1); }
     if (E && vm && ctx) app_notice_keep(E, vm, ctx);   // the host's notices to the app (the Activity keeps the drawer's state)
+    screen_keep(1);   // the game runs in front: the device's screen must not go off under it
     host_start_common(E, vm, ctx, internal);
     return g_host_up ? 1 : 0;
 }
