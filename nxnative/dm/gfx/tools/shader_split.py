@@ -1307,7 +1307,10 @@ def slct_programs(s, xv4, xc, ctls, uc, label, strict):
         for si, co, cl, to, tl in (struct.unpack_from('<5I', nv, eo + 20 * i) for i in range(en)):
             if not cl: continue
             code, ctl = xv4[xc + co:xc + co + cl], ctls[uc + to:uc + to + tl]
-            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else 'cs' if LOOSE_MONO and si == 5 else None   # stage 5 is compute: Xenoblade Chronicles: Definitive Edition's has no code header (shd_lgt / shd_post.wishp)
+            # A code area with no magic is compute when its control section's thread group (+0x748) is filled: the shared
+            # glslc_stage rule, so any game's headerless compute is read, not just a loose Monolith profile's stage 5
+            # (Xenoblade Chronicles 2's shd_effect.wishp has one; Xeno1's shd_lgt / shd_post.wishp keep the stage-5 fallback).
+            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else glslc_stage(ctl, code) or ('cs' if LOOSE_MONO and si == 5 else None)
             why = 'no code area header' if not st else check(label, st, ctl, code)
             if why and strict: red(f'{label} program {p} stage {si}: {why}')
             if why: return None
