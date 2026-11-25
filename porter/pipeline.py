@@ -1112,7 +1112,7 @@ class Port:
             self.fps_env = ['DM_FPS_CEILING=0']; PROG.end('the game profile\'s 30 fps ceiling lifted (fps_ceiling)'); return
         if self.g.get('fps_target', '0') != '0':
             self.fps_env = ['DM_FPS_TARGET=60']; PROG.end('the game profile\'s own frame-rate cap (fps_target), at 60'); return
-        img, bid, text_range = fpsasm.layout(self.game / 'ExeFS/main')
+        img, bid, text_range, data_range = fpsasm.layout(self.game / 'ExeFS/main')
         src = fpslocker.url(self.g.id, bid); d = self.aw / 'fpslock'; d.mkdir(exist_ok=True); cache = d / f'{bid[:16].upper()}.yaml'
         PROG.set(step='fetching the FPSLocker-Warehouse config')
         try: text = fpslocker.fetch(self.g.id, bid)
@@ -1122,7 +1122,7 @@ class Port:
         if text is None:
             nsp.rmtree(cache); say(f'60 fps: FPSLocker-Warehouse has no config for main build {bid[:16].upper()}: no FPSLocker config applied; built-in profile patches are unaffected'); PROG.end('no external config for this build; built-in patches unaffected'); return
         cache.write_text(text, encoding='utf-8')
-        try: tsv, cuts = fpslocker.convert(text, img, bid, src, text_range=text_range)
+        try: tsv, cuts = fpslocker.convert(text, img, bid, src, text_range=text_range, data_range=data_range)
         except fpslocker.Refused as e: say(f'[RED] 60 fps: {src} cannot be applied ({e}): no FPSLocker config applied; built-in profile patches are unaffected'); PROG.end('external config not applicable; built-in patches unaffected'); return
         (d / 'fpslock.tsv').write_text(tsv, encoding='utf-8', newline='\n')
         if cuts:   # code bytes: the rewriter's cuts, applied before it rewrites main (patch_nso.py DM_PATCHES_EXTRA; part of the rewrite's reuse key)

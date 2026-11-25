@@ -136,15 +136,16 @@ def parse(text):
     return y
 
 
-def convert(text, image, build_id, source='', text_range=None):
+def convert(text, image, build_id, source='', text_range=None, data_range=None):
     """The config → (fpslock.tsv text, CUTS rows [(offset, original hex, new hex, reason)]). Raises Refused naming what the host cannot do.
-    text_range is the executable text page (lo, hi); assembled code must live there, not in rodata."""
+    text_range is the executable text page (lo, hi); assembled code must live there, not in rodata.
+    data_range is the writable data/bss range; declared variables the code writes live there."""
     from porter import fpsdecl
     y = parse(text)
     unknown = set(y) - {'ALL_FPS', 'MASTER_WRITE', 'DECLARATIONS', 'unsafeCheck', 'Addons'}
     if unknown: raise Refused(f'unknown sections {", ".join(sorted(map(str, unknown)))}')
     addons = [str(a) for a in (y.get('Addons') or [])]
-    ctx = fpsdecl.build(y, image, text_range=text_range)
+    ctx = fpsdecl.build(y, image, text_range=text_range, data_range=data_range)
     rows, cuts, notes = [], list(ctx.cuts), list(ctx.notes)
     # Addons name Switch-side files (e.g. an Atmosphere NPDM) that are meaningless here:
     # Android needs neither Switch privileges nor those files to run the converted patch.

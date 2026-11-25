@@ -91,17 +91,29 @@ def declarations(y):
     return vars_, consts, codes
 
 
+def _relative(ctx, addr):
+    """Encode an absolute main offset for GAS.
+
+    In a relocatable object the linker never applies relocations: GAS treats a bare number in
+    adrp/adr/b/... as a DELTA from the current instruction, not an absolute address (a label only
+    works when it is in the same page; adrp across pages assembles with a zero offset). Emit the
+    PC-relative delta explicitly so the bytes are correct before we extract .text by hand.
+    """
+    pc = getattr(ctx, 'pc', 0)
+    if ctx.mnem == 'adrp': return hex((int(addr) & ~0xfff) - (pc & ~0xfff))
+    return hex(int(addr) - pc)   # adr, b, bl, cbz, ...: a byte delta from this instruction
+
+
 def _token(x, ctx, mem=False):
     if isinstance(x, list): return '[' + ', '.join(_token(i, ctx, True) for i in x) + ']'
     if isinstance(x, str):
         if x.startswith('$'):
             n = x[1:]
             if n in ctx.vars:
-                # The object file has unresolved relocations: symbol-based adrp/:lo12: pairs
-                # assemble with a zero offset. Emit the site's numeric addresses instead.
                 addr = (getattr(ctx, '_pass_addr', None) or {}).get(n)
                 if addr is not None:
-                    if ctx.mnem == 'adrp': return hex(addr & ~0xfff)
+                    if ctx.mnem in ('adrp', 'adr', 'b', 'bl', 'blr', 'br') or ctx.mnem.startswith('b.'):
+                        return _relative(ctx, addr)
                     if mem: return hex(addr & 0xfff)
                     return hex(addr)
                 return ':lo12:v_' + n if mem else 'v_' + n
@@ -127,15 +139,18 @@ def _token(x, ctx, mem=False):
         n = int(x) if isinstance(x, float) and x.is_integer() else x
         if ctx.mnem == 'movk' and n in (0, 16, 32, 48): return 'lsl #%d' % n   # movk's rotate syntax
         if ctx.mnem in ('fcmp', 'fcmpe') and n == 0: return '#0.0'   # GAS spells the float-zero immediate this way
-        return str(n) if mem or ctx.mnem in ('adrp', 'adr', 'b', 'bl', 'blr', 'br') or ctx.mnem.startswith('b.') else '#%s' % n
+        if not mem and (ctx.mnem in ('adrp', 'adr', 'b', 'bl', 'blr', 'br') or ctx.mnem.startswith('b.')):
+            return _relative(ctx, n)
+        return str(n) if mem else '#%s' % n
     raise Refused(f'instruction operand {x!r}')
 
 
 class Context:
-    def __init__(self, y, image, vars_, consts, codes, text_range=None):
+    def __init__(self, y, image, vars_, consts, codes, text_range=None, data_range=None):
         self.vars, self.consts, self.codes = vars_, consts, codes
         self.image = image
         self.text_range = text_range
+        self.data_range = data_range
         self.var_addr = {n: None for n in vars_}
         self.cuts, self.notes = [], []
         self.masters = []
@@ -153,9 +168,10 @@ class Context:
         if not (vars_ or codes or self.masters): return
         self._build()
 
-    def lines(self, ins, fold=True):
+    def lines(self, ins, fold=True, at=None):
         # The usual `$var` load is adrp reg,$var / ldr out,[reg,$var]. A PC-relative literal load
         # does the same job in one instruction, needs no page arithmetic and is shorter in a cave.
+        if at is not None: self.pc = at
         folded = list(ins) if not fold else []
         i = 0
         while fold and i < len(ins):
@@ -188,27 +204,50 @@ class Context:
                 else:
                     parts.append(_token(o, self))
             out.append('\t' + x[0] + (' ' + ', '.join(parts) if parts else ''))
+            self.pc += 4
         return out
+
+    def _var_base(self):
+        """Where declared cells live. The loader seals text read-only+execute, so a routine's
+        str to a variable in the code cave faults; data/bss stay writable. Put the cells at the
+        tail of that range (past the game's last global) and keep only routines in the cave."""
+        size = sum(8 if kind == 'double' else 4 for kind, _ in self.vars.values())
+        if not self.data_range: return None, size   # no layout: cells share the cave (unit tests)
+        lo, hi = self.data_range
+        base = (hi - size) & ~7
+        if base < lo or base + size > hi:
+            raise Refused(f'declared variables do not fit in writable data main+{lo:#x}..{hi:#x}')
+        return base, size
 
     def _sites(self, cave):
         self.base = cave
         self._pass_addr = {}
-        at = cave
-        for n, (kind, _) in self.vars.items():
-            self._pass_addr[n] = at
-            at += 8 if kind == 'double' else 4
-        cave_lines = []
+        vbase, vsize = self._var_base()
+        at = cave if vbase is None else vbase
+        var_lines = []
         for n, (kind, vals) in self.vars.items():
-            cave_lines.append('v_%s:' % n)
+            self._pass_addr[n] = self.var_addr[n] = at
+            var_lines.append('v_%s:' % n)
             if kind == 'double':
-                cave_lines.append('\t.quad 0x%016X' % struct.unpack('<Q', struct.pack('<d', vals[60]))[0])
+                var_lines.append('\t.quad 0x%016X' % struct.unpack('<Q', struct.pack('<d', vals[60]))[0])
+                at += 8
             else:
-                cave_lines.append('\t.word 0x%08X' % struct.unpack('<I', struct.pack('<f', vals[60]))[0])
+                var_lines.append('\t.word 0x%08X' % struct.unpack('<I', struct.pack('<f', vals[60]))[0])
+                at += 4
+        cave_lines = []
+        at = at if vbase is None else cave
         for n, ins in self.codes.items():
             cave_lines.append('c_%s:' % n)
-            cave_lines.extend(self.lines(ins, False))   # no folded literal loads: they need a PC-relative relocation
-        sites = [(cave, cave_lines)]
-        sites.extend((off, self.lines(ins, False)) for off, ins, _ in self.masters)
+            # No folded literal loads: they need a relocation the raw .text does not carry.
+            cave_lines.extend(self.lines(ins, False, at=at))
+            at += 4 * sum(1 for i in ins if isinstance(i, list))
+        sites = []
+        if vbase is None:
+            if var_lines or cave_lines: sites.append((cave, var_lines + cave_lines))
+        else:
+            if var_lines: sites.append((vbase, var_lines))
+            if cave_lines: sites.append((cave, cave_lines))
+        sites.extend((off, self.lines(ins, False, at=off)) for off, ins, _ in self.masters)
         return sites
 
     def _build(self):
@@ -216,26 +255,31 @@ class Context:
             measure = fpsasm.assemble(self._sites(0x100))
         except fpsasm.AsmError as e:
             raise Refused(f'the declarations do not assemble: {e}') from None
-        need = len(measure[0x100])
-        off = fpsasm.cave(self.image, need, forbidden=[o for o, _, _ in self.masters], text=self.text_range)
+        need = len(measure.get(0x100, b''))
+        off = fpsasm.cave(self.image, need, forbidden=[o for o, _, _ in self.masters], text=self.text_range) if need else None
         try:
-            final = fpsasm.assemble(self._sites(off))
+            final = fpsasm.assemble(self._sites(off if off is not None else 0x100))
         except fpsasm.AsmError as e:
             raise Refused(f'the declarations do not assemble at main+{off:#x}: {e}') from None
-        cave_bytes = final[off]
-        old = self.image[off:off + need]
-        if old != cave_bytes:
-            self.cuts.append((off, old.hex(), cave_bytes.hex(), 'FPSLocker-Warehouse declarations (variables and routines)'))
-        at = off
-        for n, (kind, _) in self.vars.items():   # variables come first, one word (or a double) each
-            self.var_addr[n] = at
-            at += 8 if kind == 'double' else 4
+        vbase, vsize = self._var_base()
+        if vbase is not None and self.vars:
+            new = final[vbase]
+            old = self.image[vbase:vbase + len(new)] or bytes(len(new))
+            if old != new:
+                self.cuts.append((vbase, old.hex(), new.hex(), 'FPSLocker-Warehouse declared variables (writable data)'))
+        if off is not None:
+            new = final[off]
+            old = self.image[off:off + len(new)]
+            if old != new:
+                self.cuts.append((off, old.hex(), new.hex(), 'FPSLocker-Warehouse declarations (routines)'))
         for o, _, why in self.masters:
             new = final[o]
             old = self.image[o:o + len(new)]
             if old != new: self.cuts.append((o, old.hex(), new.hex(), why))
-        self.notes.append('%d declared variable(s) and %d routine(s) assembled at main+%#x; %d instruction patch(es)' %
-                          (len(self.vars), len(self.codes), off, len(self.masters)))
+        where = f' at main+{off:#x}' if off is not None else ''
+        vars_where = f' at main+{vbase:#x}' if self.vars and vbase is not None else ''
+        self.notes.append('%d declared variable(s)%s, %d routine(s)%s; %d instruction patch(es)' %
+                          (len(self.vars), vars_where, len(self.codes), where, len(self.masters)))
 
     def addr(self, a, what):
         """A config address: [VARIABLE, name] is the declared cell in main's image."""
@@ -247,8 +291,8 @@ class Context:
         return a
 
 
-def build(y, image, text_range=None):
+def build(y, image, text_range=None, data_range=None):
     """The context a config needs; no declarations and no instruction patches need no assembler."""
     vars_, consts, codes = declarations(y)
     _add_builtins(codes, y)
-    return Context(y, image, vars_, consts, codes, text_range=text_range)
+    return Context(y, image, vars_, consts, codes, text_range=text_range, data_range=data_range)

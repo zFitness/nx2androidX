@@ -1140,6 +1140,31 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         self.assertIn('ldr x1, [x2, 0x100]', cave)
         self.assertIn('str x0, [x2, 0x100]', cave)
 
+    def test_adrp_operands_are_page_deltas_not_absolute_addresses(self):
+        # GAS leaves adrp operands as a page delta from the instruction (relocations are never
+        # applied to the raw .text we extract). An absolute address there points a whole page
+        # delta too high — Xenoblade 2's dynamicSpeed then read the wrong last_tick cell and the
+        # game ran at double speed. Both declared variables and plain numbers must be relative.
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: x\n    value_type: uint32\n'
+                 '    default_value: 1\n'
+                 'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x2080\n'
+                 '    instructions: [[adrp, x2, $x], [ldr, x1, [x2, $x]],'
+                 ' [adrp, x0, 0x3000], [ldr, x0, [x0, 0]], [ret]]\n')
+        img = bytearray(0x4000)
+        img[0xffc:0x1000] = b'\xc0\x03\x5f\xd6'   # ret, then a zero run in the next page
+        seen = []
+        def fake_assemble(sites):
+            seen.append(sites)
+            return {o: b'\1' * 32 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x3000))
+        master = '\n'.join(l for o, lines in seen[-1] if o == 0x2080 for l in lines)
+        self.assertIn('adrp x2, -0x1000', master)   # cave page 0x1000 from the site page 0x2000
+        self.assertIn('ldr x1, [x2, 0x0]', master)
+        self.assertIn('adrp x0, 0x1000', master)    # absolute 0x3000 from the site page 0x2000
+        self.assertIn('ldr x0, [x0, 0]', master)
+
     def test_physical_counter_reads_use_the_virtual_counter(self):
         # Android traps cntpct_el0 at EL0 (SIGILL on the first cave instruction in Xenoblade 2).
         # The config's mrs must become an EL0-readable cntvct_el0, without a game-specific rule.
@@ -1230,6 +1255,26 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
             fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400))
         self.assertIn('\tstp x29, x30, [sp, -16]!', seen[0])
+
+    def test_declared_variables_go_to_writable_data_not_the_code_cave(self):
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: last_tick\n    value_type: uint64\n    default_value: 0\n'
+                '  -\n    type: code\n    name: store\n'
+                '    instructions: [[adrp, x2, $last_tick], [str, x0, [x2, $last_tick]], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _store()]]\n')
+        img = bytearray(0x2000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'   # a ret: the code cave starts after it
+        seen = []
+        def fake_assemble(sites):
+            seen.extend((o, lines) for o, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400), data_range=(0x1000, 0x2000))
+        self.assertEqual([o for o, _, _, _ in cuts], [0x1ff8, 0x84, 0x200])
+        self.assertIn('FPSLocker-Warehouse declared variables (writable data)', cuts[0][3])
+        self.assertTrue(any(l.startswith('v_last_tick:') for _, lines in seen if _ == 0x1ff8 for l in lines))
+        self.assertTrue(any('adrp x2,' in l for _, lines in seen if _ == 0x84 for l in lines))
 
     def test_refresh_rate_entry_is_skipped_not_fatal(self):
         from porter import fpsasm, fpslocker

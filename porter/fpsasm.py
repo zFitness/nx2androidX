@@ -40,15 +40,26 @@ def clang():
 
 
 def layout(path):
-    """(image, build id, executable text range) of an NSO: text ends where rodata begins, including
-    the zero padding at the end of the text page. A cave in rodata would fault on instruction fetch."""
+    """(image, build id, executable text range, writable data range) of an NSO.
+
+    Text ends where rodata begins, including the zero padding at the end of the text page: a cave
+    in rodata would fault on instruction fetch. Declared variables that a config's code writes
+    belong in the data/bss range instead: the loader seals the code area read-only+execute, while
+    data and bss stay writable (nxnative/dm/host/loader.c). The rewriter's image includes bss, so
+    its tail is free scratch space even though nso_image() only returns the file image."""
     from porter import fpslocker
     d = Path(path).read_bytes()
     if d[:4] != b'NSO0': raise AsmError(f'{path} is not an NSO')
     segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
     img, bid = fpslocker.nso_image(path)
     end = segs[1][1] if len(segs) > 1 and segs[1][1] > segs[0][1] else segs[0][1] + segs[0][2]
-    return img, bid, (segs[0][1], min(end, len(img)))
+    data_end = segs[2][1] + segs[2][2]
+    bss = struct.unpack_from('<I', d, 0x3c)[0]
+    # The patch area moves before the base when that would be more than 112 MB from the code;
+    # then the rewriter's image excludes bss (patch_nso.py's FAR case).
+    near = ((((data_end + bss + 0x3fff) & ~0x3fff) + 0x4000 + 0xffff) & ~0xffff)
+    writable_end = data_end if near > 0x7000000 else data_end + bss
+    return img, bid, (segs[0][1], min(end, len(img))), (segs[2][1], writable_end)
 
 
 def _terminator(image, i):
