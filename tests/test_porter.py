@@ -1040,6 +1040,19 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         self.assertEqual(consts['c'], 0x3d088889)
         self.assertEqual(len(codes['getDr']), 3)
 
+    def test_a_long_zero_run_after_a_branch_is_a_valid_cave(self):
+        from porter import fpsasm
+        img = bytearray(0x1000)
+        img[0x100:0x104] = b'\x20\x02\x1f\xd6'   # br x17: the end of the text segment
+        self.assertEqual(fpsasm.cave(bytes(img), 200), 0x104)
+
+    def test_a_long_zero_run_after_live_data_is_not_a_cave(self):
+        from porter import fpsasm
+        img = bytearray(0x1000)
+        img[0xfc:0x100] = b'\xff\xff\xff\xff'   # not a function terminator
+        with self.assertRaises(fpsasm.AsmError):
+            fpsasm.cave(bytes(img), 200)
+
     def test_refresh_rate_entry_is_skipped_not_fatal(self):
         from porter import fpsasm, fpslocker
         text = ('ALL_FPS:\n  -\n    type: write\n    address: [MAIN, 0x500]\n    value_type: int32\n    value: 2\n'

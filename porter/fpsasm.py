@@ -49,10 +49,18 @@ def layout(path):
     return img, bid, (segs[0][1], segs[0][1] + segs[0][2])
 
 
+def _terminator(image, i):
+    """Whether the word before i ends a function: ret, br, blr, b or bl. A long zero run after any
+    of these is code padding (the tail of the text page, typically), not live game data."""
+    if i < 4: return False
+    w = struct.unpack_from('<I', image, i - 4)[0]
+    return (w & 0xfffffc1f) in (0xd65f0000, 0xd61f0000, 0xd63f0000) or (w & 0xfc000000) in (0x14000000, 0x94000000)
+
+
 def cave(image, need, forbidden=(), text=None):
-    """A zero run of [offset, offset+need) in a function's alignment padding, free of [forbidden].
-    Only padding right after a ret or an unconditional branch is used: other zeroes may be live
-    game data the engine clears at boot, and a cave there would change the game's own state."""
+    """An aligned zero run of [offset, offset+need) after a function's last instruction, free of
+    [forbidden]. Other zeroes may be live game data the engine clears at boot, so a cave there
+    would change the game's own state."""
     bad = set()
     for off in forbidden:
         bad.update(range(off - 8, off + 16))
@@ -66,9 +74,7 @@ def cave(image, need, forbidden=(), text=None):
         j = i
         while j < n and not image[j] and j - i < max(need + 16, 64):
             j += 1
-        prev = image[max(0, i - 4):i]
-        pad = prev == b'\xc0\x03\x5f\xd6' or prev[:1] == b'\x14'   # ret, or an unconditional b
-        if pad and j - i >= need and not any(k in range(i, i + need) for k in bad):
+        if _terminator(image, i) and j - i >= need and not any(k in range(i, i + need) for k in bad):
             return i
         i = max(j, i + 1)
     raise AsmError(f'no {need}-byte run of zero padding after a ret or branch is free in main')
