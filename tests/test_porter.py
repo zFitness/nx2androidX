@@ -1276,6 +1276,28 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         self.assertTrue(any(l.startswith('v_last_tick:') for _, lines in seen if _ == 0x1ff8 for l in lines))
         self.assertTrue(any('adrp x2,' in l for _, lines in seen if _ == 0x84 for l in lines))
 
+    def test_64_bit_declared_variable_gets_a_full_cell(self):
+        from porter import fpsasm, fpslocker
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: last_tick\n    value_type: uint64\n    default_value: 0\n'
+                '  -\n    type: variable\n    name: game_speed\n    value_type: float\n    default_value: 0.03333333333\n'
+                '  -\n    type: code\n    name: store\n'
+                '    instructions: [[adrp, x2, $last_tick], [str, x0, [x2, $last_tick]], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x200\n'
+                '    instructions: [[bl, _store()]]\n')
+        img = bytearray(0x2000)
+        img[0x80:0x84] = b'\xc0\x03\x5f\xd6'
+        seen = []
+        def fake_assemble(sites):
+            seen.extend((o, lines) for o, lines in sites)
+            return {o: b'\1' * 12 for o, _ in sites}
+        with mock.patch.object(fpsasm, 'assemble', side_effect=fake_assemble):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID, text_range=(0, 0x400), data_range=(0x1000, 0x2000))
+        var_lines = [l for o, lines in seen if o == 0x1ff0 for l in lines]
+        self.assertIn('v_last_tick:', var_lines)
+        self.assertTrue(any(l.startswith('\t.quad ') for l in var_lines))
+        self.assertIn('v_game_speed:', var_lines)
+        self.assertTrue(any(l.startswith('\t.word ') for l in var_lines))
+
     def test_refresh_rate_entry_is_skipped_not_fatal(self):
         from porter import fpsasm, fpslocker
         text = ('ALL_FPS:\n  -\n    type: write\n    address: [MAIN, 0x500]\n    value_type: int32\n    value: 2\n'

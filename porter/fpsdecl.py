@@ -11,6 +11,11 @@ from porter import fpsasm
 from porter.fpslocker import Refused, TYPES, TARGETS, values
 
 
+def _var_size(kind):
+    """The cell width a declared variable needs in main: 64-bit types are two words."""
+    return 8 if kind in ('int64', 'uint64', 'double') else 4
+
+
 def number(v):
     """YAML numbers and hex strings (FPSLocker writes 0x3d088889 as a string sometimes)."""
     if isinstance(v, bool) or v is None: raise Refused(f'{v!r} is not a number')
@@ -211,7 +216,7 @@ class Context:
         """Where declared cells live. The loader seals text read-only+execute, so a routine's
         str to a variable in the code cave faults; data/bss stay writable. Put the cells at the
         tail of that range (past the game's last global) and keep only routines in the cave."""
-        size = sum(8 if kind == 'double' else 4 for kind, _ in self.vars.values())
+        size = sum(_var_size(kind) for kind, _ in self.vars.values())
         if not self.data_range: return None, size   # no layout: cells share the cave (unit tests)
         lo, hi = self.data_range
         base = (hi - size) & ~7
@@ -228,11 +233,15 @@ class Context:
         for n, (kind, vals) in self.vars.items():
             self._pass_addr[n] = self.var_addr[n] = at
             var_lines.append('v_%s:' % n)
-            if kind == 'double':
-                var_lines.append('\t.quad 0x%016X' % struct.unpack('<Q', struct.pack('<d', vals[60]))[0])
+            if _var_size(kind) == 8:
+                fmt = 'd' if kind == 'double' else TYPES[kind]
+                v = float(vals[60]) if kind == 'double' else int(vals[60])
+                var_lines.append('\t.quad 0x%016X' % struct.unpack('<Q', struct.pack('<' + fmt, v))[0])
                 at += 8
             else:
-                var_lines.append('\t.word 0x%08X' % struct.unpack('<I', struct.pack('<f', vals[60]))[0])
+                fmt = 'f' if kind == 'float' else TYPES[kind]
+                v = float(vals[60]) if kind == 'float' else int(vals[60])
+                var_lines.append('\t.word 0x%08X' % struct.unpack('<I', struct.pack('<' + fmt, v))[0])
                 at += 4
         cave_lines = []
         at = at if vbase is None else cave
