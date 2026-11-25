@@ -1128,9 +1128,10 @@ class Port:
         if cuts:   # code bytes: the rewriter's cuts, applied before it rewrites main (patch_nso.py DM_PATCHES_EXTRA; part of the rewrite's reuse key)
             (d / 'patches.py').write_text(fpslocker.patches_py(bid, cuts, src), encoding='utf-8', newline='\n'); self.env['DM_PATCHES_EXTRA'] = str(d / 'patches.py')
         # FPSLocker paces the presents for its target itself, whatever interval the game asks for, so its configs leave the game's interval alone: presents follow the display (present_interval display)
-        self.fps_env = ['DM_FPS_TARGET=60', f'DM_FPS_LOCKS={datapack.files_folder(self.package)}/fpslock.tsv', 'DM_PRESENT_INTERVAL=display']
+        dest = self.data_dir() if self.o.app else datapack.files_folder(self.package)   # the phone's pack is private, not /sdcard/Android/data
+        self.fps_env = ['DM_FPS_TARGET=60', f'DM_FPS_LOCKS={dest}/fpslock.tsv', 'DM_PRESENT_INTERVAL=display']
         self.fps_files = {'fpslock.tsv': d / 'fpslock.tsv'}
-        n = tsv.count('\n') - 3
+        n = sum(1 for l in tsv.splitlines() if l and not l.startswith('#') and not l.startswith('build\t'))
         say(f'60 fps: FPSLocker-Warehouse config {src}, by masagrator and contributors: {n} memory write(s)' + (f', {len(cuts)} code cut(s)' if cuts else ''))
         PROG.end(f'{n} memory write(s)' + (f', {len(cuts)} code cut(s)' if cuts else ''))
 

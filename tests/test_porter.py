@@ -1,5 +1,5 @@
 # Unit tests of the port pipeline's own parts (python -m unittest discover tests). They need no game files, toolchains or device.
-import contextlib, hashlib, importlib.util, io, json, os, random, re, shutil, struct, sys, tempfile, unittest
+import contextlib, hashlib, importlib.util, io, json, os, random, re, shutil, socket, ssl, struct, sys, tempfile, unittest, urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -985,6 +985,69 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
     def test_url(self):
         from porter import fpslocker
         self.assertTrue(fpslocker.url('0100fd501f95a000', self.BID).endswith('/patches/0100FD501F95A000/D49165C05EAD8AE1.yaml'))
+
+    def test_a_missing_config_is_no_config(self):
+        from porter import fpslocker
+        missing = urllib.error.HTTPError(fpslocker.url('0100FF500E34A000', self.BID), 404, 'Not Found', {}, None)
+        with mock.patch.object(fpslocker.urllib.request, 'urlopen', side_effect=missing) as opened:
+            self.assertIsNone(fpslocker.fetch('0100FF500E34A000', self.BID))
+        self.assertEqual(opened.call_count, 1)   # a 404 is an answer, not a failure to retry
+        self.assertNotIn('python-urllib', opened.call_args.args[0].headers.get('User-agent', ''))
+
+    def test_a_dropped_handshake_is_retried(self):
+        from porter import fpslocker
+        class Reply:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return '\ufeffhello'.encode()
+        drop = urllib.error.URLError(ssl.SSLEOFError('EOF occurred in violation of protocol'))
+        with mock.patch.object(fpslocker.urllib.request, 'urlopen', side_effect=[drop, drop, Reply()]) as opened, \
+             mock.patch.object(fpslocker.time, 'sleep') as sleep:
+            self.assertEqual(fpslocker.fetch('0100FF500E34A000', self.BID), 'hello')   # the BOM is stripped as before
+        self.assertEqual(opened.call_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [fpslocker.RETRY_WAIT, fpslocker.RETRY_WAIT * 2])
+
+    def test_a_name_that_cannot_be_resolved_is_not_retried(self):
+        from porter import fpslocker
+        dns = urllib.error.URLError(socket.gaierror(-3, 'Temporary failure in name resolution'))
+        with mock.patch.object(fpslocker.urllib.request, 'urlopen', side_effect=dns) as opened:
+            with self.assertRaises(urllib.error.URLError):
+                fpslocker.fetch('0100FF500E34A000', self.BID)
+        self.assertEqual(opened.call_count, 1)   # the proxy is missing or wrong; waiting will not fix it
+
+    def test_declarations_become_rows_and_instruction_cuts(self):
+        from porter import fpsasm, fpslocker, fpsdecl
+        text = ('DECLARATIONS:\n  -\n    type: variable\n    name: dr_target\n    value_type: float\n'
+                '    evaluate: "(1 / FPS_TARGET) / VSYNC_TARGET"\n  -\n    type: const\n'
+                '    name: c\n    value: 0x3d088889\n  -\n    type: code\n    name: getDr\n'
+                '    instructions: [[adrp, x8, $dr_target], [ldr, s0, [x8, $dr_target]], [ret]]\n'
+                'MASTER_WRITE:\n  -\n    type: asm_a64\n    main_offset: 0x400\n'
+                '    instructions: [[bl, _getDr()]]\n'
+                'ALL_FPS:\n  -\n    type: evaluate_write\n    address: [MAIN, 0x500]\n    value_type: float\n'
+                '    value: 1 / FPS_TARGET\n  -\n    type: write\n    address: [VARIABLE, dr_target]\n'
+                '    value_type: float\n    value: 0.0166666666\n')
+        img = bytearray(0x1000)
+        img[0x100:0x104] = b'\xc0\x03\x5f\xd6'   # ret, then 12 bytes of alignment padding
+        with mock.patch.object(fpsasm, 'assemble', side_effect=lambda sites: {o: b'\1' * 12 for o, _ in sites}):
+            tsv, cuts = fpslocker.convert(text, bytes(img), self.BID)
+        rows = [l.split('\t') for l in tsv.splitlines() if not l.startswith('#')]
+        self.assertEqual(rows[1][2], '0x500')
+        self.assertEqual(rows[2][2], '0x104')   # [VARIABLE, dr_target] is main+the declared cell
+        self.assertAlmostEqual(float(rows[1][4]), 1 / 60)
+        self.assertEqual([c[0] for c in cuts], [0x104, 0x400])
+        vars_, consts, codes = fpsdecl.declarations(fpslocker.parse(text))
+        self.assertAlmostEqual(vars_['dr_target'][1][60], 1 / 60)
+        self.assertEqual(consts['c'], 0x3d088889)
+        self.assertEqual(len(codes['getDr']), 3)
+
+    def test_refresh_rate_entry_is_skipped_not_fatal(self):
+        from porter import fpsasm, fpslocker
+        text = ('ALL_FPS:\n  -\n    type: write\n    address: [MAIN, 0x500]\n    value_type: int32\n    value: 2\n'
+                '  -\n    type: write\n    value_type: refresh_rate\n    value: 30\n')
+        with mock.patch.object(fpsasm, 'assemble', return_value={}):
+            tsv, cuts = fpslocker.convert(text, bytes(0x1000), self.BID)
+        self.assertEqual(tsv.count('\n'), 5)   # head, note, legend, build, one row
+        self.assertIn('refresh_rate not applied', tsv)
 
 
 class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the device, a .zip or folder to import (no device: the shell answers are made up)

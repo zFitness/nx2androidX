@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.nx.android.agent.env.GuestProxy
 import com.nx.android.appstate.LibraryOperationCoordinator
 import com.nx.android.appstate.PortState
 import com.nx.android.appstate.porting.PortCompletionCoordinator
@@ -104,6 +105,8 @@ class PortService : Service() {
     @Inject
     lateinit var guestLauncher: GuestProcessLauncher
     @Inject
+    lateinit var guestProxy: GuestProxy
+    @Inject
     lateinit var completionCoordinator: PortCompletionCoordinator
     @Inject
     lateinit var paths: AppPaths
@@ -179,12 +182,16 @@ class PortService : Service() {
         }   // the log bundle takes the exit status: a port the system killed says so
         runner = taskRunner
         try {
+            // The 60 fps stage fetches the community config from GitHub. The guest has no DNS, so the
+            // porter needs the app's CONNECT proxy for that run; other ports stay offline.
+            val proxyPort = if (intent.getBooleanExtra(FPS60, false)) guestProxy.ensure() else null
             taskRunner.port(
                 game, keys, intent.getBooleanExtra(TOUCH, false),
                 intent.getBooleanExtra(FPS60, false), intent.getBooleanExtra(EXP, false),
                 intent.getIntExtra(ALIAS, ALIAS_AUTO),
                 intent.getStringExtra(FONT) ?: "", intent.getStringExtra(FIRMWARE) ?: "",
                 intent.getBooleanExtra(MT, false), intent.getStringExtra(PACK_DIR),
+                proxyPort = proxyPort,
             ) {
                 handler.post {
                     if (runner === taskRunner) {

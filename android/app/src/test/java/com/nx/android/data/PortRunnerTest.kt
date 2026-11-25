@@ -95,4 +95,13 @@ class PortRunnerTest {
         val a = args(-1)
         assertFalse("no --language-preferred without one", a.contains("--language-preferred"))
     }
+
+    /** The guest has no DNS: a 60 fps port rides the app's own CONNECT proxy on loopback. */
+    @Test
+    fun `the proxy variables point at the in-app listener`() {
+        val env = PortRunner.proxyEnv(7879)
+        assertEquals("http://127.0.0.1:7879", env["http_proxy"])
+        assertEquals(env["http_proxy"], env["https_proxy"])
+        assertEquals(2, env.size)
+    }
 }

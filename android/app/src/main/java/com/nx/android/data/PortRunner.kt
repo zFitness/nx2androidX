@@ -32,13 +32,18 @@ class PortRunner(
         aliasHeadroom: Int,
         sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
         packDir: String? = null,
+        proxyPort: Int? = null,
         onEnd: () -> Unit,
     ): Thread {
         val args = portArgs(gameFile, keys, touch, fps60, experimental, aliasHeadroom, !BuildConfig.NX_LSFG,
             sharedFont, firmware, mtReplay, deviceLanguage())
         // A file in a netdisk's folder is not there yet in its middle: the port would read it as a broken dump
         GameSource.cloudFolder(gameFile)?.let { onLine(s(R.string.runner_cloud_folder, it)) }
-        return start(args, { onEnd() }, if (packDir.isNullOrBlank()) emptyMap() else mapOf("NX2A_PACK_DIR" to packDir))
+        val extra = buildMap {
+            if (!packDir.isNullOrBlank()) put("NX2A_PACK_DIR", packDir)
+            proxyPort?.let { putAll(proxyEnv(it)) }
+        }
+        return start(args, { onEnd() }, extra)
     }
 
     /**
@@ -48,6 +53,17 @@ class PortRunner(
     private fun deviceLanguage(): String = Locale.getDefault().toLanguageTag()
 
     companion object {
+
+        /**
+         * The guest cannot resolve names itself: glibc reads /etc/resolv.conf, Android has none, and an
+         * unprivileged app may not write /etc. A port that needs the network (the 60 fps stage fetches a
+         * config from GitHub) therefore rides the app's own CONNECT proxy, the one the assistant uses.
+         * Only the port process gets these variables; other guest runs stay offline.
+         */
+        fun proxyEnv(port: Int): Map<String, String> = mapOf(
+            "http_proxy" to "http://127.0.0.1:$port",
+            "https_proxy" to "http://127.0.0.1:$port",
+        )
 
         /**
          * The porter's command line for a port: pure, so the test can check it on the JVM.

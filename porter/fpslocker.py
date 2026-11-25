@@ -7,10 +7,15 @@
 # A config that uses anything else (asm_a64, DECLARATIONS, VARIABLE / HEAP / ALIAS addresses, refresh_rate) is refused whole: its entries work together, and half of them
 # can leave the game worse off than at 30 fps. Of the 1,462 configs on 2026-10-28, 1,160 convert.
 # The warehouse has no license: its configs are fetched for the player's own build at port time and never kept in the repository.
-import ast, math, re, struct, urllib.error, urllib.request
+import ast, math, os, re, socket, ssl, struct, time, urllib.error, urllib.request
 from pathlib import Path
 
 RAW = 'https://raw.githubusercontent.com/masagrator/FPSLocker-Warehouse/v4/SaltySD/plugins/FPSLocker/patches/{tid}/{bid}.yaml'
+# GitHub turns python-urllib's default User-Agent away, and the phone's CONNECT proxy drops about one
+# handshake in three (phone_tools/fetch.py): ask like a browser and retry what waiting can fix.
+USER_AGENT = 'Mozilla/5.0 (Linux; Android 14; nx2androidX) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Mobile Safari/537.36'
+RETRIES = 5
+RETRY_WAIT = 1.0
 TARGETS = (30, 60)
 REFRESH = 60   # the display rate FPS_LOCK_TARGET compares with (the host presents at 60 Hz)
 TYPES = {'int8': 'b', 'int16': 'h', 'int32': 'i', 'int64': 'q', 'uint8': 'B', 'uint16': 'H', 'uint32': 'I', 'uint64': 'Q', 'float': 'f', 'double': 'd'}
@@ -23,13 +28,37 @@ class Refused(Exception): pass
 def url(title_id, build_id): return RAW.format(tid=title_id.upper(), bid=build_id[:16].upper())
 
 
+def _context():
+    """The payload's CA bundle when the app named one. The guest is not a chroot: OpenSSL's built-in
+    path points at the phone's files, not the rootfs's, so the bundle has to be named explicitly."""
+    bundle = os.environ.get('SSL_CERT_FILE', '')
+    return ssl.create_default_context(cafile=bundle) if bundle and Path(bundle).is_file() else None
+
+
+def _retryable(e):
+    """A failure waiting can fix: a cut TLS tunnel, a timeout, a refused or reset connection. Not a
+    name that cannot be resolved — with the app's proxy the guest does not resolve names itself, so
+    a gaierror means the proxy is missing or wrong, and another try will not change that."""
+    if isinstance(e, urllib.error.HTTPError): return False
+    reason = e.reason if isinstance(e, urllib.error.URLError) and e.reason is not None else e
+    if isinstance(reason, socket.gaierror): return False
+    return isinstance(reason, (ssl.SSLError, TimeoutError, OSError))
+
+
 def fetch(title_id, build_id, timeout=30):
     """The config of this build as text, None when the warehouse has none (HTTP 404). Other errors (no network) raise OSError"""
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url(title_id, build_id), headers={'User-Agent': 'nx2android'}), timeout=timeout) as r: return r.read().decode('utf-8-sig')
-    except urllib.error.HTTPError as e:
-        if e.code == 404: return None
-        raise
+    target = url(title_id, build_id)
+    ctx = _context()
+    for n in range(1, RETRIES + 1):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(target, headers={'User-Agent': USER_AGENT}), timeout=timeout, context=ctx) as r:
+                return r.read().decode('utf-8-sig')
+        except urllib.error.HTTPError as e:
+            if e.code == 404: return None
+            raise
+        except (urllib.error.URLError, OSError) as e:
+            if not _retryable(e) or n == RETRIES: raise
+            time.sleep(min(RETRY_WAIT * (2 ** (n - 1)), 15.0))
 
 
 def nso_image(path):
@@ -46,16 +75,18 @@ def nso_image(path):
 
 
 # ---- expressions (TinyExpr's syntax: ^ is a power) over FORMAT.md's globals ----
-def globals_for(t):
-    return {'FPS_TARGET': t, 'FRAMETIME_TARGET': 1000 / t, 'VSYNC_TARGET': max(1, int(REFRESH / t)), 'FPS_LOCK_TARGET': t + 2 if t == REFRESH else t}
+def globals_for(t, extra=None):
+    g = {'FPS_TARGET': t, 'FRAMETIME_TARGET': 1000 / t, 'VSYNC_TARGET': max(1, int(REFRESH / t)), 'FPS_LOCK_TARGET': t + 2 if t == REFRESH else t}
+    if extra: g.update(extra)
+    return g
 FUNCS = {'TruncDec': lambda v, d: math.trunc(v * 10 ** int(d)) / 10 ** int(d), 'floor': math.floor, 'ceil': math.ceil, 'abs': abs, 'sqrt': math.sqrt, 'pow': math.pow,
          'fmod': math.fmod, 'log': math.log, 'log10': math.log10, 'exp': math.exp}
 
 
-def evaluate(expr, t):
+def evaluate(expr, t, extra=None):
     if isinstance(expr, bool): raise Refused(f'not a number: {expr!r}')
     if isinstance(expr, (int, float)): return expr
-    g = globals_for(t)
+    g = globals_for(t, extra)
     def ev(n):
         if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool): return n.value
         if isinstance(n, ast.Name) and n.id in g: return g[n.id]
@@ -71,10 +102,10 @@ def evaluate(expr, t):
     return ev(tree.body)
 
 
-def values(v, kind, t, evaluated):   # the value list of an entry at target t, as numbers of its type
+def values(v, kind, t, evaluated, extra=None):   # the value list of an entry at target t, as numbers of its type
     out = []
     for x in (v if isinstance(v, list) else [v]):
-        n = evaluate(x, t) if evaluated else x
+        n = evaluate(x, t, extra) if evaluated else x
         if isinstance(n, bool) or not isinstance(n, (int, float)): raise Refused(f'value {x!r} is not a number')
         n = float(n) if kind in ('float', 'double') else int(n)   # FPSLocker converts the double to the type as C does: integers truncated
         try: struct.pack('<' + TYPES[kind], n)
@@ -104,12 +135,13 @@ def parse(text):
 
 def convert(text, image, build_id, source=''):
     """The config → (fpslock.tsv text, CUTS rows [(offset, original hex, new hex, reason)]). Raises Refused naming what the host cannot do"""
+    from porter import fpsdecl
     y = parse(text)
     unknown = set(y) - {'ALL_FPS', 'MASTER_WRITE', 'DECLARATIONS', 'unsafeCheck', 'Addons'}
     if unknown: raise Refused(f'unknown sections {", ".join(sorted(map(str, unknown)))}')
-    if y.get('DECLARATIONS'): raise Refused('it declares variables or code (DECLARATIONS), which the host has no buffer for')
     if y.get('Addons'): raise Refused('it needs extra files (Addons)')
-    rows, cuts = [], []
+    ctx = fpsdecl.build(y, image)
+    rows, cuts, notes = [], list(ctx.cuts), list(ctx.notes)
     for i, e in enumerate(y.get('ALL_FPS') or []):
         what = f'ALL_FPS entry {i + 1}'
         if not isinstance(e, dict): raise Refused(f'{what} is not a mapping')
@@ -119,21 +151,30 @@ def convert(text, image, build_id, source=''):
             continue
         if t not in ('write', 'evaluate_write', 'compare', 'evaluate_compare'): raise Refused(f'{what}: type {t!r}')
         kind = e.get('value_type')
-        if kind == 'refresh_rate': raise Refused(f'{what}: it sets the display rate (refresh_rate), which the host keeps at 60 Hz')
+        if kind is None and t.endswith('compare'):   # compare entries often omit it: the written value says
+            v0 = e.get('value')
+            v0 = v0[0] if isinstance(v0, list) and v0 else v0
+            if isinstance(v0, float) or (isinstance(v0, str) and '/' in v0): kind = 'float'
+            elif isinstance(v0, int): kind = 'int32'
+            else: kind = e.get('compare_value_type')
+        if kind == 'refresh_rate':   # the host's display stays at 60 Hz: this entry would set the wrong rate
+            notes.append(f'{what}: refresh_rate not applied (the display stays at 60 Hz)')
+            continue
         if kind not in TYPES: raise Refused(f'{what}: value type {kind!r}')
         ev = t.startswith('evaluate')
-        v = {tg: fmt(values(e.get('value'), kind, tg, ev), kind) for tg in TARGETS}
+        v = {tg: fmt(values(e.get('value'), kind, tg, ev,
+                            {n: vals[tg] for n, (_, vals) in ctx.vars.items()}), kind) for tg in TARGETS}
         cmp = '-'
         if t.endswith('compare'):
             op, ck = e.get('compare_type'), e.get('compare_value_type')
             if op not in OPS or ck not in TYPES: raise Refused(f'{what}: compare {op!r} {ck!r}')
             cv = values(e.get('compare_value'), ck, 60, False)
             if len(cv) != 1: raise Refused(f'{what}: compare value {e.get("compare_value")!r}')
-            cmp = f'{ck} {chain(e.get("compare_address"), what)} {op} {fmt(cv, ck)}'
-        rows.append(f'{what}\t{kind}\t{chain(e.get("address"), what)}\t{v[30]}\t{v[60]}\t{cmp}')
+            cmp = f'{ck} {chain(ctx.addr(e.get("compare_address"), what), what)} {op} {fmt(cv, ck)}'
+        rows.append(f'{what}\t{kind}\t{chain(ctx.addr(e.get("address"), what), what)}\t{v[30]}\t{v[60]}\t{cmp}')
     for i, e in enumerate(y.get('MASTER_WRITE') or []):
         what = f'MASTER_WRITE entry {i + 1}'
-        if not isinstance(e, dict) or e.get('type') != 'bytes': raise Refused(f'{what}: type {e.get("type") if isinstance(e, dict) else e!r} (only bytes)')
+        if not isinstance(e, dict) or e.get('type') != 'bytes': continue   # asm_a64 became CUTS in the context
         off, kind = e.get('main_offset'), e.get('value_type')
         if not isinstance(off, int) or kind not in TYPES: raise Refused(f'{what}: main_offset {off!r}, value type {kind!r}')
         new = b''.join(struct.pack('<' + TYPES[kind], n) for n in values(e.get('value'), kind, 60, False))
@@ -141,9 +182,10 @@ def convert(text, image, build_id, source=''):
         old = image[off:off + len(new)]
         if old != new: cuts.append((off, old.hex(), new.hex(), f'FPSLocker-Warehouse {what}'))
     if not rows and not cuts: raise Refused('it writes nothing the host would apply')
-    head = [f'# Written by nx2android\'s porter from the FPSLocker-Warehouse config {source} (masagrator and contributors); read by hle_fpslock.c (DM_FPS_LOCKS)',
-            '# entry <TAB> value type <TAB> main offsets (all but the last name a pointer) <TAB> values at 30 fps <TAB> at 60 fps <TAB> compare (type, offsets, operator, value; - = always)',
-            f'build\t{build_id}']
+    head = [f'# Written by nx2android\'s porter from the FPSLocker-Warehouse config {source} (masagrator and contributors); read by hle_fpslock.c (DM_FPS_LOCKS)']
+    head.extend('# ' + n for n in notes)
+    head.append('# entry <TAB> value type <TAB> main offsets (all but the last name a pointer) <TAB> values at 30 fps <TAB> at 60 fps <TAB> compare (type, offsets, operator, value; - = always)')
+    head.append(f'build\t{build_id}')
     return '\n'.join(head + rows) + '\n', cuts
 
 
