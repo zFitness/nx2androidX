@@ -37,7 +37,18 @@ def engine_copy(bundle, image):
     return dst / 'nxnative'
 
 
-NXNATIVE = engine_copy(REPO, os.environ['APPIMAGE']) if getattr(sys, 'frozen', False) and os.environ.get('APPIMAGE') else REPO / 'nxnative'
+def engine_tree():
+    """The engine tree the pipeline works in: the copy the launcher made inside an AppImage
+    (the package is read-only and the builds write beside their sources), the bundle's own
+    copy (a frozen AppImage), or the checkout's."""
+    if os.environ.get('NX2A_NXNATIVE'):
+        return Path(os.environ['NX2A_NXNATIVE'])
+    if getattr(sys, 'frozen', False) and os.environ.get('APPIMAGE'):
+        return engine_copy(REPO, os.environ['APPIMAGE'])
+    return REPO / 'nxnative'
+
+
+NXNATIVE = engine_tree()
 DM = NXNATIVE / 'dm'
 
 

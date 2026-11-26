@@ -61,6 +61,7 @@ SKIP_PREFIXES = (
     'phone_tools/',
     'devtools/',
     'gui/',
+    'launcher/',
     'packaging/',
     'docs/',
     'probes/',
