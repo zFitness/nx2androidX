@@ -38,6 +38,18 @@ python3 devtools/device_cli.py python -m porter rebuild-runtime <pack>   # the r
 tool's tree, the build tools). The headless host — a game without the app's window — and the traps of it
 are in the switch-android-port skill's `references/device-cli.md`.
 
+**What it cannot start is the port itself.** `PortService` is not exported, the app has no exported
+receiver, and `run-as` cannot start a foreground service from outside the app (`Error: Can't start from
+invalid source: 10333`); a stock phone gives the shell no root path either. So a port or a rebuild begins
+with one tap on the build page — ask the user for it — and everything after it is a command line: the
+game's launch (`device_cli launch`), the key presses (`ctl`), the pictures (`device_cli shot` for the
+screen, `DM_VK_SHOTS` for the game's own frame). Do not spend time scripting around that tap; say it is needed.
+
+**`run-as` is a stricter domain than the app.** A path `run-as` cannot read (a folder under `/sdcard`, the
+player's game files) can still be readable by the porter, which runs as the app with
+`MANAGE_EXTERNAL_STORAGE`. Ask the porter — `device_cli python -m porter inspect "<folder>"` — instead of
+testing a path with `run-as cat`; the shell's own picture of the permissions is wrong.
+
 ## Drive the game (DM_CTL)
 
 Append lines to `$F/ctl.txt` (read from the end of the file, every 100 ms):

@@ -9,18 +9,18 @@ import org.junit.Test
 class PortRunnerTest {
 
     private fun args(aliasHeadroom: Int, touch: Boolean = false, fps60: Boolean = false,
-                     experimental: Boolean = false, noLsfg: Boolean = false,
+                     experimental: Boolean = false,
                      sharedFont: String = "", firmware: String = "", mtReplay: Boolean = false,
-                     deviceLanguage: String = ""): List<String> =
+                     lowMem: Boolean = false): List<String> =
         PortRunner.portArgs("/sdcard/game.nsp", "/keys/prod.keys", touch, fps60,
-            experimental, aliasHeadroom, noLsfg, sharedFont, firmware, mtReplay, deviceLanguage)
+            experimental, aliasHeadroom, sharedFont, firmware, mtReplay, lowMem)
 
     @Test
     fun `Auto passes no address space at all`() {
         val a = args(-1)
         assertFalse("no --alias-headroom on Auto", a.contains("--alias-headroom"))
         assertEquals(listOf("-m", "porter.phone_cli", "port", "/sdcard/game.nsp", "-k", "/keys/prod.keys",
-            "--progress", "json", "--app"), a)
+            "--progress", "json", "--app", "--language", "system"), a)
     }
 
     @Test
@@ -48,11 +48,11 @@ class PortRunnerTest {
 
     @Test
     fun `the other options keep their places`() {
-        val a = args(-1, touch = true, fps60 = true, experimental = true, noLsfg = true)
+        val a = args(-1, touch = true, fps60 = true, experimental = true)
         assertTrue(a.contains("--touch"))
         assertTrue(a.contains("--fps60"))
         assertTrue(a.contains("--experimental"))
-        assertTrue(a.contains("--no-lsfg"))
+        assertFalse("the frame generation is gone: no --no-lsfg", a.contains("--no-lsfg"))
     }
 
     /** 玩家的覆盖：自己的系统字体、整机那一份固件、多线程回放 */
@@ -83,16 +83,29 @@ class PortRunnerTest {
 
     /** 手机自己的语言：游戏支持就跟着它（是一个愿望，不是要求：移植不会因此失败） */
     @Test
-    fun `the phone's own language goes on the command line`() {
-        val a = args(-1, deviceLanguage = "zh-CN")
-        val i = a.indexOf("--language-preferred")
+    fun `the game's language is the device's, but the runtime picks it`() {
+        val a = args(-1)
+        val i = a.indexOf("--language")
         assertTrue("the option is there", i >= 0)
-        assertEquals("zh-CN", a[i + 1])
+        assertEquals("system", a[i + 1])   // the pack lists the game's languages; the front chooses one at launch
     }
 
     @Test
     fun `no language means no option`() {
         val a = args(-1)
         assertFalse("no --language-preferred without one", a.contains("--language-preferred"))
+    }
+
+    /** 内存紧张的机器：翻译少开几个进程（默认不传，移植器自己按空闲内存定） */
+    @Test
+    fun `the low memory mode is a switch`() {
+        val a = args(-1, lowMem = true)
+        assertTrue(a.contains("--low-mem"))
+    }
+
+    @Test
+    fun `no low memory mode means no option`() {
+        val a = args(-1)
+        assertFalse("no --low-mem without it", a.contains("--low-mem"))
     }
 }

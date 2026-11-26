@@ -6,6 +6,7 @@ import android.util.Log
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.security.Provider
 import java.security.interfaces.RSAPrivateCrtKey
 import javax.net.ssl.SSLSocket
@@ -82,6 +83,20 @@ object AdbChannels {
     fun exec(ctx: Context, command: String, timeoutMs: Long = 30_000): String {
         val port = connectPort(ctx) ?: throw IOException("adb's port is unknown (wireless debugging is off?)")
         return AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}").exec(LOOPBACK, port, command, timeoutMs.toInt())
+    }
+
+    /**
+     * Runs a command as the shell user, feeding [input] to its stdin, and gives back what it printed.
+     *
+     * The bytes go down the wire as they are read — the streamed install feeds the APK to `cmd package
+     * install -S`, the data goes to a tar that unpacks where it lands. [onSent] reports how much has gone (a
+     * game's data takes minutes, and the player watches it move).
+     */
+    fun exec(ctx: Context, command: String, input: InputStream?,
+             onSent: (Long) -> Unit = {}, timeoutMs: Long = 30_000): String {
+        val port = connectPort(ctx) ?: throw IOException("adb's port is unknown (wireless debugging is off?)")
+        return AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}")
+            .exec(LOOPBACK, port, command, input, onSent, timeoutMs.toInt())
     }
 
     /** Whether the App's key is paired with this phone's adbd (a harmless command answers). */

@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
                 val packDir = library.packDirOf(file)?.absolutePath
                 PortService.start(this, file.absolutePath, prefs.keys,
                                   cfg.touch, cfg.fps60, cfg.experimental, cfg.aliasHeadroom,
-                                  cfg.sharedFont, firmwareRepo.folder ?: "", cfg.mtReplay, packDir)
+                                  cfg.sharedFont, firmwareRepo.folder ?: "", cfg.mtReplay, packDir, cfg.lowMem)
             } else {
                 toast(locale.str(R.string.builds_needs_storage)); askStorage()
             }
@@ -459,8 +459,8 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 手柄中心开着：手柄的键只进示波，不进库页（库页的按钮不该被手柄按到）。
-     * Back 不在这里管：面板自己收（Compose 的 BackHandler）。
+     * 手柄的键走界面导航：库页因此能用手柄选游戏、打开与关掉配置面板。
+     * Back 不在这里管：盖着的面板自己收（Compose 的 BackHandler）。
      */
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         // 手柄的键 → 界面导航：库页因此能用手柄选游戏、打开与关掉配置面板。

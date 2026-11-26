@@ -48,7 +48,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.nx.android.R
-import com.nx.android.data.PhantomFix
+import com.nx.android.data.AdbPairing
 import com.nx.android.core.ui.components.CapsuleButton
 import com.nx.android.core.ui.components.QuietButton
 import com.nx.android.core.ui.theme.NxPalette
@@ -63,8 +63,8 @@ import com.nx.android.core.ui.theme.NxPalette
 @Composable
 fun PhantomFixDialog(onDismiss: () -> Unit) {
     val ctx = LocalContext.current
-    val st = PhantomFix.state
-    var devOn by remember { mutableStateOf(PhantomFix.developerOptionsOn(ctx)) }
+    val st = AdbPairing.state
+    var devOn by remember { mutableStateOf(AdbPairing.developerOptionsOn(ctx)) }
     var notificationsOn by remember { mutableStateOf(true) }
 
     // Back from Settings (or the notification prompt): Developer options or notifications may be on now.
@@ -72,15 +72,15 @@ fun PhantomFixDialog(onDismiss: () -> Unit) {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                devOn = PhantomFix.developerOptionsOn(ctx)
-                notificationsOn = PhantomFix.prepareNotifications(ctx)
+                devOn = AdbPairing.developerOptionsOn(ctx)
+                notificationsOn = AdbPairing.prepareNotifications(ctx)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    val close = { if (PhantomFix.state !is PhantomFix.State.Working) PhantomFix.cancel(ctx); onDismiss() }
+    val close = { if (AdbPairing.state !is AdbPairing.State.Working) AdbPairing.cancel(ctx); onDismiss() }
 
     Box(
         Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.6f)).clickable { close() },
@@ -151,31 +151,31 @@ fun PhantomFixDialog(onDismiss: () -> Unit) {
 
 /** What the fix is doing: the button that starts it, the progress, the way out when it fails */
 @Composable
-private fun FixProgress(st: PhantomFix.State) {
+private fun FixProgress(st: AdbPairing.State) {
     val ctx = LocalContext.current
     when (st) {
-        PhantomFix.State.Idle -> CapsuleButton(stringResource(R.string.phantom_start_fix), onClick = {
-            PhantomFix.begin(ctx)
-            PhantomFix.openDeveloperOptions(ctx)
+        AdbPairing.State.Idle -> CapsuleButton(stringResource(R.string.phantom_start_fix), onClick = {
+            AdbPairing.begin(ctx)
+            AdbPairing.openDeveloperOptions(ctx)
         })
-        is PhantomFix.State.Waiting, is PhantomFix.State.Failed -> {
-            if (st is PhantomFix.State.Failed) {
+        is AdbPairing.State.Waiting, is AdbPairing.State.Failed -> {
+            if (st is AdbPairing.State.Failed) {
                 Text(st.message, color = NxPalette.Danger, style = MaterialTheme.typography.bodySmall)
             }
-            val port = (st as? PhantomFix.State.Waiting)?.pairPort
+            val port = (st as? AdbPairing.State.Waiting)?.pairPort
             Text(
                 stringResource(if (port != null) R.string.phantom_waiting_port else R.string.phantom_waiting, port ?: 0),
                 style = MaterialTheme.typography.bodySmall,
             )
             ManualCode()
-            QuietButton(stringResource(R.string.phantom_start_fix), onClick = { PhantomFix.openDeveloperOptions(ctx) })
+            QuietButton(stringResource(R.string.phantom_start_fix), onClick = { AdbPairing.openDeveloperOptions(ctx) })
         }
-        is PhantomFix.State.Working -> Row(verticalAlignment = Alignment.CenterVertically) {
+        is AdbPairing.State.Working -> Row(verticalAlignment = Alignment.CenterVertically) {
             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = NxPalette.Cream)
             Spacer(Modifier.width(10.dp))
             Text(st.step, style = MaterialTheme.typography.bodyMedium)
         }
-        PhantomFix.State.Done -> Text(stringResource(R.string.phantom_done), color = NxPalette.Ready,
+        AdbPairing.State.Done -> Text(stringResource(R.string.phantom_done), color = NxPalette.Ready,
             style = MaterialTheme.typography.bodyMedium)
     }
 }
@@ -196,6 +196,6 @@ private fun ManualCode() {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
     }
     CapsuleButton(stringResource(R.string.phantom_pair_button), onClick = {
-        PhantomFix.submit(ctx, code, port.toIntOrNull())
+        AdbPairing.submit(ctx, code, port.toIntOrNull())
     }, enabled = code.length == 6)
 }

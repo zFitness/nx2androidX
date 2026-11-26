@@ -6,6 +6,7 @@ import android.net.Uri
 import com.nx.android.data.saves.SaveIo
 import com.nx.android.domain.GameApkExport
 import com.nx.android.domain.GameApkExportService
+import com.nx.android.domain.GameRef
 import com.nx.android.domain.GameEntry
 import com.nx.android.domain.playback.RunOptionsRepository
 import com.nx.android.domain.playback.RunOptionsSnapshot
@@ -32,8 +33,8 @@ class GameDetailViewModelTest {
         val options = FakeRunOptionsRepository()
         val store = ViewModelStore()
         try {
-            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService())
-            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService())
+            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState())
+            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState())
             store.put("detail-one", first)
             store.put("detail-two", second)
             val firstPack = File("/games/one")
@@ -92,10 +93,13 @@ class GameDetailViewModelTest {
 
     /** The export is not what this test is about: it only has to be there. */
     private class FakeExportService : GameApkExportService {
-        override fun export(entry: GameEntry, targetDir: File,
+        override fun export(game: GameRef, targetDir: File,
                             onProgress: (GameApkExport.Progress) -> Unit,
                             log: (String) -> Unit): GameApkExport.Result = GameApkExport.Result(false, "not_used")
-        override fun move(dataFolder: File, packageName: String, log: (String) -> Unit): Boolean = false
+        override fun paired(): Boolean = false
+        override fun moveData(game: GameRef, packageName: String,
+                              onProgress: (GameApkExport.Progress) -> Unit,
+                              log: (String) -> Unit): Boolean = false
     }
 
     private companion object {

@@ -63,6 +63,51 @@ missing), `boots` (it starts), `experimental` (a trial).
   that version's fixes are not in it.
 - `android.status` is `wip` or `boots`: tell the player plainly how far it has got.
 
+## How the porter tells a folder's versions apart
+
+A version is read from the **file name**, not from the file: the only thing the porter looks
+for is the `[v<N>]` tag. `<N>` is the Switch version number (v131072 is 1.1.1, v65536 is
+1.0.1) - not the number the game shows on its title screen.
+
+- `0100A3501946E800_update[v131072].nsp` - the update v131072, known by its tag.
+- `0100A3501946E800_update.nsp` - an update with no version. The porter takes it only when it
+  is the **one** update in the folder, and it treats it as the newest version the profile
+  registers. The build ID read out of the extracted program is checked afterwards: when it is
+  not the build the profile was brought up on, the port says which registered patches it lost
+  (`<module> build ... is not the tested ...`) and runs that module without them.
+- Two untagged updates in one folder - the porter leaves both out and says so (`leaving out
+  update NSPs without a version tag`). The folder then holds the base game alone, and the
+  build page shows v0 only.
+- A **merged dump** (one card holding the base game, its update and its DLCs) counts as an
+  untagged update as well - it carries the update's title, so the porter reads it as one -
+  and it can even become the base game file of the folder. That is the usual reason a folder
+  shows v0 although an update file sits right there: a card that was split into NSPs and left
+  beside them is read as a second untagged update. Tag the update NSP with `[v<N>]`, or move
+  the card out of the folder (the card-unpack skill says where the split output belongs).
+- A DLC is a title whose low 12 bits are neither 000 (base game) nor 800 (update); its
+  version tag is optional.
+- A tag that is not a plain number is **not** a tag: `Game [v1.1.1] (1G 1U 1D).xci` names the
+  display version, and the porter reads nothing from it. The tag it wants is the Switch
+  version number: `[v131072]`, not `[v1.1.1]`. The number is in the profile's `build` rows
+  (`build v131072 1.1.1`).
+
+The base game's file name does not matter - the title ID in it (or in its ticket) says what
+it is. A file that carries no readable title at all is read from the tag in its name.
+
+## Where the porter can read
+
+The porter runs as the App - it is a child process of it - so it reads what the App reads:
+the whole shared storage included. The App holds MANAGE_EXTERNAL_STORAGE, so a folder that
+another app created is no obstacle to it.
+
+- A shell test tells you nothing here: a `run-as` command runs in a stricter domain than the
+  App and gets `Permission denied` on folders the App reads without trouble. Judge a path by
+  the build page, not by a shell.
+- The App's own private folders (`files/...`, `files/tmp`, `files/tmpwork`) are fine for
+  scratch work, but the App's file picker does not show them.
+- The build itself does not run on the shared storage: the tools and the unpacked game live
+  in the App's own folder (`$NX2A_WORK`).
+
 ## How it fits the other tools
 
 - `card.py` / `card_split.py`: the cartridge's view - which titles are on the card,

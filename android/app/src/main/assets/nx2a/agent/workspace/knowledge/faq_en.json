@@ -45,7 +45,7 @@
       },
       {
         "q": "The game stutters, flickers or shows a black screen",
-        "a": "Look in this order: Settings → Vulkan driver (try another one), Settings → Display (frame generation), and the in-game drawer → Performance and HUD (frame rate, frame time, the driver in use). If none of that helps, read the log of that build (build details → \"Share the log\")."
+        "a": "Look in this order: Settings → Vulkan driver (try another one), the in-game menu (the ☰ button or the Back key) → the frame rate counter (frame rate, frame time, the driver in use); the menu also turns the upscaling off and changes the virtual gamepad's opacity and visibility. If none of that helps, read the log of that build (build details → \"Share the log\")."
       },
       {
         "q": "How do I report a problem to the developers?",
@@ -91,7 +91,7 @@
       },
       {
         "q": "How do I connect and set up a gamepad?",
-        "a": "The gamepad icon in the top bar → Gamepad center: there you see how many are connected, rebind, calibrate, and open the Bluetooth settings. How the gamepad behaves inside a game is set in the drawer → Controls."
+        "a": "Connect the controller with the phone's own Bluetooth settings: once it is on, the key hints fade in at the bottom of the library page. Whether a controller's face buttons go to the game by their position or by their label (some firmwares code the label into the key code) is set in the in-game menu (the ☰ button or the Back key) — the \"Face buttons\" row applies to every controller at once. Rebinding each key and per-controller calibration are gone: the host reads the controller's keys from its own table."
       },
       {
         "q": "How do I export a game as a folder?",
@@ -100,10 +100,6 @@
       {
         "q": "What is coming next?",
         "a": "On the list: screen resolution, mods, online play and upscaling. They are all still being worked on - please wait for a later release. Everything that works today is written down in the other entries on this page."
-      },
-      {
-        "q": "How do I use cheats?",
-        "a": "In the game, open the drawer and go to the Cheats tab: turn on \"Use cheats\" and tap \"Download from the library\". The cheat files are not in the app: they are fetched from the community library (switch-cheats-db) for this build of the game, which needs the network. Once they are here the cheats are listed, each with its own switch, effective at once; if the library has no file for your version, the row says so. The file stays in the app's own folder, so a rebuilt data pack does not lose it. A cheat can change values in the game's memory and patch the game's own code; the ones that would touch a word the rewriter changed (writing there would break the game) are marked with the reason they cannot run."
       }
     ]
   }

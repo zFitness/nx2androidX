@@ -99,6 +99,9 @@ class PiAgentChat @Inject constructor(
     /** 有一笔中止在途：下一轮开始前要等引擎确认它闲下来了。 */
     @Volatile private var abortPending: Boolean = false
 
+    /** 引擎进程刚重生过：它手里没有会话，发问之前要切回玩家那一局。 */
+    @Volatile private var respawned: Boolean = false
+
     /** The session's context occupancy and its model's window; live from the engine, zeroed on switch/new. */
     private var sessionTokens: Long = 0L
     private var sessionWindow: Long = 0L
@@ -328,6 +331,19 @@ class PiAgentChat @Inject constructor(
             ensureProcess(config)
         } catch (e: Exception) {
             send(AgentEvent.Failed(classify(e))); return@channelFlow
+        }
+        // The engine was just reborn (the player changed the model or the key, or it died): it
+        // holds no session, and the prompt below would open a new one — the player would lose
+        // the conversation (and the spawn results the interruption rules need) without a word.
+        // So it goes back to the player's own session first.
+        if (respawned) {
+            respawned = false
+            val back = sessionStore.activePath()?.takeIf { File(it).isFile }
+                ?: lastSessionFile?.takeIf { File(it).isFile }
+            if (back != null) {
+                val switched = rpc(JSONObject().put("type", "switch_session").put("sessionPath", back))
+                Log.d(TAG, "switch back after the engine restarted: ${switched?.optBoolean("success")}")
+            }
         }
         // 中止在途：等引擎说它闲下来了，这一轮的尾巴才收干净
         awaitIdle()
@@ -687,12 +703,19 @@ class PiAgentChat @Inject constructor(
         return p
     }
 
-    /** The long-lived rpc process; a config change respawns it on the next turn. */
+    /**
+     * The long-lived rpc process; a config change respawns it on the next turn.
+     *
+     * A respawned process holds no session: its first prompt opens a new session file, and the
+     * player would lose the conversation without noticing (the UI shows what it always shows).
+     * The flag tells the caller to switch back to the player's session before that prompt.
+     */
     @Synchronized
     private fun ensureProcess(config: AgentModelConfig): Channel<BusItem> {
         val fingerprint = "${config.baseUrl}|${config.modelName}|${config.apiKey.hashCode()}"
         if (process?.isAlive == true && builtFor == fingerprint) return checkNotNull(lineBus)
         kill()
+        respawned = true
 
         val base = guest.guestEnv()
         val nx2a = File(requireNotNull(base["NX2A_HOME"]) { "NX2A_HOME is not set in the guest env" })

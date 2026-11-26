@@ -7,6 +7,8 @@ SHA-256, which is checked; nothing is installed on the build machine.
 
     python3 fetch_debs.py --out <dir> glslc libssl3
     python3 fetch_debs.py --out <dir> --list          # what the index has
+
+The index (about 10 MB) is kept in --cache and reused on the next run; --refresh-index fetches it again.
 """
 import argparse, hashlib, io, lzma, sys, tarfile, urllib.request
 from pathlib import Path
@@ -79,7 +81,9 @@ def extract_deb(data, dest):
                 if not n or n.startswith('/'): continue
                 if any(n.startswith(p) for p in SKIP_FILES): continue
                 m.name = n
-                t.extract(m, dest, filter='tar' if hasattr(tarfile, 'tar_filter') else None)
+                # the filter keyword only exists from the release that carries tar_filter (3.12, backported);
+                # a system python (macOS ships 3.9) rejects it even when the value is None
+                t.extract(m, dest, **({'filter': 'tar'} if hasattr(tarfile, 'tar_filter') else {}))
         return
     raise RuntimeError('no data.tar in the .deb')
 
@@ -90,12 +94,22 @@ def main():
     ap.add_argument('--suite', default=SUITE)
     ap.add_argument('--mirror', default=MIRROR)
     ap.add_argument('--cache', default='')
+    ap.add_argument('--refresh-index', action='store_true', help='download the index again (it is kept in --cache)')
     ap.add_argument('--list', action='store_true')
     ap.add_argument('packages', nargs='*')
     a = ap.parse_args()
+    out = Path(a.out)
+    cache = Path(a.cache or (out.parent / '.deb-cache')); cache.mkdir(parents=True, exist_ok=True)
     url = f'{a.mirror}/dists/{a.suite}/main/binary-{ARCH}/Packages.xz'
-    print(f'>> the package index: {url}')
-    index = parse_packages(lzma.decompress(get(url)).decode('utf-8', 'replace'))
+    index_file = cache / f'Packages-{a.suite}-{ARCH}.xz'
+    if index_file.exists() and not a.refresh_index:
+        print(f'>> the package index (cached): {index_file}')
+        raw = index_file.read_bytes()
+    else:
+        print(f'>> the package index: {url}')
+        raw = get(url)
+        index_file.write_bytes(raw)
+    index = parse_packages(lzma.decompress(raw).decode('utf-8', 'replace'))
     print(f'   {len(index)} packages in {a.suite}/main {ARCH}')
     if a.list:
         for n in sorted(index):
@@ -104,8 +118,7 @@ def main():
     if not a.packages: return 0
     names, missing = resolve(index, a.packages)
     if missing: print(f'   not in the index (skipped): {", ".join(sorted(missing))}')
-    out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
-    cache = Path(a.cache or (out.parent / '.deb-cache')); cache.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
     for i, name in enumerate(names, 1):
         p = index[name]
         deb = cache / Path(p['filename']).name

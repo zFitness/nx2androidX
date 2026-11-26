@@ -24,7 +24,7 @@ def _parser():
     mode = po.add_mutually_exclusive_group()
     mode.add_argument('--app', action='store_true', dest='app',
                       help="the nx2android app's mode (the default): no APK and no install step — the data pack carries the host "
-                           "(libdmplay.so), the Vulkan drivers and the icon, and the app runs the game itself")
+                           "(libdmhost.so), the Vulkan drivers and the icon, and the app runs the game itself")
     mode.add_argument('--game-apk', action='store_false', dest='app',
                       help="the fork's legacy path: a per-game APK as well (a separate app per game, installed over adb); unmaintained here — "
                            "--install, --replace-signer, --package and --vercode-offset belong to it")
@@ -69,6 +69,9 @@ def _parser():
                          '"AllocateAddressRegion refused (0x1803)" before it crashes; it uses no memory (default: 8 for a game version the profile was not '
                          'brought up on, none for one it was)')
     _romfs_at(po, 'with --install: ')
+    po.add_argument('--low-mem', action='store_true',
+                    help='low-memory devices: the shader translation runs with at most two workers (the number follows the memory the device has '
+                         'free anyway; this caps it): slower, but a phone with little memory free survives the build')
     po.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line, for the GUI')
     rt = sub.add_parser('rebuild-runtime', help='rebuild a pack runtime without the original game files')

@@ -40,7 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nx.android.R
-import com.nx.android.data.PhantomFix
+import com.nx.android.data.AdbPairing
 import com.nx.android.domain.EnvCheck
 import com.nx.android.domain.PhantomCheck
 import com.nx.android.domain.ProfilesPackage
@@ -320,9 +320,9 @@ private fun ProfilesOption(title: String, hint: String, enabled: Boolean, onClic
  */
 @Composable
 private fun PhantomLine(state: EnvironmentCheckUiState, refresh: () -> Unit, onFix: () -> Unit) {
-    val st = PhantomFix.state
+    val st = AdbPairing.state
     // 修好了就再读一次：这一行跟着变绿
-    LaunchedEffect(st) { if (st is PhantomFix.State.Done) refresh() }
+    LaunchedEffect(st) { if (st is AdbPairing.State.Done) refresh() }
     val row = PhantomCheck.row(state.phantom)
     val detail = when {
         !state.phantomKnown -> stringResource(R.string.env_check_phantom_reading)

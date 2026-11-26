@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import tracemalloc
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -50,6 +51,7 @@ class ExportChecks(unittest.TestCase):
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
         self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.zstd = 0
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
@@ -80,14 +82,16 @@ class ExportChecks(unittest.TestCase):
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
-        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets'):
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_post'):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
-                   tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
+                   tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re, time=time,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
+                   spirv_patches=lambda: {},   # the profile's SPIR-V patches: none in this fixture
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=self.zstd, report=str(self.report),
+                                     spirv_tools=None),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
@@ -256,6 +260,38 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
             self.assertEqual(struct.unpack_from('<I', spv, 12)[0], 36)
         translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
         self.assertEqual(translated.read_bytes(), self.spv_override)
+    def test_translation_reports_its_progress(self):   # a translation of minutes is not a silence: the count grows line by line
+        self.run_export()
+        lines = self.log.getvalue().splitlines()
+        self.assertIn('progress: translating 1 shaders: 0/1 shaders', lines)
+        self.assertTrue(any(l.startswith('progress: translating 1 shaders: 1/1 shaders (1 of 1 batches,') for l in lines), lines)
+        self.assertTrue(any(l.startswith('translating 1 shaders: 1 batches,') for l in lines), lines)   # the time the pass took
+
+    def test_every_progress_line_means_something_to_the_porter(self):   # the porter reads these lines: a line it cannot read is a lost count
+        sys.path.insert(0, str(ROOT))
+        from porter.phone_port import shader_progress
+        self.second_shader = True; self.jobs = 2
+        self.run_export()
+        progress = [l for l in self.log.getvalue().splitlines() if l.startswith('progress:')]
+        self.assertTrue(progress, self.log.getvalue())
+        for line in progress:
+            parsed = shader_progress(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertEqual(parsed[2], 2, line)   # the count of the shaders of the pass
+
+    @unittest.skipUnless(dmsv.zstd_mod(), 'no zstd in this Python')
+    def test_compression_reports_its_progress(self):   # the bundle's SPIR-V is compressed after the translation: that wait is not a silence either
+        sys.path.insert(0, str(ROOT))
+        from porter.phone_port import shader_progress
+        self.second_shader = True; self.zstd = 3
+        self.run_export()
+        lines = [l for l in self.log.getvalue().splitlines() if l.startswith('progress: compressing')]
+        self.assertTrue(lines, self.log.getvalue())
+        for line in lines:
+            parsed = shader_progress(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertEqual(parsed[0], 'compressing 2 shaders'); self.assertEqual(parsed[2], 2)
+        self.assertTrue(any(l.endswith('/2 shaders (0s)') for l in lines), lines)
 
 
 class ProductValidation(unittest.TestCase):

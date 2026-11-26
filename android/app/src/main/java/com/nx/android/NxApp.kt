@@ -2,7 +2,7 @@ package com.nx.android
 
 import android.app.Application
 import com.nx.android.data.AppLocale
-import com.nx.android.data.PhantomFix
+import com.nx.android.data.AdbPairing
 import com.nx.android.app.AppProcess
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
@@ -21,6 +21,6 @@ class NxApp : Application() {
     override fun onCreate() {
         super.onCreate()
         AppProcess.markStarted()
-        if (isMainProcess) PhantomFix.attach(this, locale)
+        if (isMainProcess) AdbPairing.attach(this, locale)
     }
 }

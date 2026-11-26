@@ -49,6 +49,7 @@ class GameConfigJsonTest {
         val c = GameConfigJson.decode(old)
         assertEquals("", c.sharedFont)
         assertFalse(c.mtReplay)
+        assertFalse(c.lowMem)
         assertEquals(8, c.aliasHeadroom)
     }
 
@@ -57,6 +58,16 @@ class GameConfigJsonTest {
         val c = GameConfig()
         assertEquals("", c.sharedFont)
         assertFalse(c.mtReplay)
+        assertFalse(c.lowMem)
+    }
+
+    /** 低内存模式：按游戏记着 */
+    @Test
+    fun `the low memory mode survives the round trip`() {
+        val c = GameConfig(lowMem = true)
+        val back = GameConfigJson.decode(GameConfigJson.encode(c))
+        assertEquals(c, back)
+        assertTrue(back.lowMem)
     }
 
     @Test

@@ -1,0 +1,19 @@
+# OCTOPATH TRAVELER II on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Square Enix / Acquire, Unreal Engine 4.27 (MallocBinned3), SDK 12.3.2, NVN, CRIWARE sound; update 1.1.1 (v131072).
+# The profile is upstream's (seedds/nxnative dm/games/0100A3501946E000, brought up on the Mac and on a community phone: boot and about 30 minutes of gameplay after the
+# allocator alignment fix); the Android bring-up is ours.
+# Tested 2026-11-25 on the Xiaomi 23117RK66C (Android 16, Adreno 750) with the Turnip 26.99.99 driver (Mesa 27.0.0-devel, Vulkan 1.4.367), built from the v131072
+# update and the DLC: the world map, the traveler selection, a 3D scene with dialogue and free movement, about 40 minutes of play (13,500 frames), frame time
+# p50 33.4 / p95 37.8 ms (30 fps, the game's own Switch cap), no frame dropped on screen, no audio underrun after the first sound, about 1.9 GiB footprint, a clean
+# exit. The engine's address region is capped at 2 GB by the profile's game_args (the game asks for 62 GB by default) and Unreal's allocator runs on a host malloc
+# zone (the profile's patches.py). The opening movies and the save/reload not confirmed.
+# One red log line: "[vk] the surface offers no format 0 for the window texture: its picture is lighter" - the picture is not washed out on this device.
+status	playable
+tested	v131072 Xiaomi 23117RK66C (Android 16, Adreno 750)
+package	org.nx2a.octopathtravelerii
+orientation	landscape
+graphics	nvn
+pacing	game
+readme_image	docs/images/octopath-traveler-2.jpg
+readme_tag	v0.4.1
+readme_note	update 1.1.1 · 30 fps (the game's own cap) · tested on the Xiaomi 23117RK66C (Android 16, Adreno 750) with a Turnip Vulkan driver

@@ -301,6 +301,71 @@ def app_version() -> str:
     return m.group(1) if m else ''
 
 
+# The engine's sub-agent extension (@tintinweb/pi-subagents) and the wait path of its get_subagent_result
+# tool: that wait has no end, and the tool's own answer tells the model to use it ("Use wait: true or check
+# back later"). A session that asks for the result of a running agent is then held for as long as that agent
+# runs: the player cannot talk to the assistant meanwhile, and every step the agent takes shows up as a tool
+# call of that session. A session that started at 22:03 on 2026-11-25 sat in that wait for 38 minutes.
+#
+# The wait goes, and the tool answers at once: the agent keeps running, and its summary is posted into the
+# conversation when it is done - the flow the engine was built for (the completion notification), with the
+# wait as the alternative. The tool serves top-level agents only (the engine's own guard above the wait says
+# so); a nested agent's own tools are a different implementation, in another file, and are left alone.
+#
+# The patch is an edit of the engine's own file, so it has to stop the build when the file does not look the
+# way this expects: an engine that changed under it would ship the old behaviour silently.
+SUBAGENT_PATCHES = (
+    (
+        '            wait: Type.Optional(Type.Boolean({\n'
+        '                description: "If true, wait for the agent to complete before returning. Default: false.",\n'
+        '            })),\n',
+        '',
+    ),
+    (
+        '            // Wait for completion if requested. Cancellation stops only this tool\n'
+        '            // call; the background agent keeps running and remains unconsumed so its\n'
+        '            // completion notification can still be delivered.\n'
+        '            // Queued agents have no promise yet (it\'s created when the queue starts\n'
+        '            // them), so poll until they leave the queue, then await like a running one.\n'
+        '            if (params.wait && (record.status === "running" || record.status === "queued")) {\n'
+        '                while (record.status === "queued") {\n'
+        '                    await abortable(new Promise((resolve) => setTimeout(resolve, QUEUE_WAIT_POLL_MS)), signal);\n'
+        '                }\n'
+        '                if (record.promise)\n'
+        '                    await abortable(record.promise, signal);\n'
+        '            }\n',
+        '            // nx2a: there is no wait here. This tool answers at once, so a session that asks\n'
+        '            // for the result of a running agent gets its status instead of being held until the\n'
+        '            // agent is done - the player could not talk to the assistant meanwhile, and every step\n'
+        '            // the agent took showed up as a tool call of that session. The agent keeps running,\n'
+        '            // and its summary is posted into the conversation when it is done.\n',
+    ),
+    (
+        '                output += "Agent is still running. Use wait: true or check back later.";',
+        '                output += "Agent is still running. Do not wait for it: answer with what you have and end your turn - its summary is posted into this conversation when it is done.";',
+    ),
+)
+
+
+def patch_engine_subagents(runtime: Path) -> None:
+    """The engine's sub-agent extension: get_subagent_result must not hold a session.
+
+    See SUBAGENT_PATCHES for what the wait does and why it goes. Every patch has to match exactly
+    once: a file that moved under this stops the build instead of shipping the old behaviour."""
+    path = runtime / 'extensions' / 'pi-subagents' / 'dist' / 'index.js'
+    if not path.is_file():
+        raise SystemExit('android-apk: the engine carries no sub-agent extension (pi-subagents is missing)')
+    text = path.read_text(encoding='utf-8')
+    for old, new in SUBAGENT_PATCHES:
+        found = text.count(old)
+        if found != 1:
+            raise SystemExit(
+                'android-apk: the engine\'s sub-agent extension does not look the way the patch expects '
+                f'({found} matches for "{old.strip()[:70]}") - the engine changed: the patch has to be read again')
+        text = text.replace(old, new)
+    path.write_text(text, encoding='utf-8')
+
+
 def stage_engine(package: Path, out: Path) -> dict:
     """The engine out of its package: checked against the package's own manifest, then unpacked where the
     environment's archive takes it (agent/runtime).
@@ -349,6 +414,7 @@ def stage_engine(package: Path, out: Path) -> dict:
     binary.chmod(0o755)
     if not os.access(binary, os.X_OK):
         raise SystemExit('android-apk: the engine binary is not executable')
+    patch_engine_subagents(target)
     print(f'   the engine {version} ({package.stat().st_size / 2**20:.1f} MB packed, '
           f'{sum(m.file_size for m in zipfile.ZipFile(package).infolist()) / 2**20:.0f} MB unpacked)')
     return manifest
@@ -518,6 +584,23 @@ def main():
     # assistant finds them at $NX2A_REPO/tools/<name>.py without looking for them
     if (REPO / 'phone_tools').is_dir():
         copy_tree(REPO / 'phone_tools', tool / 'tools', skip=TOOL_SKIP)
+    # The static embedding model of the local search (phone_tools/memory_search.py): 5.6 MB, built on the
+    # computer from the public corpus and published as a release of the public distribution
+    # repository (zFitness/public-dist). Fetch it with devtools/fetch_memory_model.py before building.
+    # It is optional - the search runs without it, on the lexical side alone - so a build that does
+    # not have it is not a broken build.
+    model = REPO / '.memembed/memory-embed'
+    if (model / 'meta.json').is_file():
+        copy_tree(model, tool / 'tools/memory-embed', skip=TOOL_SKIP)
+        version = ''
+        try:
+            version = json.loads((model / 'meta.json').read_text(encoding='utf-8')).get('version', '')
+        except (OSError, ValueError):
+            pass
+        print(f'>> the embedding model of the local search{f" ({version})" if version else ""}')
+    else:
+        print('>> no embedding model (.memembed/memory-embed): the search runs lexical only')
+        print('   fetch it: python3 devtools/fetch_memory_model.py')
     # the tool's own patch script (the interpreter paths of the programs the porter starts) and the SDK's
     # globalization fix (the phone's .NET has no ICU): both are run by the app, so they travel with it
     shutil.copy2(REPO / 'packaging/android-apk/patch_interp.py', tool / 'tools/patch_interp.py')

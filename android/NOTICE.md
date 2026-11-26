@@ -11,27 +11,13 @@ code this project continues.
 The app is distributed under GPL-3.0-or-later, because that is the license of
 the project's own code (see the repository's [LICENSE](../LICENSE)).
 
-The app's native host also links the LSFG frame generation code in
-`nxnative/dm/android/lsfg/`, which is a port of the frame generation of the
-Eden emulator, which builds on lsfg-vk. Both are GPL-3.0-or-later, and the
-port carries that license:
-
-- License: `nxnative/dm/android/lsfg/LICENSE.md`
-- Full license text: `nxnative/dm/android/lsfg/COPYING`
-
-The app's asset tree carries the component's complete source and the full
-license text, so the source and the license are with the binary, as GPL-3.0
-requires.
-
-## The build without the frame generation
-
-Building the app with `-PnxLsfg=false` leaves the LSFG code out of the host
-binary, and the frame generation feature then reports that it is not in that
-build. The build is still distributed under GPL-3.0-or-later: the license
-follows the code the build was made from, not what the build linked.
-
-The switch reaches the host build in `nxnative/dm/android/build.py`
-(`--no-lsfg`), which the porter runs when it compiles the host for a port.
+The app's native host carries no copyleft component beyond this repository's
+own code: the frame generation is not in this build, so the host is covered by
+the repository's license alone. The third-party components the host does use
+are permissive, and each one is listed in
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) with its license text
+beside it — the Qualcomm SGSR upscaler's BSD-3-Clause text is at
+`nxnative/dm/android/shaders/sgsr1.LICENSE`.
 
 ## What the app ships besides its own code
 
@@ -39,8 +25,6 @@ The switch reaches the host build in `nxnative/dm/android/build.py`
   the index of everything the app redistributes. The MIT components shipped as
   binaries carry their license text next to them, in
   `nxnative/dm/gfx/tools/dmsh_xlate_bin/NOTICE.md` and its `LICENSES/` folder.
-- **The LSFG source and license**: `nxnative/dm/android/lsfg/`, in the asset
-  tree, with its `COPYING`.
 - **Python modules** (lz4, capstone, pillow, fonttools, pyyaml, pycryptodome,
   backports.zstd) and **the .NET runtime**, fetched at build time into the
   app's payload.
@@ -50,7 +34,6 @@ The switch reaches the host build in `nxnative/dm/android/build.py`
 
 ## Lossless Scaling's `Lossless.dll`
 
-The frame generation reads the shaders from the player's own copy of
-Lossless Scaling's `Lossless.dll` at run time. That file is proprietary, it is
-not in this repository, not in any bundle and not in the APK. Nothing of it is
-redistributed here.
+The frame generation is not in this build, so nothing reads that file at run
+time. It was proprietary and is not in this repository, not in any bundle and
+not in the APK.

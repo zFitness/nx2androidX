@@ -32,6 +32,8 @@ class GameDetailViewModel @Inject constructor(
     private val runOptionsRepository: RunOptionsRepository,
     /** The export of a finished port as a game of its own (an APK the player installs). */
     val exportService: GameApkExportService,
+    /** 那口导出状态：活儿在前台 ExportService 里跑，界面从这口看进度与结果 */
+    val exportState: com.nx.android.appstate.ExportState,
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(
         GameDetailUiState(savedStateHandle[KEY_TITLE_ID]),

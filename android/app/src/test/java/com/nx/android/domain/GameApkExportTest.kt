@@ -17,7 +17,6 @@ class GameApkExportTest {
     @Test
     fun `the names are the game's name, cleaned`() {
         assertEquals("Red Dead Redemption.apk", GameApkExport.apkName("Red Dead Redemption"))
-        assertEquals("Red Dead Redemption", GameApkExport.dataFolderName("Red Dead Redemption"))
         // a name a file system refuses becomes underscores
         assertEquals("Half_Life.apk", GameApkExport.apkName("Half/Life"))
     }
@@ -75,15 +74,6 @@ class GameApkExportTest {
         assertEquals("zh-Hans", GameApkExport.envValue(env, "DM_LANG"))
         assertEquals("libvulkan_freedreno.so", GameApkExport.envValue(env, "DM_VK_DRIVER"))
         assertEquals(null, GameApkExport.envValue(env, "DM_ROMFS"))
-    }
-
-    @Test
-    fun `the copy command quotes the paths, names the game's own directory and makes the files readable`() {
-        val command = GameApkExport.copyCommand(java.io.File("/storage/emulated/0/NX2A Games/Red Dead"), gameDir)
-        assertTrue(command.contains("'/storage/emulated/0/NX2A Games/Red Dead'"))
-        assertTrue(command.contains("'$gameDir'"))
-        // the files arrive owned by the shell: without the chmod the game cannot read them
-        assertTrue(command.contains("chmod -R a+rX '$gameDir'"))
     }
 
     @Test

@@ -8,7 +8,7 @@
 #   compresses 3.5-3.6x at zstd level 3 on its own, so the host can still decompress one shader at a time. A module that does not get smaller is stored as it is.
 #   dmsv.py info <bundle>                              its version, shaders, SPIR-V stored and decompressed
 #   dmsv.py pack <bundle> <out> [--level N] [--jobs N]  the same shaders in the other form (--level 0: version 1, uncompressed), every module read back and compared
-import argparse, concurrent.futures as cf, contextlib, mmap, os, stat, struct, sys, tempfile
+import argparse, concurrent.futures as cf, contextlib, mmap, os, stat, struct, sys, tempfile, threading
 
 MAGIC, HDR, ENT = b'DMSV', struct.Struct('<4sII'), struct.Struct('<QIIIIII')
 # zstd level 3, zstd's own default (1 does as well on this SPIR-V, within 1%). Each module on its own, the whole SPIR-V of three bundles (Mac M4 Pro; MB/s: one thread's CPU time):
@@ -37,7 +37,7 @@ def spv_bytes(spv):
     return spv
 
 
-def write(path, entries, level=LEVEL, jobs=None):
+def write(path, entries, level=LEVEL, jobs=None, progress=None):
     """entries [(key, stage, spv, refl)] → a bundle at path: version 2 with each module's SPIR-V zstd-compressed at level, in jobs threads (zstd lets go of the GIL: 7x faster
     on 12 threads), or version 1 with level 0 or in a Python without zstd. spv may
     be bytes or a PathLike to an immutable module. Only jobs payloads are queued;
@@ -45,6 +45,7 @@ def write(path, entries, level=LEVEL, jobs=None):
     Verified in a private sibling directory, then atomically replaces path. A write,
     verification or replace failure leaves the old bundle intact (shader_vk.py
     calls this directly, without the CLI repacker's former .partial protection).
+    progress(i, n): called with the number of modules compressed so far and their total (the count grows as the threads finish them, so a long compression is not a silence).
     Returns (version, SPIR-V bytes, SPIR-V bytes stored)"""
     entries = sorted(entries, key=lambda e: e[0]); z = zstd_mod() if level else None
     if level and not z: print('[RED] this Python has no zstd (compression.zstd from Python 3.14, or pip install backports.zstd): the shader bundle is written uncompressed (version 1)', flush=True)
@@ -57,6 +58,13 @@ def write(path, entries, level=LEVEL, jobs=None):
             c = z.compress(spv, options=opt)
             return (c, len(spv)) if len(c) < len(spv) else (spv, 0)
         return spv, 0
+    count, lock = [0], threading.Lock()
+    def pack_one(source):
+        r = pack(source)
+        with lock:
+            count[0] += 1
+            if progress: progress(count[0], len(entries))
+        return r
     def packed():
         if not z:
             for e in entries: yield pack(e[2])
@@ -66,7 +74,7 @@ def write(path, entries, level=LEVEL, jobs=None):
         # Batch explicitly for Python versions before Executor.map(buffersize=).
         with cf.ThreadPoolExecutor(workers) as ex:
             for start in range(0, len(entries), workers):
-                yield from ex.map(pack, (e[2] for e in entries[start:start + workers]))
+                yield from ex.map(pack_one, (e[2] for e in entries[start:start + workers]))
     ver, off, table = 2 if z else 1, HDR.size + ENT.size * len(entries), []
     raw = stored = 0
     # Same filesystem for atomic rename; a unique directory also isolates concurrent

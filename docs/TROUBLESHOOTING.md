@@ -47,6 +47,21 @@ During play the game writes into `<DM_SAVE>.work`; a save commit clones-and-swap
 
 `dm_log_elapsed()` derives the process start time through a sysctl shim reading `/proc`; on some devices the values it prints are garbage (a boot line reading days of "elapsed" for a minutes-old process). Reason about sessions by **which log file** (`log.txt` is the latest boot's, rotated by each boot, `log.prev.txt` the one before) and by **file mtimes**, never by the `[dm] <seconds>` column.
 
+## `setenv(name, value, 0)` does not overwrite — and the flat default was set first
+
+The boot set the flat `DM_SAVE` (upstream's layout) before the per-game adjustment ran, and the adjustment used
+`setenv(..., 0)` — overwrite disabled — so the flat value silently won and every game kept seeing the shared root:
+no old saves, no error anywhere. The third argument of `setenv` is part of the contract; when a value must win,
+pass 1, or set only the winner once. The diagnostic log lines that pinned it down (`DM_GAME_ID=…, DM_SAVE=…` at
+boot) stayed in the tree for exactly this kind of hunt.
+
+## `python -m pkg.module` needs its own `__main__` guard
+
+`-m porter` works because the package carries `__main__.py`; `-m porter.phone_cli` executes the module itself,
+which defined `main()` and exited silently — the app's rebuild button then saw a process with no output and
+reported "the runtime rebuild did not report this pack". A new entry module needs its own
+`if __name__ == "__main__": sys.exit(main(sys.argv[1:]))`.
+
 ## Debugging recipes that found the bugs above
 
 - **Which library is the process really running**: `run-as com.nx.android grep -m1 libdm /proc/<pid>/maps` — the path plus the inode; compare against the file's mtime on disk. A same-path stale mapping is invisible anywhere else.

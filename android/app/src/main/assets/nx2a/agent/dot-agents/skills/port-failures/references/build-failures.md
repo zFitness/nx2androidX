@@ -202,6 +202,29 @@ The rest of the shader stage is in **shader-split.md**.
 | `the version to pack must be one the provisional profile registers` | the APK is packed for a version the profile does not know |
 | `the version to pack (<n>) is not in the folder` | the folder does not hold that version |
 
+## Rebuilding the host after a fix (on the phone)
+
+A fix in the host (`dm/host/…`, `dm/android/…`) is worth nothing until the phone builds it
+again. The phone is the porter: it compiles the host with the player's own NDK.
+
+```sh
+# the host of a game that is already ported: its libdmhost.so is built again from the
+# profile, the saves and the game's data stay. The package is in the pack's
+# nx2a-data.json ("package": "org.nx2a.t<title id>")
+python3 -m porter host --package org.nx2a.t010078d000f88000 --jobs 8
+
+# the game's own runtime (the shaders and the game binary) instead:
+python3 -m porter rebuild-runtime <the pack folder> --jobs 8
+```
+
+The build lands in `files/runtimes/<title id>/`; the next run of the game uses it. Read the
+run's log to see what the new code did (`log.txt` is the last run, `log.prev.txt` the one
+before it). A build that dies mid-way is cached stage by stage: start it again and it picks
+up where it stopped.
+
+Do not go looking for the build command in the porter's Python: the two commands above are
+the ones. (`porter --help` lists them all; `porter host` is the one for a host fix.)
+
 ## The build dies on the phone
 
 The app disappears mid-build and the history says "Interrupted". That is the system killing

@@ -34,8 +34,9 @@ into the index (`corpus-fork.json`), and the next game with the same symptom fin
 | The game crashes, shows a black screen, draws garbage, or freezes | `references/runtime-symptoms.md` |
 | What the symptom looks like on a phone, what the first move is, the dead ends | `references/device-findings.md` |
 | How to bring up a new game, how to read a crash report, where a fix belongs | `references/porting-method.md` |
-| Which upstream case is this? | `references/case-index.tsv`, through `scripts/kb_search.py` |
-| What the documents say about this symptom, word for word | the documents, through `scripts/kb_search.py --docs` |
+| Which upstream case is this? | `references/case-index.tsv`, through the search (`--corpus pr`) |
+| Has anybody already hit this? | `references/issues/`, through the search (`--corpus issue`) - the closed issues of both repositories, the fork's ones written in chinese |
+| What the documents say about this symptom, word for word | the documents, through the search (`--corpus doc`) |
 
 The runtime document opens with a triage table: the symptom, the likely causes in order,
 what tells them apart, and the first thing to do. Start there.
@@ -64,34 +65,51 @@ Read that section, and no more.
 
 ```bash
 # the documents, by section: the answer, where it is, and a snippet of it
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --docs "shared font glyph"
+python3 $NX2A_REPO/tools/memory_search.py search --corpus doc "shared font glyph"
 # one section as it is written, when the snippet is not enough
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --docs --section "The shared fonts"
+sed -n '196,240p' $NX2A_HOME/agent/.agents/skills/port-failures/references/device-findings.md
 ```
 
-A hit that holds every word of the query is a **strict** hit; a hit that holds only some of
-them is marked **loose** - a loose hit is a hint, not a conclusion: read it and check, or
-ask again with fewer words. When nothing matches, the search says how the documents spell
-the word and points at the upstream cases, which hold the pull request titles and summaries.
-The two corpora answer different questions: the documents hold the distilled knowledge, the
-index holds what upstream wrote.
+The search says where the section is (the file and its line range), so the second step is a
+`sed` over that range - not a read of the whole document. When nothing matches, the search
+says how the documents spell the word and points at the upstream cases, which hold the pull
+request titles and summaries. The corpora answer different questions: the documents hold the
+distilled knowledge, the index holds what upstream wrote.
+
+**The player writes in chinese, the corpus is in english.** Rewrite the question into english
+technical words before you search it - "启动后画面全黑" becomes "the screen is black after
+launch". The search knows a few chinese words on its own (黑屏, 崩溃, 卡死, 闪退, 掉帧, 字体,
+乱码), but that is a floor, not a way.
 
 ## The search
 
 On the phone the skill sits in the assistant's own folder, so the search is:
 
 ```bash
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py "black screen"
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --symptom crash --layer host
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --game "Pokémon" --fork no
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --docs "shared font glyph"
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --docs --section "The shared fonts"
+python3 $NX2A_REPO/tools/memory_search.py search "black screen"
+python3 $NX2A_REPO/tools/memory_search.py search --corpus case "black screen"          # this phone's own cases
+python3 $NX2A_REPO/tools/memory_search.py search --corpus doc "shared font glyph"       # the documents
+python3 $NX2A_REPO/tools/memory_search.py search --symptom crash --layer host           # the upstream's cases
+python3 $NX2A_REPO/tools/memory_search.py search --game "0100A9D01C446000" --fork no
 ```
 
-In the checkout the same script is under the skill's own `scripts/` folder.
+One search covers everything: the upstream's pull requests, the knowledge documents, the
+closed issues of both repositories and this phone's own cases. `--corpus` picks one of them
+(`pr`, `doc`, `issue`, `case`); without it every corpus is searched at once.
 
-Every answer is bounded: a search lists at most twelve cases, or five document sections,
-and says how many matched in all. `--top N` asks for more.
+**A filter on its own lists what it matches** - no question needed:
+
+```bash
+python3 $NX2A_REPO/tools/memory_search.py search --corpus pr --symptom perf   # every performance PR
+python3 $NX2A_REPO/tools/memory_search.py search --corpus pr --layer vk        # every PR in the vk layer
+```
+
+Use that when you want to see a whole corner of the corpus - "everything upstream did
+about performance" - rather than one answer to one question. With a question, the filters
+narrow the answers instead.
+
+Every answer is bounded: a search lists at most five hits, or twelve cases when a corpus
+was named, and says how many matched in all. `-k N` asks for more.
 
 `--symptom` is one of `crash`, `black`, `garble`, `freeze`, `missing`, `build`, `memory`,
 `shader`, `perf`, `audio`, `movie`, `feature`. `--layer` is one of `profile`, `shader`, `nvn`,
@@ -162,17 +180,18 @@ that matter for a player right now:
 
 ## The tool
 
-- `scripts/kb_search.py` - search the distilled cases. No network, no tool tree: it reads the
-  index that ships beside it.
+- `memory_search.py` (in the tool tree, `$NX2A_REPO/tools/`) - the search. It reads the
+  reference documents that ship with the app and the case files on this phone, and it
+  builds its own index the first time it runs. No network.
 
 ```bash
-python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --symptom black --fork no
+python3 $NX2A_REPO/tools/memory_search.py search --symptom black --fork no
 ```
 
 `--symptom` is one of `crash`, `black`, `garble`, `freeze`, `missing`, `build`, `memory`,
 `shader`, `perf`, `audio`, `movie`, `feature`. `--layer` is one of `profile`, `shader`, `nvn`,
 `tex`, `vk`, `host`, `rewriter`, `porter`, `app`, `android`, `audio`, `movie`, `perf`, `tools`,
-`docs`. `--fork no` gives the cases whose fix is **not** in this fork: those are the ones
+`docs`, `other`. `--fork no` gives the cases whose fix is **not** in this fork: those are the ones
 worth a port.
 
 **A path under `devtools/`, `docs/` or `nxnative/docs/` is a path of the checkout.** The

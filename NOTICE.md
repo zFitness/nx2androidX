@@ -36,15 +36,12 @@ the license file in their own directory, and
 
 | Path | License | License file |
 |---|---|---|
-| `nxnative/dm/android/lsfg/` | GPL-3.0-or-later (from Eden / lsfg-vk) | [`nxnative/dm/android/lsfg/LICENSE.md`](nxnative/dm/android/lsfg/LICENSE.md), full text in `nxnative/dm/android/lsfg/COPYING` |
 | `nxnative/dm/third_party/*` | each its own (MIT, BSD, Apache-2.0, zlib) | in each directory, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
 | `nxnative/dm/gfx/tools/dmsh_xlate_bin/` | the prebuilt binaries carry the licenses of the components they are built from | [`nxnative/dm/gfx/tools/dmsh_xlate_bin/NOTICE.md`](nxnative/dm/gfx/tools/dmsh_xlate_bin/NOTICE.md) |
 
 Every binary built from this repository — the phone APK, the desktop zip, the
-host and the per-game APK — is distributed under GPL-3.0-or-later. The frame
-generation can be left out of a build, but that does not change the license of
-the code the build came from. What that means for the app is in
-[android/NOTICE.md](android/NOTICE.md).
+host and the per-game APK — is distributed under GPL-3.0-or-later. What that
+means for the app is in [android/NOTICE.md](android/NOTICE.md).
 
 ## The upstream code this repository continues
 

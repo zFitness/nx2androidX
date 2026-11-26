@@ -523,7 +523,7 @@ fun MainScreen(
     var gameListOpen by remember { mutableStateOf(false) }
     val lib = library
     // 手柄导航归谁：谁在最上面，谁拿走手柄。
-    // 手柄中心开着的时候，手柄的键进中心（活动层就不发了），外面还盖着东西的时候也一样。
+    // 外面盖着东西的时候（设置页、资料库、档案面板），手柄的键就不发给这一层。
     val navHost = when {
         outerOverlayOpen || profilesOpen || gameListOpen -> NavHost.NONE
         agentFullOpen -> NavHost.AGENT
@@ -899,7 +899,6 @@ private fun TopBar(
         TopIcon(Icons.Filled.Add, stringResource(R.string.lib_pack_import_action), onImportPack)
         // 重新扫描资料库
         TopIcon(Icons.Filled.Refresh, stringResource(R.string.app_refresh_library), onRefresh)
-        // 手柄中心：顶栏的入口（接着几只手柄就亮几颗）
         // 设置：它是一整页，从这个图标进来
         TopIcon(Icons.Filled.Settings, stringResource(R.string.app_tab_settings), onSettings)
         // 常见问题：也是一整页，紧挨着设置图标

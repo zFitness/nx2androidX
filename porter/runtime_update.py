@@ -144,6 +144,13 @@ def find_profile(pack, title_id, expected, allow_drift=False):
     if allow_drift and first is not None:
         # 没有一份对得上，但玩家让 App 用当前档案继续：这份就是这个游戏现在在用的档案
         # （完整重新移植用的也是它），重建出来的运行库与重移植是同一个东西。
+        # 导入层的那份优先：完整重移植用的就是它（pipeline.sync_profile 把导入的档案拷进 dm/games），
+        # 而包里那份是上一次重建用过的快照，可能已经旧了。档案改了而包里那份没跟着改时，重建出来的
+        # 运行库就少了那份改动（OCTOPATH TRAVELER II 的区域上限 game_args 就在 game.tsv 里：
+        # 少了它，游戏在 nninitStartup 里要 62 GB 的引擎区域，手机的别名区域给不了，直接崩）。
+        layer = profiles_layer.layer_dir() / title_id
+        layer_fingerprint = profile_fingerprint(layer)
+        if layer_fingerprint is not None: return layer, layer_fingerprint, True
         return first[0], first[1], True
     return None, None, found
 

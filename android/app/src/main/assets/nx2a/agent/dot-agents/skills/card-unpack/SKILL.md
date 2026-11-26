@@ -46,11 +46,44 @@ nx_extract. The App does not need it to pick a file.
     two cards share one output folder.
 - Flat inside that folder, no subfolders: no "base/update/DLC" subfolders - the player
   asked for one level, so keep one level.
+- **The split never lands in the card's own folder.** The output is a folder of its own
+  beside the card - not the card's folder, and not a subfolder of it. A card and the NSPs
+  cut out of it are read together by the porter, and the update is then lost (see below).
 - The tool names the files: `<title ID>_base.nsp`, `<title ID>_update.nsp`,
-  `<title ID>_dlc.nsp` (a DLC's number is in its title ID), anything else `_other.nsp`. Do
-  not rename them.
+  `<title ID>_dlc.nsp` (a DLC's number is in its title ID), anything else `_other.nsp`.
+- **The update NSP needs its version in its name**: `<title ID>_update[v<N>].nsp`. The
+  porter reads a version from the `[v<N>]` tag and from nowhere else, and the tool does not
+  know the version - it cuts the card, it does not read the update's build. Without the tag
+  the update is only taken when it is the one update in the folder, and it is then taken on
+  the assumption that it is the newest version the profile registers (a guess the build ID
+  check afterwards reports on: it says which registered patches a module of the wrong build
+  lost). `<N>` is the Switch version number (`[v131072]`, not `[v1.1.1]`), and
+  it is in the profile's `build` rows (`build v131072 1.1.1`). Renaming the file the tool
+  wrote is allowed - it is the tool's own product - but do not guess the number: if the
+  profile does not say which version the update is, say so and leave the tag off.
 - Do not touch the player's card: no move, no rename, no deleting the original. The split
   reads it and writes beside it.
+
+## The card after the split: it is a trap for the port
+
+The split leaves the card where it was, and a card that was rebuilt with the update inside
+(1G+1U+1D) is read by the porter as **an untagged update** - it carries the update's title -
+and it can even be taken as the base game of the folder.
+
+The porter reads the folder the player selects for the build **and its first-level
+subfolders** as one game. So:
+
+- The card must not be in that folder, and not in one of its subfolders. It may sit beside
+  it - but then the player has to select the split folder itself, not the folder above it.
+- Card and split NSPs read together make two untagged updates: the porter leaves both out,
+  says `leaving out update NSPs without a version tag`, and the build page shows **v0
+  only**. The update is not ported - the port is of the old version, silently.
+- After a successful split, tell the player that the card has to leave the folder the game
+  is read from, and where it went. Moving the card is the player's call: ask before you
+  move it, and never delete it on your own - it is their file, and a card is the only copy
+  of some dumps.
+- The folder the player selects should hold one base game, the tagged update and the DLCs.
+  Then the build page shows every version the folder holds.
 
 ## Space
 

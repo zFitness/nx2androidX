@@ -67,10 +67,23 @@ When the game boots on the device:
 ## 4. Playable
 
 - Play it on the device: title, menus, gameplay, a save, the pause menu, the on-screen gamepad, a controller if the game uses one, text entry if it asks for names, a few minutes of steady frame rate (`[perf]` lines) and no new `[RED]` lines.
-- Set `status playable` and `tested <version> <device>`; update the header comment. The README keeps no table of the games and no screenshot of them: the game's artwork belongs to its publisher, and the list of the games that play on Android lives upstream, in the games table (https://github.com/shirai91/nx2android#games). A gameplay frame is still worth capturing while porting — into `.gamedump/<App>/`, never into the repository.
+- Set `status playable` and `tested <version> <device>`; update the header comment. A gameplay frame is worth capturing while porting, and the gallery's cell needs one in the repository (`readme_image`, the checklist bullet below) — a frame of the game on the device, not of the app around it: a `DM_CTL` line `env DM_VK_SHOTS=1` writes the next present as `frame_000123.ppm` into `DM_VK_SHOT_DIR` (default: the run's `DM_ROOT`) with no overlay, while `adb shell screencap` carries the app's drawer and perf lines, and the host's `shot <path>` line is a no-op on Android (`dm/android/gfx_common.c`). `devtools/ppm2png.py` turns the PPM into a PNG; the gallery's files are 1280×720 JPEGs in `docs/images/`.
 - The nx2android version the game was tested on goes in the profile's `tested <version> <device>` row and in PORT_CHECKLIST.md's line. A port on the development checkout takes the next release's version: the patch after the latest tag if `main` has only new games and bug fixes since it, else the next minor (docs/DEVELOPMENT_GUIDE.md, Releases and version numbers). This is not the profile's `tested <version> <device>`, which names the game's update.
-- Add the game's line to docs/PORT_CHECKLIST.md: ``- [x] <name> · `<title ID>` `` with the "profile here" / "upstream profile" note dropped (add the line in alphabetical order if the game is not listed), then run `python docs/gen_tables.py`: the game has an `android.tsv`, so the generator ticks it and recounts the `N / M ported` line (tests/test_docs_tables.py checks). The doc goes in the profile's commit; a port is not done until it shows the game.
+- Add the game's line to docs/PORT_CHECKLIST.md: ``- [x] <name> · `<title ID>` `` with the "profile here" / "upstream profile" note dropped (add the line in alphabetical order if the game is not listed), then run `python docs/gen_tables.py`: the game has an `android.tsv`, so the generator ticks it, recounts the `N / M ported` line and adds the gallery cell (tests/test_docs_tables.py checks). The gallery cell is the `android.tsv` rows `readme_tag` (the release the port ships in), `readme_note` (one line: the update, the frame rate, the device and driver), `readme_image` (the picture above — the table shows no picture; the generator takes its presence as the cell's membership) and, only when the gallery names the game otherwise than `game.tsv`, `readme_name`. The credit `ported by @handle` is the GitHub account of the commit that added `android.tsv` (`docs/gen_tables.py` `credit_of()`): an unpushed commit has none, the generator caches that miss as an empty credit in `.cache/gen_tables_credits.json`, so write the credit into the checklist line by hand, regenerate, and `git checkout -- .cache/gen_tables_credits.json` rather than commit the empty entry. The doc goes in the profile's commit; a port is not done until it shows the game.
 - Run `python -m unittest discover tests`; uninstall the test app; commit when asked.
+
+## The frame rate a port ships with
+
+Four switches decide it, and each one overrides the one above it:
+
+| Where | What it does |
+|---|---|
+| `game.tsv` `fps_target` | the rate the profile registers (a 60 target the governor may step down from). The porter writes `DM_FPS_TARGET=60` into the pack only when the build asked for 60 (`--fps60`, `porter/pipeline.py` `fps_unlock`); a profile carrying `fps_target 60` built without the option writes no row of its own |
+| `android.tsv` `pacing` | one preset — `adaptive` (the profile's target, the governor steps 60/40/30), `steady`, `fixed60`, `fixed30`, `game` — turned into env rows (`dm/android/tools/android_profile.py` `PACING`) |
+| the pack's `env.txt` | the profile's rows first, then the build's own (`porter/datapack.py`), read by the host with `setenv(…, 1)`: a later row wins (`dm/android/front_player.c` `env_file`), which is how `--fps60` beats `pacing game` |
+| the player's drawer (rate pin) | `DM_FPS_PIN` after start: overrides all of it (`GameActivity.kt`, `dm/android/perf_android.c`) |
+
+So a profile whose `fps_target` is 60 still runs at the game's own 30 fps when its `android.tsv` says `pacing game` (`DM_FPS_TARGET=0`): that row is the answer, not a build that forgot an option. Check the log's one `pacing:` line and the pack's `env.txt` before chasing a rate — Octopath Traveler II is the worked example.
 
 ## 5. Clean up
 

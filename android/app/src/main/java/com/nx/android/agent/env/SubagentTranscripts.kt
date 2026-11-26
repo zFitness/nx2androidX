@@ -42,8 +42,8 @@ object SubagentTranscripts {
         val prompt: String,
         /** The engine's messages, as they came in. */
         val messages: List<JSONObject>,
-        /** When the transcript was last written: the sub-agent's own clock. */
-        val spawnedAt: Long = 0L,
+        /** When this transcript was last written: the sub-agent's own clock. */
+        val lastWriteAt: Long = 0L,
         /** When this run started (the caller remembers it: the file keeps changing). */
         val startedAt: Long = 0L,
         /** How many runs this agent has started (the transcript holds one user message per run). */
@@ -99,12 +99,12 @@ object SubagentTranscripts {
                 // 最初那条任务（文件开头）：续跑时文件里留着上一轮的任务，头部才是这个 agent 的第一件事
                 prompt = headPrompt(file) ?: textOf(messages.first()),
                 messages = messages,
-                spawnedAt = file.lastModified(),
+                lastWriteAt = file.lastModified(),
                 runIndex = counts.runs,
                 toolUses = counts.toolUses,
                 file = file,
             )
-        }.sortedBy { it.spawnedAt }
+        }.sortedBy { it.lastWriteAt }
     }
 
     /**

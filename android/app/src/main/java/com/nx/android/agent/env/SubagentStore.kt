@@ -41,7 +41,7 @@ class SubagentStore @Inject constructor(
         val id = sessionIdOf(sessionFile) ?: return emptyList()
         return SubagentTranscripts.of(paths.tmp, id, counter).map { transcript ->
             val key = "${transcript.agentId}#${transcript.runIndex}"
-            val since = liveSince.getOrPut(key) { transcript.spawnedAt }
+            val since = liveSince.getOrPut(key) { transcript.lastWriteAt }
             transcript.copy(startedAt = since, interrupted = interrupted(transcript))
         }
     }
@@ -57,7 +57,7 @@ class SubagentStore @Inject constructor(
      * 是上一个进程留下的，活着的运行不会这样（引擎写的每一行都晚于进程起来的那一刻）。
      */
     private fun interrupted(transcript: SubagentTranscripts.Transcript): Boolean =
-        SubagentRuns.interrupted(transcript.spawnedAt, AppProcess.startedAt)
+        SubagentRuns.interrupted(transcript.lastWriteAt, AppProcess.startedAt)
 
     /**
      * The list the player sees: the finished runs and the running ones, oldest first.
@@ -207,6 +207,12 @@ object SubagentRuns {
             val started = transcript.runIndex
             // 跑过但还没记录的那一次，就是正在跑的那一次（续跑时它顶掉了上一轮的记录）
             if (started <= ended) return@mapNotNull null
+            // 但 user 消息不只在一轮开始时才有：引擎在代理到达回合上限时注入一条让它收尾，
+            // 中途 steer 也是一条——它们都属于已经跑完的那一轮，数数会多算一轮（2026-11-26
+            // 一个已经跑完的代理在面板上转了六分钟的圈）。所以在跑的判据是时间：记录收尾
+            // 之后 transcript 还在长，那一轮就还在跑。
+            val lastEnd = done.filter { it.id == id }.mapNotNull { it.completedAt }.maxOrNull() ?: 0L
+            if (lastEnd > 0L && transcript.lastWriteAt <= lastEnd) return@mapNotNull null
             val call = callFor(id, started, transcript, done, calls)
             AgentSubagent(
                 id = id,
@@ -216,7 +222,7 @@ object SubagentRuns {
                     ?: transcript.prompt.lineSequence().firstOrNull()?.trim().orEmpty(),
                 // 被掐断的那一次不是「在跑」：它不会再动，也不会再有记录收尾
                 status = if (transcript.interrupted) "interrupted" else "running",
-                startedAt = transcript.startedAt.takeIf { it > 0 } ?: transcript.spawnedAt,
+                startedAt = transcript.startedAt.takeIf { it > 0 } ?: transcript.lastWriteAt,
                 prompt = transcript.prompt,
                 // 它当前这一步：面板上要看得见它在干啥
                 step = SubagentTranscripts.lastStep(transcript.messages),

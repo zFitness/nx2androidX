@@ -1,28 +1,27 @@
 package com.nx.android.domain
 
 import java.io.File
+import org.json.JSONObject
 
 /**
- * A port that leaves the phone as a game of its own: an APK the player installs by hand, and the data folder
- * that game reads.
+ * A port that leaves the phone as a game of its own: an APK the player installs by hand, and the data that
+ * game reads.
  *
  * The exported game is the upstream's APK front (dm/android/front_android.c): its data root is the app's own
  * external directory (/storage/emulated/0/Android/data/<package>/files), which the system gives every app and
  * asks for no permission. So the exported game starts without a dialog and runs on the device's own driver
  * unless the pack says otherwise.
  *
- * The data has to be *in* that directory before the game starts. The app cannot write there (the platform lets
- * no app write into another app's directory), but the shell can, so the app moves it over its own ADB channel.
- * When that channel is not there, the data stays in the folder the player picked and the app says how to copy it
- * by hand.
+ * The data has to be *in* that directory before the game starts, and no app may write into another app's
+ * directory: the shell does it, over the App's own ADB channel. The data crosses as a tar stream — the App
+ * reads the pack and the shell unpacks it where it lands — so it exists twice, in the pack it came from and
+ * in the game's own directory, and nowhere else. The player's storage keeps nothing but the APK: a copy the
+ * player can carry away is the portable export's job.
  */
 object GameApkExport {
 
     /** The APK's name: the game's name, cleaned, with the suffix. */
     fun apkName(label: String): String = PortablePack.folderName(label) + ".apk"
-
-    /** The data folder's name: the game's name, cleaned (the same rule the folder export uses). */
-    fun dataFolderName(label: String): String = PortablePack.folderName(label)
 
     /** The exported game's own directory on the device: the one the system gives every app. */
     fun gameFilesDir(packageName: String): String = "/storage/emulated/0/Android/data/$packageName/files"
@@ -32,7 +31,7 @@ object GameApkExport {
     const val APK_LIMIT_WITH_DRIVER = 35L * 1024 * 1024
 
     /** The stages of an export, in the order they happen. */
-    enum class Stage { COPY, BUILD, MOVE, DONE }
+    enum class Stage { BUILD, INSTALL, MOVE, DONE }
 
     /** How far an export has come. */
     data class Progress(val stage: Stage, val fraction: Float, val message: String = "")
@@ -40,16 +39,18 @@ object GameApkExport {
     /**
      * The outcome of an export.
      *
-     * [moved] says whether the data reached the game's own directory. When it did not, the APK and the data
-     * folder are still there and the player can copy the data by hand.
+     * [installed] says whether the game got onto the phone; [moved] whether the data reached the game's own
+     * directory. Either can fail on its own — the APK that is built stays in the folder it landed in, and
+     * [detail] carries the installer's (or the shell's) own words.
      */
     data class Result(
         val ok: Boolean,
         val failure: String? = null,
+        val detail: String? = null,
         val apk: String = "",
-        val dataFolder: String = "",
         val packageName: String = "",
         val size: Long = 0L,
+        val installed: Boolean = false,
         val moved: Boolean = false,
     )
 
@@ -59,7 +60,7 @@ object GameApkExport {
      */
     private val PACK_PATHS = listOf("/aoc", "/sysdata", "/standard.ttf", "/nintendo_ext.ttf")
 
-    /** The font the exported folder carries when the pack does not have one of its own. */
+    /** The font the exported data carries when the pack does not have one of its own. */
     const val STANDARD_FONT = "standard.ttf"
 
     /**
@@ -97,30 +98,6 @@ object GameApkExport {
         ?.substringAfter('=')
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
-
-    /**
-     * The shell command that copies a folder's contents into the exported game's own directory.
-     *
-     * tar pipes the tree in one pass (cp walks it file by file, which is slow on a game's tens of thousands of
-     * files). The chmod at the end is needed: the files arrive owned by the shell with the shell's group, and
-     * the exported game (another uid) could not read them — `a+rX` gives everyone the read (and the traverse on
-     * the directories) without touching the owner's write. The command is quoted: the folder is named after the
-     * game, and games have spaces in their names.
-     */
-    fun copyCommand(folder: File, gameDir: String): String {
-        val src = folder.absolutePath
-        val dst = gameDir.trimEnd('/')
-        // tar 的非致命抱怨（如顶层目录的 settime 不归它管）不得跳过 chmod——那会让导出的游戏读不了自己的数据。
-        // chmod 无条件执行；用清单文件在不在做一次廉价的完整性检查（每个数据文件夹都有它）。
-        return "mkdir -p '$dst' && cd '$src' && (tar -cf - . | (cd '$dst' && tar -xf -)); chmod -R a+rX '$dst' && [ -f '$dst/nx2a-data.json' ]"
-    }
-
-    /** The same copy with cp, for a device whose tar cannot do it. */
-    fun copyCommandFallback(folder: File, gameDir: String): String {
-        val src = folder.absolutePath
-        val dst = gameDir.trimEnd('/')
-        return "mkdir -p '$dst' && cp -r '$src'/. '$dst'/ ; chmod -R a+rX '$dst' && [ -f '$dst/nx2a-data.json' ]"
-    }
 
     /** How big a tree is (only stat: files and bytes, no content read). */
     fun treeBytes(dir: File): Long {

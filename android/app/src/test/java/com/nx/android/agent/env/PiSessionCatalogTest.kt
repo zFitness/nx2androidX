@@ -2,6 +2,7 @@ package com.nx.android.agent.env
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -110,5 +111,35 @@ class PiSessionCatalogTest {
         subagentSession(dir, "2026-11-22T11-40-27-295Z_b.jsonl", "/gone/parent.jsonl")
 
         assertEquals(1, PiSessionCatalog(home).list().size)
+    }
+
+    @Test
+    fun `the current session is the newest one of the player's`() {
+        val home = folder.newFolder("home")
+        val dir = File(home, ".pi/agent/sessions/--x--")
+        val older = session(dir, "2026-11-22T10-33-53-596Z_a.jsonl", named = "上一局")
+        val newer = session(dir, "2026-11-22T11-40-27-295Z_b.jsonl", named = "这一局")
+        older.setLastModified(1_000L)
+        newer.setLastModified(2_000L)
+
+        assertEquals(newer.absolutePath, PiSessionCatalog(home).current()?.path)
+    }
+
+    @Test
+    fun `a sub-agent's session is never the current one`() {
+        val home = folder.newFolder("home")
+        val dir = File(home, ".pi/agent/sessions/--x--")
+        val mine = session(dir, "2026-11-22T10-33-53-596Z_a.jsonl", named = "我的会话")
+        // the sub-agent writes its own session at the same time, and it is the newer file
+        val theirs = subagentSession(dir, "2026-11-22T11-40-27-295Z_b.jsonl", mine.absolutePath)
+        mine.setLastModified(1_000L)
+        theirs.setLastModified(2_000L)
+
+        assertEquals(mine.absolutePath, PiSessionCatalog(home).current()?.path)
+    }
+
+    @Test
+    fun `no session at all leaves the current one unknown`() {
+        assertNull(PiSessionCatalog(folder.newFolder("home")).current())
     }
 }

@@ -29,16 +29,39 @@ class PiSessionCatalog internal constructor(private val home: File) {
 
     /** 引擎的全部会话，最新的在最上面。目录不在（引擎没装/还没聊过）就是空列表。 */
     fun list(): List<Entry> {
-        val sessions = File(home, ".pi/agent/sessions")
-        val files = sessions.listFiles { f -> f.isDirectory }
-            ?.flatMap { dir -> dir.listFiles { f -> f.isFile && f.extension == "jsonl" }?.toList() ?: emptyList() }
-            .orEmpty()
-        return files.mapNotNull { f ->
+        return sessionFiles().mapNotNull { f ->
             val head = headOf(f)
             // 子 Agent 自己的会话不是玩家的会话：它的头里写着是谁派它出来的
             if (head.isSubagent) return@mapNotNull null
             Entry(f.absolutePath, head.title, f.lastModified())
         }.sortedByDescending { it.updatedAt }
+    }
+
+    /**
+     * 引擎此刻在答的那一局：最新的**玩家**会话文件。
+     *
+     * 引擎把这一轮写进它正在答的那个会话文件，所以最新的玩家文件就是当前这一局。子 Agent
+     * 的会话文件同时在写，被跳过——它们不属于玩家的任何一局。
+     *
+     * 为什么需要它：引擎的 `_active` 指针只在一轮**结束**时才被写成真正的路径，而子 Agent
+     * 恰恰是在那一轮里跑的。于是第一轮派出的子 Agent 找不到自己的 transcript（面板空着），
+     * 第二轮才看得到。指针是「上一轮结束时的答案」，这里给的是「此刻的答案」。
+     */
+    fun current(): Entry? {
+        for (f in sessionFiles().sortedByDescending { it.lastModified() }) {
+            val head = headOf(f)
+            if (head.isSubagent) continue
+            return Entry(f.absolutePath, head.title, f.lastModified())
+        }
+        return null
+    }
+
+    /** 引擎的会话文件们（各个工作目录下的）。 */
+    private fun sessionFiles(): List<File> {
+        val sessions = File(home, ".pi/agent/sessions")
+        return sessions.listFiles { f -> f.isDirectory }
+            ?.flatMap { dir -> dir.listFiles { f -> f.isFile && f.extension == "jsonl" }?.toList() ?: emptyList() }
+            .orEmpty()
     }
 
     /** The session's head: its name, and whether a sub-agent owns it. */

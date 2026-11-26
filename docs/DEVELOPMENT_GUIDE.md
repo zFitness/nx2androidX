@@ -91,8 +91,27 @@ It refuses when the game's code on the device was rewritten with other rewriter 
 - `nxnative/`: our fork of nxnative (see [nxnative](#nxnative)), with the Android runtime in `nxnative/dm/android/` and the game profiles in `nxnative/dm/games/`.
 - `packaging/`: the player's bundle (`python packaging/build_bundle.py`).
 - `devtools/`: scripts for bringing up a game on a connected device (`devtools/device.json` names the device: `{"serial": "...", "package": "..."}`).
+- `phone_tools/`: the tools that travel with the app into the player's tool tree (`tool/tools/`), run on the phone with the guest python: `memory_search.py` searches what this phone knows (the upstream's cases, the knowledge documents, the closed issues, the player's own case files), `memory_embed.py` reads the static embedding model.
 - `probes/`, `RESEARCH.md`: the feasibility study and the first on-device probes.
 - `.githooks/`: the commit-msg hook (see [Commit messages](#commit-messages)).
+
+## The local search's model
+
+The search runs on the lexical side alone; the **embedding model** (5.6 MB) adds the semantic
+half. It is not in this repository: it is built and published in the private model repository
+`zFitness/nx2-memory`, published as a release asset of the public
+`zFitness/public-dist` (no token needed to fetch it).
+
+```bash
+python3 devtools/fetch_memory_model.py          # the latest release -> .memembed/memory-embed/
+python3 devtools/check_memory_model.py          # is it a working model?
+```
+
+`packaging/android-apk/build_assets.py` copies `.memembed/memory-embed` into the APK payload
+when it is there, and says "the search runs lexical only" when it is not — **a build without the
+model is not a broken build**. The repository is private, so the download needs a token with read
+access (`GH_TOKEN`, or the gh CLI's own). The model was trained on the public corpus only; a
+player's own case files never enter it.
 
 ## Adding a game
 
@@ -157,10 +176,10 @@ and directional cap throws and Tears of the Kingdom bow aiming is still required
 before enabling the opt-in in a profile. Host sensor tests verify routing and
 axis preservation, not game recognition or device behavior.
 
-The phone app has the same two switches in the game's drawer (the **Controls** tab): they are
-handed to the host as env rows when the game starts and reach the running game over JNI
-(`motionSet`, the way the frame rate step does), so a change takes effect at once, without
-restarting the game. One game has one pair. The display's rotation comes from the app's Activity
+The phone app keeps the two switches per game and hands them to the host as env rows when the
+game starts (`DM_MOTION`, `DM_MOTION_RAW`); the host reads them live. The in-game drawer that
+carried them is gone, so there is no switch to reach at the moment: the values come from the
+app's own preferences for that game. The display's rotation comes from the app's Activity
 through JNI (`Display.getRotation()`): the app's player front end has no Activity of its own, so
 it asks for it.
 
@@ -423,15 +442,13 @@ Two changes in the tool itself make it run on an ARM64 Linux host:
 - `porter/toolchain.py` finds an NDK that ships with the program (`NX2A_NDK`), and `porter/fetch.py` does not
   fetch adb on an ARM64 Linux host (Google ships platform-tools for Linux as x86-64 only).
 
-The frame generation's switch: the host the app builds links the code of `nxnative/dm/android/lsfg/` by default. Build
-the app with `-PnxLsfg=false` and the host is built without it — a smaller host, with the frame generation reporting
-that it is not in this build; the same host built by the command line is `porter port --no-lsfg`. The switch does not
-change the license of the build: the code it is made from is GPL-3.0-or-later either way.
-[android/NOTICE.md](../android/NOTICE.md) says what that means for the app.
+The frame generation is not in this line: there is no `lsfg/` tree, no switch and no `--no-lsfg`. The host the app
+builds carries no copyleft component beyond the repository's own code, and the license of the build does not change
+with it. [android/NOTICE.md](../android/NOTICE.md) says what that means for the app.
 
 ## Testing the physical controller without a controller
 
-The physical controller's path (the app's gamepad center, the mapping table, the host's dictionary) can be tested
+The physical controller's path (the app's axis roles, the host's dictionary) can be tested
 on a phone without a controller in hand: `devtools/uinput_pad.c` is a virtual gamepad that sends the same kernel
 events a pad sends.
 
@@ -467,8 +484,9 @@ keeps its own licenses. Three rules when the tree changes:
 
 ## Optional native keyboard
 
-This is upstream's APK front end (the `org.nx2a` activities): this line's app front (`front_player.c`) does not build
-it, so the option only affects the legacy APK path.
+The upstream activities (`org.nx2a`) belong to the exported APK path: the phone's own port makes no APK (the app
+runs the game, and the in-game text entry is the front's overlay keyboard), so the option only applies to a legacy
+desktop APK build.
 
 `python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
 

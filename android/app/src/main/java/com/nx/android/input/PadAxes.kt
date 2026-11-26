@@ -27,7 +27,7 @@ object PadAxes {
         MotionEvent.AXIS_BRAKE, MotionEvent.AXIS_GAS, MotionEvent.AXIS_RX, MotionEvent.AXIS_RY,
     )
 
-    /** 从事件里读出整组轴（App 与手柄中心共用这一个构造，两边看到的是同一份）。 */
+    /** 从事件里读出整组轴（游戏页与库页共用这一个构造，两边看到的是同一份）。 */
     fun read(event: MotionEvent): FloatArray = read { event.getAxisValue(it) }
 
     /** 读法的本体（注入取值，测试不用构造 MotionEvent）。 */

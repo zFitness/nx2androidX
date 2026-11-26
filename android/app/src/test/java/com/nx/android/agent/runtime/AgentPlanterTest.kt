@@ -98,9 +98,11 @@ class AgentPlanterTest {
             "the case index travels with the skill",
             File(root, "agent/.agents/skills/port-failures/references/case-index.tsv").isFile,
         )
+        // the search itself lives in the tool tree now (tools/memory_search.py), not in the
+        // skill: the skill points at it
         assertTrue(
-            "the search travels with the skill",
-            File(root, "agent/.agents/skills/port-failures/scripts/kb_search.py").isFile,
+            "the skill points at the search",
+            skill.readText().contains("tools/memory_search.py"),
         )
     }
 

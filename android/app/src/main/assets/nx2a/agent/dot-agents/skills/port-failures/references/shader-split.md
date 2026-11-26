@@ -9,7 +9,7 @@ below was one of those three steps not knowing a container format.
 the log says a program is not in the bundle; a material draws wrong; the split and the
 profile's tables disagree.
 
-Upstream pull requests are cited as `#NNN`; look one up with `kb_search.py` or on GitHub.
+Upstream pull requests are cited as `#NNN`; look one up with `memory_search.py` or on GitHub.
 The case index (`case-index.tsv`) has all 387 of them.
 
 ## The pipeline, stage by stage

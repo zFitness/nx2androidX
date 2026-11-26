@@ -3,18 +3,18 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan receives SPIR-V with the existing parity offset and numeric passes.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>] [--spirv-tools <dir>]
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): dmsv.py has the format and writes it. Each shader's SPIR-V and its binary reflection (refl_bin, below);
 #   version 2, the SPIR-V of each module zstd-compressed (--zstd, default dmsv.LEVEL; 0 or a Python without zstd: version 1, uncompressed).
-import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets, spv_post   # noqa: E402  (DM_GAME picks the profile)
 from forkpool import fork_map   # noqa: E402  (the pool without /dev/shm's semaphores, as on Android)
 from shader_stage import glslc_stage   # a code area's stage: the package reader's rule (headerless compute code included)
 
@@ -27,6 +27,7 @@ ap.add_argument('--report', help='write the expected and omitted shader inventor
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
+ap.add_argument('--spirv-tools', help="the folder of spirv-dis, spirv-as and spirv-val (the NDK's shader-tools/<host>), for the profile's SPIR-V patches that work on the text; a patch that works on the SPIR-V words needs none")
 a = ap.parse_args()
 
 GAME = dmsh_chain.load_game()
@@ -46,6 +47,17 @@ SUBGROUP = int(GAME.get("android_subgroup_size", "128"))
 # Tears of the Kingdom on the Adreno 830 drew dark boxes of whole 16x16 tiles in its tiled lighting (607 shaders gather, 38 of them compute): in 2 of 12 camera
 # steps at the Great Sky Island pond and every frame at the Temple of Time's stone circle; with the bias, 0 in 24
 GATHER_BIAS = 8
+
+def spirv_patches():
+    """SPIRV of the profile's patches.py: {shader key: function}, a fix of one translated shader that no general rule covers yet. The function raises ValueError for a
+    shader that is not the one it was written for; the shader then stays as translated, with a [RED] line. A profile without a patches.py has none: the bundle is
+    then the same as before the hook."""
+    p = GAME.table('patches.py')
+    if not p.exists(): return {}
+    import importlib.util
+    sys.path.append(str(HERE.parent.parent / 'tools'))   # nso_asm, which a patches.py imports for its code patches
+    spec = importlib.util.spec_from_file_location('profile_patches', p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return {str(k).lower(): fn for k, fn in getattr(m, 'SPIRV', {}).items()}
 
 def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
@@ -387,11 +399,13 @@ def int_inputs(spv):
             else: other.add(loads[x])
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
-_FINAL_W = None   # a pool child's work folder (shader_products.output reads <w>/<key>.spv)
+_FINAL_W = None          # a pool child's work folder (shader_products.output reads <w>/<key>.spv)
+_FINAL_PATCHES = {}      # the profile's SPIR-V patches, by shader key
+_FINAL_TOOLS = ''        # the folder of spirv-dis, spirv-as and spirv-val (the profile's text patches)
 
-def _final_init(w):
-    global _FINAL_W
-    _FINAL_W = w
+def _final_init(w, patches=None, tools=''):
+    global _FINAL_W, _FINAL_PATCHES, _FINAL_TOOLS
+    _FINAL_W = w; _FINAL_PATCHES = patches or {}; _FINAL_TOOLS = tools or ''
 
 def _final_one(item):
     """One shader's end of the build, in a pool child: the parity passes, the reflection and the bundle entry. The bundle
@@ -406,6 +420,10 @@ def _final_one(item):
         if product is None: raise ValueError(berr or 'no output')
         translated, res = product
         spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(translated)))
+        if k in _FINAL_PATCHES:   # the profile's own fix of this one shader (patches.py SPIRV): a shader it was not
+            # written for raises, and the shader then stays as translated
+            try: spv = spv_post.text_patch(spv, _FINAL_PATCHES[k], _FINAL_TOOLS, _FINAL_W, k); print(f'{k}: patched by the profile (patches.py SPIRV)', flush=True)
+            except ValueError as e: print(f'[RED] {k}: the profile\'s SPIR-V patch was not applied, the shader is as translated: {e}', flush=True)
         binds, local, io = spirv_bindings(spv)
         shader_products.validate_bindings(binds, res)
         if remap: spv = remap_handles(spv, *remap)
@@ -421,17 +439,19 @@ def _final_one(item):
     except Exception as e:
         return key16, None, str(e)
 
-def final_map(items, J, w):
+def final_map(items, J, w, patches=None, tools=''):
     """The per-shader end of the build over forked children (forkpool.py: Android has no /dev/shm for a pool's semaphores),
     or in order where fork does not exist (Windows)"""
     if J <= 1 or not hasattr(os, 'fork'):
-        _final_init(w)
+        _final_init(w, patches, tools)
         return [_final_one(it) for it in items]
-    _final_init(w)
+    _final_init(w, patches, tools)
     return fork_map(_final_one, items, J)
 
 def main():
-    handle_remaps = {}
+    # The progress lines are at most this many seconds apart: a translation of minutes is not a silence, a log of thousands of lines is no help either. The last one of a pass always goes out.
+    BEAT = 3.0
+    handle_remaps = {}; patches = spirv_patches()
     table = GAME.table('android_shader_handles.tsv')
     if table.exists():
         for line in table.read_text().splitlines():
@@ -476,16 +496,31 @@ def main():
             return result, None
         except Exception as e:
             return result, str(e)
-    def translate(selected):
+    def translate(selected, step):
+        """Translate the shaders in batches, one translation process per batch. Each batch that finishes adds to the count and the progress lines say how far the pass has come:
+        a translation of minutes is not a silence. The step is the name of the pass (the porter shows it)"""
         chunks = [selected[i::a.jobs] for i in range(a.jobs) if selected[i::a.jobs]]
+        total, done, t0, last, ends = len(selected), 0, time.time(), 0.0, []
+        print(f'progress: {step}: 0/{total} shaders', flush=True)
         with cf.ThreadPoolExecutor(len(chunks)) as ex:
-            for ch, (result, error) in zip(chunks, ex.map(xl, chunks)):
+            futs = {ex.submit(xl, ch): ch for ch in chunks}
+            # as_completed, not map: a batch that finishes first is counted first, so the count follows the work and not the order of the batches
+            for i, fut in enumerate(cf.as_completed(futs), 1):
+                ch = futs[fut]
+                result, error = fut.result()
                 if result is not None: rs.append(result)
                 # A failed process may have written valid products before it stopped.
                 # Keep its diagnostic for keys with no output, and validate each product.
                 batch_errors.update(dict.fromkeys(ch, error))
+                done += len(ch)
+                now = time.time(); ends.append(now - t0)
+                if i == len(chunks) or now - last >= BEAT:
+                    last = now
+                    print(f'progress: {step}: {done}/{total} shaders ({i} of {len(chunks)} batches, {now - t0:.0f}s)', flush=True)
+        # The batches run at the same time, so the time a batch ends at is about the time it took: the slowest one says how long a batch of this size takes on this device.
+        print(f'{step}: {len(chunks)} batches, {time.time() - t0:.0f} s (the slowest batch {max(ends) if ends else 0:.0f} s)', flush=True)
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
-    translate(keys)
+    translate(keys, f'translating {len(keys):,} shaders')
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
@@ -502,7 +537,7 @@ def main():
         except Exception as e: failures[k] = str(e)
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
-        translate(again)
+        translate(again, f'translating {len(again):,} shaders again')
     # android_fetch1d buffer (game profile, default off): the texture slots a shader reads with 1D integer fetches and the answer table gives no type for (res "fetch1d",
     # translated as 2D rows) are translated again as texture buffers. Vulkan has no image over a buffer, so a texture buffer bound in such a slot read the dummy view.
     # DRAGON QUEST XI S reads its skinning bone matrices so (Unreal's Buffer<float4>): every skinned character was invisible. A 1D texture bound in a slot answered so
@@ -524,7 +559,7 @@ def main():
             except Exception as e: failures[k] = str(e)
         if again:
             print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
-            translate(again)
+            translate(again, f'translating {len(again):,} shaders again (fetch1d as texture buffers)')
     # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
     # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
     # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.
@@ -542,7 +577,7 @@ def main():
             if os.path.exists(os.path.join(w, k + suffix)): os.unlink(os.path.join(w, k + suffix))
     if geometry:
         print(f'translating {len(geometry)} geometry shaders with fragment input mask {fragment_inputs:#x} ...', flush=True)
-        translate(geometry)
+        translate(geometry, f'translating {len(geometry):,} geometry shaders')
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -556,7 +591,7 @@ def main():
     # gigabytes together), and the entry's small parts come back.
     items = [(k, stages[k], c1s[k], gs_var[k] if k in gs_var else int(k, 16), handle_remaps.get(k), jobs[k].get('local'),
               failures.get(k), batch_errors.get(k)) for k in keys]
-    for key16, got, err in final_map(items, min(a.jobs, len(items)), w):
+    for key16, got, err in final_map(items, min(a.jobs, len(items)), w, patches, a.spirv_tools):
         if err is not None:
             failed.append([f'{key16:016x}', err])
             fails[err] += 1
@@ -569,7 +604,14 @@ def main():
     # SPIR-V or the source packs/jobs while dmsv compresses bounded batches.
     packs.clear(); jobs.clear(); c1s.clear(); cap.clear()
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
-    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    # The writer calls the callback one call at a time: the count only grows
+    cplast, t0 = [0.0], time.time()
+    def compressed(done, total):
+        now = time.time()
+        if done < total and now - cplast[0] < BEAT: return
+        cplast[0] = now
+        print(f'progress: compressing {total:,} shaders: {done}/{total} shaders ({now - t0:.0f}s)', flush=True)
+    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs, progress=compressed)
     if a.report:
         with open(a.report, 'w', encoding='utf-8') as f: json.dump(dict(schema=1, expected=expected, failed=failed), f)
     print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'

@@ -95,7 +95,9 @@ import com.nx.android.appstate.PortState
 import com.nx.android.domain.drivers.Driver
 import com.nx.android.data.GameIcon
 import com.nx.android.data.GameLog
-import com.nx.android.data.AdbChannels
+import com.nx.android.ExportService
+import com.nx.android.data.AdbPairing
+import com.nx.android.appstate.ExportState
 import com.nx.android.data.LogBundle
 import com.nx.android.data.SaveShare
 import com.nx.android.data.StorageVolumes
@@ -106,6 +108,7 @@ import com.nx.android.domain.GameEntry
 import com.nx.android.domain.GameApkExport
 import com.nx.android.domain.GameStatus
 import com.nx.android.domain.GameApkExportService
+import com.nx.android.domain.GameRef
 import com.nx.android.domain.LibraryLogic
 import com.nx.android.domain.PackMover
 import com.nx.android.domain.PortablePack
@@ -158,13 +161,13 @@ private data class RemovalRequest(val kind: Removal, val plan: GameCleanup.Plan,
                                   val unreachable: List<File> = emptyList())
 
 /**
- * 导出 APK 的说明框里要说清的事：落在哪、有多大、数据会被搬进哪个目录。
- * 框里的每一句都是玩家要知道的（数据文件夹不能动、APK 得自己装）。
+ * 导出 APK 的说明框里要说清的事：APK 落在哪、有多大、数据放在哪、什么时候搬进游戏自己的目录。
+ * 框里的每一句都是玩家要知道的（APK 得自己装，数据最后才搬）。
  */
 private data class ApkExportPlan(
-    val target: File,          // 落点：APK 与数据文件夹都在这里
+    val target: File,          // 落点：APK 在这里（数据不进玩家的存储）
     val dataBytes: Long,       // 数据有多大
-    val gameDir: String,       // 导出游戏自己的目录（数据会被搬进这里）
+    val gameDir: String,       // 导出游戏自己的目录（数据最后搬进这里）
     val packageName: String,   // 导出游戏的包名
 )
 
@@ -179,7 +182,8 @@ private fun apkFailureText(failure: String?): String {
         "no_space" -> locale.str(R.string.lib_apk_export_err_space)
         "no_romfs" -> locale.str(R.string.lib_apk_export_err_romfs)
         "no_manifest", "no_package", "no_pack" -> locale.str(R.string.lib_apk_export_err_pack)
-        "copy_failed", "cannot_place", "no_target", "no_font" -> locale.str(R.string.lib_apk_export_err_copy)
+        "build_failed", "no_font" -> locale.str(R.string.lib_apk_export_err_build)
+        "no_channel" -> locale.str(R.string.lib_apk_export_err_channel)
         null, "" -> locale.str(R.string.common_error_unknown_reason)
         else -> failure
     }
@@ -201,7 +205,7 @@ fun GameDetailRoute(lib: LibraryState, port: PortState,
         onDispose { viewModel.close(e.titleId) }
     }
     GameDetailScreen(lib, port, e, installedDrivers, viewModel.saveRepository, viewModel.saveIo,
-        viewModel.exportService,
+        viewModel.exportService, viewModel.exportState,
         uiState, viewModel::selectLanguage, viewModel::selectDriver, actions, onGoBuilds, onRequest, onClose,
         navActive = navActive, onOpenAgent = onOpenAgent, agentVisible = agentVisible)
 }
@@ -209,7 +213,7 @@ fun GameDetailRoute(lib: LibraryState, port: PortState,
 @Composable
 private fun GameDetailScreen(lib: LibraryState, port: PortState,
                         e: GameEntry, installedDrivers: List<Driver>, saveRepository: SaveRepository,
-                        saveIo: SaveIo, exportService: GameApkExportService,
+                        saveIo: SaveIo, exportService: GameApkExportService, exportState: ExportState,
                         detailState: GameDetailUiState,
                         onSelectLanguage: (String?) -> Unit, onSelectDriver: (String?) -> Unit,
                         actions: AppActions, onGoBuilds: () -> Unit,
@@ -241,20 +245,23 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
     var exportProgress by remember { mutableStateOf<PortablePack.Progress?>(null) }
     // 导出 APK：把这个移植变成一个可以自己安装的游戏（先说明白，再动手）
     var apkPlan by remember { mutableStateOf<ApkExportPlan?>(null) }
-    var apkExporting by remember { mutableStateOf(false) }
-    var apkProgress by remember { mutableStateOf<GameApkExport.Progress?>(null) }
-    var apkResult by remember { mutableStateOf<GameApkExport.Result?>(null) }
-    // 搬运需要 App 的密钥已配对（无线调试）：玩家在这里输一次配对码
-    var apkPairing by remember { mutableStateOf(false) }
-    var apkPairCode by remember { mutableStateOf("") }
-    var apkPairError by remember { mutableStateOf<String?>(null) }
-    var apkPairing2 by remember { mutableStateOf(false) }
+    // 通道（无线调试开着、App 配对过）：说明框打开时查一次，配好对再查一次（null = 还在查）
+    var apkChannel by remember { mutableStateOf<Boolean?>(null) }
+    // 配对：码输进系统通知（玩家去设置里拿码，App 退到后台也不丢）；配好了自动继续
+    var apkPairForMove by remember { mutableStateOf(false) }
+    // 进度与结果在 exportState 那口里：活儿跑在前台 ExportService 里，App 退到后台也不死
     // 正在搬移/删除时：返回键不做事（别把进行中的动作打断，面板也别关）
-    BackHandler(enabled = moving || removing || exporting || apkExporting) { }
-    BackHandler(enabled = !(moving || removing || exporting || apkExporting)) { onClose() }
+    BackHandler(enabled = moving || removing || exporting || exportState.running) { }
+    BackHandler(enabled = !(moving || removing || exporting || exportState.running)) { onClose() }
     // 手柄的返回键：跟系统的返回键一条路（正在搬移/删除时同样不做事）
-    OnNavKey(enabled = navActive && !moving && !removing && !exporting && !apkExporting) { key ->
+    OnNavKey(enabled = navActive && !moving && !removing && !exporting && !exportState.running) { key ->
         if (key == NavKey.Back) onClose()
+    }
+    // 说明框开着就查一次通道（查在后台：mDNS 要等上几秒）
+    LaunchedEffect(apkPlan) {
+        if (apkPlan == null) { apkChannel = null; return@LaunchedEffect }
+        apkChannel = null
+        apkChannel = withContext(Dispatchers.IO) { exportService.paired() }
     }
 
     /**
@@ -449,8 +456,8 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
     }
 
     /**
-     * 导出 APK：先把要做的事说清楚（落点、体积、数据文件夹不能动、APK 要自己装、数据会被搬进游戏自己的
-     * 目录），玩家点头才动手。App 不替玩家装：装不装、什么时候装，是玩家的事。
+     * 导出 APK：先把要做的事说清楚（APK 落在哪、有多大、数据直接进游戏自己的目录、装与搬都走 App 自己的
+     * 通道），玩家点头才动手。App 自己装：不替玩家拉起安装器，但 APK 也不用玩家去找。
      */
     fun askExportApk() {
         val pack = e.pack ?: return
@@ -459,7 +466,8 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
         if (packageName.isEmpty()) { actions.onToast(locale.str(R.string.lib_apk_export_err_pack)); return }
         val romfs = if (pack.romfsAt.isNotEmpty()) File(pack.romfsAt) else File(pack.pack, PortablePack.ROMFS)
         if (!romfs.isDirectory) { actions.onToast(locale.str(R.string.lib_apk_export_err_romfs)); return }
-        val bytes = GameApkExport.treeBytes(pack.pack) + GameApkExport.treeBytes(romfs)
+        val bytes = GameApkExport.treeBytes(pack.pack) +
+            (if (romfs.parentFile?.absolutePath != pack.pack.absolutePath) GameApkExport.treeBytes(romfs) else 0L)
         apkPlan = ApkExportPlan(
             target = File(Environment.getExternalStorageDirectory(), "NX2A-Games"),
             dataBytes = bytes,
@@ -468,54 +476,73 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
         )
     }
 
-    /** 换个落点：App 自带的目录选择器 */
+    /** 换个落点：App 自带的目录选择器（APK 落在这里；数据不进玩家的存储） */
     fun pickExportApkDir(plan: ApkExportPlan) {
         onRequest(PickerRequest(PickerMode.DIR, emptySet(), plan.target,
             locale.str(R.string.lib_apk_export_pick),
             onPicked = { target -> apkPlan = plan.copy(target = target) }))
     }
 
-    /** 真的导出（后台线程：复制几个 GB、编宿主、打包都要时间） */
+    /** 导出要用的游戏身份：给服务与实现的一把钥匙 */
+    fun gameRef(): GameRef? {
+        val pack = e.pack ?: return null
+        return GameRef(e.titleId, e.label, pack.pack, pack.romfsAt)
+    }
+
+    /** 真的导出：活儿交给前台 ExportService（App 退了也活着）；后台起不了服务时就地跑（罕见路径） */
     fun doExportApk(plan: ApkExportPlan) {
-        apkExporting = true
-        apkProgress = GameApkExport.Progress(GameApkExport.Stage.COPY, 0f)
+        val ref = gameRef() ?: return
         apkPlan = null
-        scope.launch {
-            val r = withContext(Dispatchers.IO) {
-                exportService.export(e, plan.target, { p -> apkProgress = p }, { })
+        try {
+            ExportService.start(context, ref, plan.target.absolutePath)
+        } catch (err: Exception) {
+            // 从后台起前台服务被系统拒（配对回调里的那条路）：就地跑，App 在前台时没有区别
+            exportState.begin(e.label)
+            scope.launch {
+                val r = withContext(Dispatchers.IO) {
+                    exportService.export(ref, plan.target, { p -> exportState.onProgress(p) }, { })
+                }
+                exportState.finish(r)
             }
-            apkExporting = false
-            apkProgress = null
-            apkResult = r
         }
     }
 
-    /**
-     * 配对：App 的密钥要跟这台手机的 adbd 配对一次（无线调试里的配对码），之后搬运就能用。
-     * 配对好了就把数据搬进游戏自己的目录。
-     */
-    fun pairAndMove(result: GameApkExport.Result) {
-        val code = apkPairCode.filter(Char::isDigit)
-        if (code.length != 6) { apkPairError = locale.str(R.string.lib_apk_pair_code_format); return }
-        apkPairing2 = true
-        apkPairError = null
-        scope.launch {
-            val error = withContext(Dispatchers.IO) {
-                runCatching { AdbChannels.pair(context, code) }.exceptionOrNull()
+    /** 数据再搬一次（重试）：活儿同样交给前台服务；已到的部分不用清，tar 会盖掉它 */
+    fun moveAgain() {
+        val r = exportState.result ?: return
+        val ref = gameRef() ?: return
+        try {
+            ExportService.startMove(context, ref, r.packageName)
+        } catch (err: Exception) {
+            exportState.begin(e.label)
+            scope.launch {
+                val moved = withContext(Dispatchers.IO) {
+                    exportService.moveData(ref, r.packageName, { p -> exportState.onProgress(p) })
+                }
+                exportState.finish(if (moved) r.copy(ok = true, failure = null, installed = true, moved = true)
+                                   else r.copy(ok = false, failure = "move_failed"))
             }
-            if (error != null) {
-                apkPairing2 = false
-                apkPairError = error.message ?: locale.str(R.string.lib_apk_pair_failed)
-                return@launch
-            }
-            val moved = withContext(Dispatchers.IO) {
-                exportService.move(File(result.dataFolder), result.packageName) { }
-            }
-            apkPairing2 = false
-            apkPairing = false
-            apkPairCode = ""
-            apkResult = if (moved) result.copy(moved = true) else result
         }
+    }
+
+    /** 配好了自动继续：为搬数据配的就去搬，为开始导出配的就开始导出 */
+    fun apkPairContinue() {
+        if (apkPairForMove) moveAgain() else apkPlan?.let { doExportApk(it) }
+    }
+
+    /**
+     * 配对：码输进系统通知（PhantomFix 同一条路）——玩家去设置里拿码，App 退到后台也不丢，输完立即配。
+     * 配好了自动继续（apkPairContinue）。
+     */
+    fun startPairing(forMove: Boolean) {
+        apkPairForMove = forMove
+        AdbPairing.begin(context) { _, _, _ ->
+            scope.launch {
+                AdbPairing.cancel(context)
+                apkPairContinue()
+            }
+        }
+        AdbPairing.openDeveloperOptions(context)
     }
 
     /** 游戏运行日志：宿主把它写在了数据包里（上一轮的在 log.prev.txt），打成日志包再发出去 */
@@ -932,28 +959,82 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
         )
     }
 
-    // 导出 APK 的说明框：落点在哪、有多大、数据文件夹不能动、APK 得自己装、数据会被搬进游戏自己的目录
+    /** 配对进行中的那一段（说明框里）：码输进通知最稳，通知没开或想手输就在这里输；状态是 AdbPairing 的 */
+    @Composable
+    fun PairingInline(notificationsOn: Boolean) {
+        when (val st = AdbPairing.state) {
+            AdbPairing.State.Idle -> {}
+            AdbPairing.State.Done -> Text(locale.str(R.string.lib_apk_pair_done),
+                style = MaterialTheme.typography.bodySmall, color = NxPalette.Ready)
+            is AdbPairing.State.Working -> Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                Text(st.step, style = MaterialTheme.typography.bodySmall)
+            }
+            is AdbPairing.State.Waiting, is AdbPairing.State.Failed -> {
+                if (st is AdbPairing.State.Failed) {
+                    Text(st.message, style = MaterialTheme.typography.bodySmall, color = NxPalette.Danger)
+                }
+                val port = (st as? AdbPairing.State.Waiting)?.pairPort
+                Text(locale.str(if (port != null) R.string.phantom_waiting_port else R.string.phantom_waiting, port ?: 0),
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!notificationsOn) {
+                    Text(locale.str(R.string.phantom_notifications_off),
+                         style = MaterialTheme.typography.bodySmall, color = NxPalette.Danger)
+                }
+                // 手输（分屏或通知没开时）：跟通知走的是同一次配对，配好了同样自动继续
+                var code by remember { mutableStateOf("") }
+                var portText by remember { mutableStateOf("") }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(code, { code = it.filter(Char::isDigit).take(6) }, Modifier.weight(1f),
+                        singleLine = true, label = { Text(locale.str(R.string.phantom_code_label)) })
+                    OutlinedTextField(portText, { portText = it.filter(Char::isDigit).take(5) }, Modifier.weight(1f),
+                        singleLine = true, label = { Text(locale.str(R.string.phantom_port_label)) })
+                }
+                TextButton(onClick = { AdbPairing.submit(context, code, portText.toIntOrNull()) },
+                           enabled = code.length == 6) {
+                    Text(locale.str(R.string.phantom_pair_button))
+                }
+            }
+        }
+    }
+
+    // 导出 APK 的说明框：APK 落在哪、有多大、数据直接进游戏自己的目录、装与搬都走 App 自己的通道。
+    // 通道不在就先配对——没有通道，装不了也搬不了（配对的码输进通知里，去设置拿码也不丢）
     apkPlan?.let { plan ->
         AlertDialog(
-            onDismissRequest = { apkPlan = null },
+            onDismissRequest = {
+                apkPlan = null
+                if (AdbPairing.state !is AdbPairing.State.Working) AdbPairing.cancel(context)
+            },
             title = { Text(locale.str(R.string.lib_apk_export_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(locale.str(R.string.lib_apk_export_where, plan.target.absolutePath),
+                    Text(locale.str(R.string.lib_apk_export_where,
+                                    File(plan.target, GameApkExport.apkName(e.label)).absolutePath),
                          style = MaterialTheme.typography.bodyMedium)
                     Text(locale.str(R.string.lib_apk_export_data,
-                                    GameApkExport.dataFolderName(e.label),
-                                    GameApkExport.sizeText(plan.dataBytes)),
+                                    GameApkExport.sizeText(plan.dataBytes), plan.gameDir),
                          style = MaterialTheme.typography.bodyMedium)
-                    Text(locale.str(R.string.lib_apk_export_apk, GameApkExport.apkName(e.label)),
-                         style = MaterialTheme.typography.bodyMedium)
-                    Text(locale.str(R.string.lib_apk_export_move, plan.gameDir),
-                         style = MaterialTheme.typography.bodyMedium)
+                    Text(locale.str(R.string.lib_apk_export_move),
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // 配对进行中：通知里收码（去设置拿码的那会儿这条就等着），或在这里手输
+                    PairingInline(remember { AdbPairing.prepareNotifications(context) })
                 }
             },
             confirmButton = {
-                TextButton(onClick = { doExportApk(plan) }) {
-                    Text(locale.str(R.string.lib_apk_export_confirm))
+                when (apkChannel) {
+                    null -> TextButton(onClick = {}, enabled = false) {
+                        Text(locale.str(R.string.lib_apk_check_channel))
+                    }
+                    false -> TextButton(onClick = { startPairing(forMove = false) }) {
+                        Text(locale.str(R.string.lib_apk_pair_first))
+                    }
+                    else -> TextButton(onClick = { doExportApk(plan) }) {
+                        Text(locale.str(R.string.lib_apk_export_confirm))
+                    }
                 }
             },
             dismissButton = {
@@ -961,7 +1042,10 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                     TextButton(onClick = { pickExportApkDir(plan) }) {
                         Text(locale.str(R.string.lib_apk_export_change))
                     }
-                    TextButton(onClick = { apkPlan = null }) {
+                    TextButton(onClick = {
+                        apkPlan = null
+                        if (AdbPairing.state !is AdbPairing.State.Working) AdbPairing.cancel(context)
+                    }) {
                         Text(locale.str(R.string.common_cancel))
                     }
                 }
@@ -969,74 +1053,60 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
         )
     }
 
-    // 导出之后：APK 在哪（玩家自己装），数据有没有搬进游戏自己的目录
-    apkResult?.let { r ->
+    // 导出之后：装上了没有、数据到了没有（两件事各自能成，各自能败）
+    exportState.result?.let { r ->
         AlertDialog(
-            onDismissRequest = { apkResult = null },
-            title = { Text(locale.str(if (r.ok) R.string.lib_apk_export_done_title else R.string.lib_apk_export_failed_title)) },
+            onDismissRequest = { if (!exportState.running) exportState.clear() },
+            title = { Text(locale.str(when {
+                r.ok -> R.string.lib_apk_export_done_title
+                r.failure == "install_failed" -> R.string.lib_apk_install_failed_title
+                r.failure == "move_failed" -> R.string.lib_apk_move_failed_title
+                else -> R.string.lib_apk_export_failed_title
+            })) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (r.ok) {
-                        Text(locale.str(R.string.lib_apk_export_done, r.apk), style = MaterialTheme.typography.bodyMedium)
-                        if (!r.moved) {
-                            Text(locale.str(R.string.lib_apk_export_not_moved, r.dataFolder,
-                                            GameApkExport.gameFilesDir(r.packageName)),
-                                 style = MaterialTheme.typography.bodySmall,
-                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
+                        Text(locale.str(R.string.lib_apk_export_done), style = MaterialTheme.typography.bodyMedium)
+                        Text(locale.str(R.string.lib_apk_export_apk_kept, r.apk),
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
-                        Text(locale.str(R.string.lib_apk_export_failed, apkFailureText(r.failure)),
+                        val why = r.detail?.trim()?.lineSequence()?.lastOrNull().orEmpty()
+                        Text(locale.str(when (r.failure) {
+                            "install_failed" -> R.string.lib_apk_export_err_install
+                            "move_failed" -> R.string.lib_apk_export_err_move
+                            "background" -> R.string.lib_apk_export_err_background
+                            else -> R.string.lib_apk_export_failed
+                        }, if (r.failure == "install_failed" || r.failure == "move_failed") why
+                           else apkFailureText(r.failure)),
                              style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    if (r.ok && !r.moved) { apkPairing = true; apkPairCode = ""; apkPairError = null }
-                    else apkResult = null
-                }) { Text(locale.str(if (r.ok && !r.moved) R.string.lib_apk_pair_action else R.string.common_ok)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { apkResult = null }) {
-                    Text(locale.str(R.string.common_cancel))
-                }
-            },
-        )
-    }
-
-    // 配对码：App 的密钥要跟这台手机配对一次（设置 → 开发者选项 → 无线调试 → 使用配对码配对设备）
-    if (apkPairing) {
-        AlertDialog(
-            onDismissRequest = { apkPairing = false },
-            title = { Text(locale.str(R.string.lib_apk_pair_title)) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(locale.str(R.string.lib_apk_pair_body), style = MaterialTheme.typography.bodyMedium)
-                    OutlinedTextField(
-                        value = apkPairCode,
-                        onValueChange = { apkPairCode = it.filter(Char::isDigit).take(6) },
-                        label = { Text(locale.str(R.string.lib_apk_pair_code_label)) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    apkPairError?.let {
-                        Text(it, style = MaterialTheme.typography.bodySmall, color = NxPalette.Danger)
+                when {
+                    r.ok -> TextButton(onClick = { exportState.clear() }) {
+                        Text(locale.str(R.string.common_ok))
+                    }
+                    r.failure == "install_failed" || r.failure == "move_failed" ->
+                        TextButton(onClick = { moveAgain() }, enabled = !exportState.running) {
+                            Text(locale.str(R.string.lib_apk_move_again))
+                        }
+                    else -> TextButton(onClick = { exportState.clear() }) {
+                        Text(locale.str(R.string.common_ok))
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { apkResult?.let { r -> pairAndMove(r) } }, enabled = !apkPairing2) {
-                    Text(locale.str(R.string.lib_apk_pair_confirm))
-                }
-            },
             dismissButton = {
-                TextButton(onClick = { apkPairing = false }) { Text(locale.str(R.string.common_cancel)) }
+                if (!r.ok && (r.failure == "install_failed" || r.failure == "move_failed")) {
+                    TextButton(onClick = { exportState.clear() }) { Text(locale.str(R.string.common_cancel)) }
+                }
             },
         )
     }
 
     // 全屏遮罩：搬移/删除/导出进行中挡住整个屏幕——这些动作要一分钟上下，不能让人乱点
-    if (moving || removing || exporting || apkExporting) {
+    if (moving || removing || exporting || exportState.running) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -1048,9 +1118,10 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                if (apkExporting) {
-                    val p = apkProgress
-                    if (p != null) {
+                if (exportState.running) {
+                    // 导出跑在前台服务里：构建（没有进度可言）、安装与搬运（按已送的字节走）
+                    val p = exportState.progress
+                    if (p != null && p.stage != GameApkExport.Stage.BUILD) {
                         LinearProgressIndicator(
                             progress = { p.fraction },
                             modifier = Modifier.width(220.dp),
@@ -1059,12 +1130,16 @@ private fun GameDetailScreen(lib: LibraryState, port: PortState,
                         CircularProgressIndicator()
                     }
                     Text(locale.str(when (p?.stage) {
-                        GameApkExport.Stage.COPY -> R.string.lib_apk_export_stage_copy
-                        GameApkExport.Stage.BUILD -> R.string.lib_apk_export_stage_build
+                        GameApkExport.Stage.INSTALL -> R.string.lib_apk_export_stage_install
                         GameApkExport.Stage.MOVE -> R.string.lib_apk_export_stage_move
-                        else -> R.string.lib_apk_export_stage_copy
+                        else -> R.string.lib_apk_export_stage_build
                     }),
                          style = MaterialTheme.typography.bodyMedium)
+                    if (p != null && p.stage == GameApkExport.Stage.MOVE) {
+                        Text(locale.str(R.string.lib_apk_export_stage_move_hint),
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 } else if (exporting) {
                     val p = exportProgress
                     if (p != null) {

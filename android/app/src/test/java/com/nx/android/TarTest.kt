@@ -1,5 +1,6 @@
 package com.nx.android
 import com.nx.android.data.Tar
+import com.nx.android.data.TarWriter
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -64,6 +65,45 @@ class TarTest {
         assertEquals("a compiler", File(tool, "toolchain/clang").readText())
         assertFalse("an entry under another root is skipped", File(dir, "elsewhere/ignored").exists())
         assertTrue("the progress is told", written > 0)
+    }
+
+    /**
+     * The writer, read back by the reader: the round trip the export's data takes. The bytes it reports are
+     * the bytes of the files (what the progress shows).
+     */
+    @Test
+    fun aWrittenArchiveReadsBack() {
+        val src = Files.createTempDirectory("nx2a-tar-src").toFile()
+        val sub = File(src, "mods")
+        sub.mkdirs()
+        File(sub, "main.bin").writeBytes(ByteArray(100_000) { (it % 251).toByte() })
+        File(src, "env.txt").writeText("DM_LANG=zh-Hans\n")
+        val out = java.io.ByteArrayOutputStream()
+        var gone = 0L
+        TarWriter(out).use { w ->
+            w.putDirectory("mods")
+            w.putFile("mods/main.bin", File(src, "mods/main.bin")) { gone += it }
+            w.putBytes("env.txt", "DM_LANG=zh-Hans\n".toByteArray())
+        }
+
+        val dir = Files.createTempDirectory("nx2a-tar-back").toFile()
+        Tar.unpack(out.toByteArray().inputStream(), dir)
+        assertTrue("the file's bytes are the bytes it reported", gone == 100_000L)
+        assertEquals(100_000, File(dir, "mods/main.bin").length())
+        assertTrue(File(dir, "mods/main.bin").readBytes().contentEquals(File(src, "mods/main.bin").readBytes()))
+        assertEquals("DM_LANG=zh-Hans\n", File(dir, "env.txt").readText())
+    }
+
+    /** A name that does not fit the header goes out as a GNU long-name entry, and the reader gets it back */
+    @Test
+    fun aLongNameSurvivesTheRoundTrip() {
+        val deep = "RomFS/" + "deep/".repeat(30) + "a-file-with-a-name-longer-than-the-header-holds.bin"
+        val out = java.io.ByteArrayOutputStream()
+        TarWriter(out).use { w -> w.putBytes(deep, "deep content".toByteArray()) }
+
+        val dir = Files.createTempDirectory("nx2a-tar-long").toFile()
+        Tar.unpack(out.toByteArray().inputStream(), dir)
+        assertEquals("deep content", File(dir, deep).readText())
     }
 
     /**

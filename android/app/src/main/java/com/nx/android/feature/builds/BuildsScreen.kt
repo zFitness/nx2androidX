@@ -376,6 +376,9 @@ private fun TargetCard(lib: LibraryState, port: BuildsUiState, viewModel: Builds
                 // 固件是整机级的一份，设置页管：这里只管这一轮游戏的事
                 ConfigRow(stringResource(R.string.builds_mt_replay), cfg.mtReplay) { cfg = cfg.copy(mtReplay = it); lib.setConfig(f, cfg) }
                 Hint(stringResource(R.string.builds_mt_replay_hint), size = 11.sp)
+                // 内存紧张的机器：着色器翻译少开几个进程，慢一些，但不被系统杀
+                ConfigRow(stringResource(R.string.builds_low_mem), cfg.lowMem) { cfg = cfg.copy(lowMem = it); lib.setConfig(f, cfg) }
+                Hint(stringResource(R.string.builds_low_mem_hint), size = 11.sp)
             }
 
             if (!canStart) {

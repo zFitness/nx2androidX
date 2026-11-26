@@ -10,7 +10,7 @@
 
 | 🎮 **Games ported** | 🗂️ **Games gallery** | 🤖 **AI assistant** | 📚 **Porting docs** |
 |:---:|:---:|:---:|:---:|
-| **<!-- count:ported -->88 / 200<!-- /count -->**<br><!-- count:playable -->67<!-- /count --> playable · <!-- count:experimental -->13<!-- /count --> experimental · <!-- count:wip -->5<!-- /count --> in progress · <!-- count:boots -->3<!-- /count --> boots<br>[the list](docs/PORT_CHECKLIST.md) | **<!-- count:gallery -->80<!-- /count -->** games shown<br>[the gallery](#games) | Runs on the phone itself<br>[the assistant](#the-assistant-is-in-the-app) | From the dump to the pull request<br>[the guide](docs/PORTING_GUIDE.md) |
+| **<!-- count:ported -->90 / 201<!-- /count -->**<br><!-- count:playable -->69<!-- /count --> playable · <!-- count:experimental -->13<!-- /count --> experimental · <!-- count:wip -->5<!-- /count --> in progress · <!-- count:boots -->3<!-- /count --> boots<br>[the list](docs/PORT_CHECKLIST.md) | **<!-- count:gallery -->82<!-- /count -->** games shown<br>[the gallery](#games) | Runs on the phone itself<br>[the assistant](#the-assistant-is-in-the-app) | From the dump to the pull request<br>[the guide](docs/PORTING_GUIDE.md) |
 
 Port your own Switch games to Android, natively: the game's own arm64 code runs on the device, with the Switch's system services stood in for by a host and NVN graphics replayed on Vulkan. Pick the game's file, click **Port**, and get the game's data pack, which the nx2androidX app on the phone runs. Bring your own game files and keys; this repository holds no game content and no keys.
 
@@ -18,9 +18,9 @@ This repository is nx2androidX, built on nx2android — the PC tool that ports a
 
 The app is the whole tool on the phone: it ports the game on the device and plays the pack it makes. The game files it shows are the player's own.
 
-![Four screens of the app: starting a port on the Builds tab, the assistant answering beside the game library, the in-game drawer's frame generation, and the Settings tab](docs/images/app-screens.png)
+![Four screens of the app: starting a port on the Builds tab, the assistant answering beside the game library, the in-game menu, and the Settings tab](docs/images/app-screens.png)
 
-*Top left: starting a port on the Builds tab; top right: the assistant answering beside the library — Red Dead Redemption, the game it fixed, is in it; bottom left: the in-game drawer's frame generation; bottom right: the Settings tab (language, environment, keys, Vulkan drivers).*
+*Top left: starting a port on the Builds tab; top right: the assistant answering beside the library — Red Dead Redemption, the game it fixed, is in it; bottom left: the in-game menu (these two screenshots are from before the menu moved into the host); bottom right: the Settings tab (language, environment, keys, Vulkan drivers).*
 
 **This repository's releases hold the phone app itself** (the APK, its file named after the version). The PC tool is released upstream, by nx2android; both routes are in [For players](#for-players-port-a-game-without-programming).
 
@@ -48,14 +48,14 @@ The library got simpler too: it used to take a folder to be the library, and the
 | **Renamed nx2androidX** | The phone app carries the new name; the releases live in `zFitness/nx2androidX` |
 | **Onboarding fixed** | It can be finished now, the progress is not lost, and the keys picked in step three are the ones the port uses |
 | **The game is a page of the app** | Ending the game falls back to the library instead of the home screen, and the recents hold one entry |
-| **The app's own language** | Chinese and English, switchable at any time (the game's own language stays in the library's drawer, one game at a time) |
+| **The app's own language** | Chinese and English, switchable at any time (the game's own language is picked in the game detail page, one game at a time) |
 | **Saves you can share** | An export becomes a package handed to the system share sheet; an import takes one in from anywhere; the save it replaces is backed up first |
-| **An in-game drawer** | The ☰ menu button opens it: performance, HUD, frame generation and controls in the pause menu |
-| **Frame generation** | Available while the game runs; the multiplier and the target frame rate take effect at once |
-| **A steady frame rate** | The drawer's performance page holds the frame rate step (60, 40 or 30 instead of a rate that wanders) and the docked mode |
+| **The game's own menu** | The ☰ button (or the Back key) opens it: the gamepad, the game, the counter and the style, drawn by the host over the picture |
+| **Frame generation is gone** | The port no longer carries it — the port is the one frame the game draws |
+| **One controller, one player** | The multi-player mapping is gone, and with it the gamepad center: a controller's face buttons are one choice for all of them |
 | **Vulkan driver management** | Download (Turnip builds), import from a file or remove, in the Settings tab; one Turnip build ships inside the app |
 | **Update check on start** | The release page is checked quietly; a newer version says so on the home page, and the Settings tab can check again on demand |
-| **Shareable logs** | The library's drawer shares the game's runtime log; the Settings tab clears it |
+| **Shareable logs** | The game detail page shares the game's runtime log; the Settings tab clears it |
 | **APK 460 MB → 272 MB** | The .NET on the phone went from the SDK to the runtime: the two C# tools are pre-built, so the phone only runs them, never builds them |
 
 </details>
@@ -70,23 +70,23 @@ The save actions in the library panel became a backup-and-share affair: an expor
 
 An import is not taken on trust: a package carrying another game's title ID is refused, a path pointing out of the folder is refused, and the unpacked size is capped.
 
-### The in-game drawer and frame generation
+### The in-game menu
 
-The ☰ menu button opens the in-game drawer, with four tabs: **performance**, **HUD**, **frame generation** and **controls**.
+The ☰ button (or the Back key) opens the game's own menu, drawn by the host over the picture: four tabs — **Gamepad**, **Game**, **Counter** and **Style**.
 
-The performance tab holds the two trade-offs: the **frame rate step** — *follow the game* leaves the rate to step between 60, 40 and 30 fps on its own, while 60, 40 or 30 hold that step, so the rate stays steady where the device can hold it (the pick is kept per game and takes effect at once) — and the **docked mode**, which renders at the TV's resolution: a sharper picture that costs more power, and a higher frame rate without it.
+The gamepad tab holds the virtual gamepad: whether it is drawn, its opacity, the layout editor (drag a control, pinch to resize, snap to grid), the sticks' touch area, the rumble, the audio output, and a row that says whether a physical controller's face buttons go to the game by their position (the Switch's) or by their label (an Xbox controller's).
 
-Frame generation uses Lossless.dll: the frames-per-game multiplier, the target frame rate and the optical flow quality are all adjustable, and the switch and the multiplier take effect at once; an updated DLL is copied to the private folder by itself. Lossless Scaling's resources are neither bundled nor downloaded, and the DLL is the player's own file: we do not distribute it and do not link to a download.
+The game tab holds the frame rate counter, the upscaling (SGSR 1.0) and its sharpness, the handheld or docked mode, and the save manager (export and import).
 
-The HUD tab has the on-screen information: the performance line (the frame rate counter), the device line, the fields the line shows and the temperature's unit.
+The counter tab picks the counter's rows — frame rate, SoC, battery, driver — and the frame time graph; the style tab where the counter sits, its colour, its outline and its size.
 
-The controls tab has the virtual gamepad: the layout editor (drag a control, pinch to resize, snap to grid), the pad's opacity and the rumble.
+What is not in the menu any more: the frame generation (the whole feature is gone), the multi-player mapping (one controller, one player), and the gamepad center (the old panel with the per-controller bindings and the calibration).
 
 ### Vulkan drivers on the phone
 
 The drivers are the player's, not the pack's: the **Vulkan driver** section of the Settings tab can download them (Mesa's Turnip builds, from their own addresses), import one from a file, and remove one. One Turnip build — the Adreno 8xx one — ships inside the app: it unpacks itself into the app's own folder when the app starts (no network, no click) and is marked as the built-in one, so it is not the player's to remove.
 
-The driver a game runs with is picked in the library's drawer (**Vulkan driver**), the device's own driver first. The choice is kept in the data pack's `env.txt`, so it lasts, and it takes effect the next time the game starts.
+The driver a game runs with is picked in the game detail page's run options (**Vulkan driver**), the device's own driver first. The choice is kept in the data pack's `env.txt`, so it lasts, and it takes effect the next time the game starts.
 
 ---
 
@@ -120,13 +120,13 @@ That knowledge was never rare — it was scattered across hundreds of pull reque
 
 | Game | What it fixed | Evidence | State |
 |---|---|---|---|
-| Teenage Mutant Ninja Turtles: Shredder's Revenge (`0100BB8017F24000`) | the game calls Epic's online SDK at start-up, and the host refused every SDK module — it died with a null online object; the SDK is now loaded when the profile asks for it | [the case branch](https://github.com/zFitness/nx2androidX/tree/case/0100BB8017F24000-tmnt) | playable; the profile is still the survey's provisional one |
-| Trails in the Sky 2nd Chapter (`0100E8B028B54000`) | the texture builder did not answer which storage it was given, so the tone map read zeros, `fmod(colour, 0)` was NaN, and the whole scene was black | [the case branch](https://github.com/zFitness/nx2androidX/tree/case/0100E8B028B54000-sky2nd) | the scene is not black any more |
+| Teenage Mutant Ninja Turtles: Shredder's Revenge (`0100BB8017F24000`) | the game calls Epic's online SDK at start-up, and the host refused every SDK module — it died with a null online object; the SDK is now loaded when the profile asks for it | [the case branch](https://github.com/zFitness/nx2androidX/tree/case/0100BB8017F24000-tmnt) | playable; graduated into the official list |
+| Trails in the Sky 2nd Chapter (`0100E8B028B54000`) | the texture builder did not answer which storage it was given, so the tone map read zeros, `fmod(colour, 0)` was NaN, and the whole scene was black | [the case branch](https://github.com/zFitness/nx2androidX/tree/case/0100E8B028B54000-sky2nd) | the scene is not black any more; graduated into the official list |
 | Red Dead Redemption (`01007820196A6000`) | the game keeps its shaders in Rockstar's encrypted RPF6 archives, which the shader split could not read (0 shaders); and the game's movies open a second audio renderer, which the host did not drive, so the screen stayed black after the intro | [the case branch](https://github.com/zFitness/nx2androidX/tree/case/01007820196A6000-rdr) | the shader split passes with 3,628 shaders and the title screen comes back |
 
-None of them is in the ported list yet: the profile and the fix live on a case branch, not in the main line. A game that graduates — profile, `android.tsv` and the row in the checklist — moves into the count at the top of this page.
+Two of them have graduated: their profile and the fix are in the main line now, so they count in the numbers at the top of this page (their row stays here, to say who found the fix). Red Dead Redemption is still on a case branch — the profile and the fix have not landed yet.
 
-Your game too? The library's drawer → the assistant → **Contribute upstream** packs that game's case file into a zip. Attach it to a [case file issue](https://github.com/zFitness/nx2androidX/issues/new?template=case_file.yml) and the fix can be read, applied and landed.
+Your game too? The game detail page → the assistant → **Contribute upstream** packs that game's case file into a zip. Attach it to a [case file issue](https://github.com/zFitness/nx2androidX/issues/new?template=case_file.yml) and the fix can be read, applied and landed.
 
 ### The documents it points at
 
@@ -175,23 +175,24 @@ The assistant reads this repository's own documents, and so can you:
 | Mega Man Battle Network Legacy Collection Vol. 2<br><sub>`v0.4.0` · update 1.0.3 · 60 fps, held · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · Battle Network 4, 5 and 6 played: saving, loading, battles, gallery · the launcher's menus draw fully from the second port with the device connected after a first run (it builds some shaders at run time)</sub> | Metroid Dread<br><sub>`v0.3.0` · update 2.1.0 · 60 fps</sub> |
 | NEO: The World Ends with You<br><sub>`v0.1.2` · update 1.03</sub> | NOBUNAGA'S AMBITION: Shinsei<br><sub>`v0.5.0` · </sub> |
 | OCTOPATH TRAVELER 0<br><sub>`v0.4.0` · update 1.0.5 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> | OCTOPATH TRAVELER 0 (Chinese release)<br><sub>`v0.4.0` · update 1.0.5 · 60 fps · the Chinese and Korean release · tested on the Xiaomi 23117RK66C (Android 16) · port with Game language: Chinese (Simplified) (`--language zh-Hans`)</sub> |
-| Paper Mario: The Origami King<br><sub>`v0.2.0` · update 1.0.1 · 60 fps (30 on Switch)</sub> | Paper Mario: The Thousand-Year Door<br><sub>`v0.2.0` · update 1.0.1 · 60 fps (30 on Switch) · **work in progress**: playable, but lighting flickers (walls go black for single frames after a fall)</sub> |
-| Picross S+<br><sub>`v0.4.0` · update 1.0.1 · Retroid Pocket 6 / PurpleVK · menu and puzzle verified; **Mali rendering issues**</sub> | Pokémon Brilliant Diamond<br><sub>`v0.4.0` · update 1.3.0 · 60 fps (30 on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> |
-| Pokémon Legends: Arceus<br><sub>`v0.4.0` · update 1.1.1 · 30 fps (as on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> | Pokémon Legends: Z-A<br><sub>`v0.3.0` · update 2.0.2 · 30 fps (as on Switch) · **tested to Lumiose station**: the city and battles not checked yet</sub> |
-| Pokémon Mystery Dungeon Rescue Team DX<br><sub>`v0.4.0` · update 1.0.2 · 30 fps (as on Switch), 60 with the 60 fps option · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver</sub> | Pokémon Scarlet<br><sub>`v0.4.0` · update 4.0.0 · 50–60 fps (30 on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver · **work in progress**: tested in the opening and the South Province fields</sub> |
-| Pokémon Shield<br><sub>`v0.4.0` · update 1.3.2 · 30 fps (as on Switch; 60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · **tested to Postwick** and in wild battles</sub> | Pokémon Sword<br><sub>`v0.4.0` · update 1.3.2 · 30 fps (as on Switch; 60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · **tested to the Wild Area**, wild battles included; handheld mode draws blurred (docked is the default)</sub> |
-| Pokémon Violet<br><sub>`v0.4.0` · </sub> | Rhythm Heaven Groove<br><sub>`v0.4.0` · base game 1.0.0 · 60 fps · tested on the Xiaomi 15 (Adreno 830)</sub> |
-| ROMANCE OF THE THREE KINGDOMS XIV<br><sub>`v0.4.0` · </sub> | Rune Factory 3 Special<br><sub>`v0.5.0` · </sub> |
-| Rune Factory 5<br><sub>`v0.4.0` · </sub> | Rune Factory: Guardians of Azuma<br><sub>`v0.5.0` · </sub> |
-| South Park: The Stick of Truth<br><sub>`v0.4.0` · base game 1.0.0 · 30 fps · a Vulkan 1.3 driver is needed (Turnip packed on the Adreno 640)</sub> | Super Mario 3D World + Bowser's Fury<br><sub>`v0.4.0` · update 1.2.2 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> |
-| Super Mario Bros. Wonder<br><sub>`v0.1.3` · update 1.2.1 · 60 fps, dips to 40</sub> | Super Mario Odyssey<br><sub>`v0.2.0` · update 1.4.1 · 60 fps · shake the device to throw Cappy</sub> |
-| Super Robot Wars 30<br><sub>`v0.5.0` · </sub> | Tales of Berseria Remastered<br><sub>`v0.5.0` · </sub> |
-| Tales of Eternia Remastered<br><sub>`v0.1.2` · update 2.0.0 · 60 fps</sub> | Teenage Mutant Ninja Turtles: Shredder's Revenge<br><sub>`v0.4.1` · </sub> |
-| The Binding of Isaac: Afterbirth+<br><sub>`v0.5.0` · </sub> | The Great Ace Attorney Chronicles<br><sub>`v0.4.0` · </sub> |
-| The Legend of Zelda: Breath of the Wild<br><sub>`v0.4.0` · update 1.9.0 · 60 fps in the open world and shrines; about 30 in the busiest villages, which hold 60 while the phone is cool (30 on Switch) · the profile turns on `DM_GPU_TURBO=1` (the GPU at its highest clock: the phone runs hot, 67-76 °C; `DM_GPU_TURBO=0` in env.txt turns it off) · tested on the Galaxy S25 Ultra (Adreno 830) with Turnip (Stable Turnip v2, Mesa 26.2.3) · **work in progress**: tested on the Great Plateau, in shrines, villages and teleports</sub> | The Legend of Zelda: Echoes of Wisdom<br><sub>`v0.4.0` · version 1.1.0 · playable on Retroid Pocket 6 with PurpleVK · **work in progress**: minor transparency artifacts around rifts</sub> |
-| The Legend of Zelda: Link's Awakening<br><sub>`v0.4.0` · update 1.1.0 · 60 fps (drops to 30 on slow frames by default; uncomment the two NOPs in `patches.py` to hold 60 on fast chips — may cause judder and slow-motion on older devices) · tested on the Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840) · needs your console's firmware for its fonts (`--firmware`): without them the game crashes at startup because the fallback font lacks `U+25A1` · a new area can hitch while it loads</sub> | The Legend of Zelda: Tears of the Kingdom<br><sub>`v0.3.0` · update 1.4.3 · 30 fps, 60 in caves and shrines · smoothest with a Turnip Vulkan driver · **work in progress**: 60 fps in the open world</sub> |
-| The World Ends with You -Final Remix-<br><sub>`v0.4.0` · base game 1.0.0 · 60 fps · played by touch</sub> | Tomodachi Life: Living the Dream<br><sub>`v0.4.0` · update 1.0.4 · 60 fps</sub> |
-| Toy Story 3 Complete Edition<br><sub>`v0.5.0` · </sub> | Ultra Kaiju Monster Rancher<br><sub>`v0.4.0` · update 1.0.1 · 30 fps (60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · handheld 3D resolution by default, docked in the app menu · tested through the tutorials and battles</sub> |
+| OCTOPATH TRAVELER II<br><sub>`v0.4.1` · update 1.1.1 · 30 fps (the game's own cap) · tested on the Xiaomi 23117RK66C (Android 16, Adreno 750) with a Turnip Vulkan driver</sub> | Paper Mario: The Origami King<br><sub>`v0.2.0` · update 1.0.1 · 60 fps (30 on Switch)</sub> |
+| Paper Mario: The Thousand-Year Door<br><sub>`v0.2.0` · update 1.0.1 · 60 fps (30 on Switch) · **work in progress**: playable, but lighting flickers (walls go black for single frames after a fall)</sub> | Picross S+<br><sub>`v0.4.0` · update 1.0.1 · Retroid Pocket 6 / PurpleVK · menu and puzzle verified; **Mali rendering issues**</sub> |
+| Pokémon Brilliant Diamond<br><sub>`v0.4.0` · update 1.3.0 · 60 fps (30 on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> | Pokémon Legends: Arceus<br><sub>`v0.4.0` · update 1.1.1 · 30 fps (as on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> |
+| Pokémon Legends: Z-A<br><sub>`v0.3.0` · update 2.0.2 · 30 fps (as on Switch) · **tested to Lumiose station**: the city and battles not checked yet</sub> | Pokémon Mystery Dungeon Rescue Team DX<br><sub>`v0.4.0` · update 1.0.2 · 30 fps (as on Switch), 60 with the 60 fps option · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver</sub> |
+| Pokémon Scarlet<br><sub>`v0.4.0` · update 4.0.0 · 50–60 fps (30 on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver · **work in progress**: tested in the opening and the South Province fields</sub> | Pokémon Shield<br><sub>`v0.4.0` · update 1.3.2 · 30 fps (as on Switch; 60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · **tested to Postwick** and in wild battles</sub> |
+| Pokémon Sword<br><sub>`v0.4.0` · update 1.3.2 · 30 fps (as on Switch; 60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · **tested to the Wild Area**, wild battles included; handheld mode draws blurred (docked is the default)</sub> | Pokémon Violet<br><sub>`v0.4.0` · </sub> |
+| Rhythm Heaven Groove<br><sub>`v0.4.0` · base game 1.0.0 · 60 fps · tested on the Xiaomi 15 (Adreno 830)</sub> | ROMANCE OF THE THREE KINGDOMS XIV<br><sub>`v0.4.0` · </sub> |
+| Rune Factory 3 Special<br><sub>`v0.5.0` · </sub> | Rune Factory 5<br><sub>`v0.4.0` · </sub> |
+| Rune Factory: Guardians of Azuma<br><sub>`v0.5.0` · </sub> | South Park: The Stick of Truth<br><sub>`v0.4.0` · base game 1.0.0 · 30 fps · a Vulkan 1.3 driver is needed (Turnip packed on the Adreno 640)</sub> |
+| Super Mario 3D World + Bowser's Fury<br><sub>`v0.4.0` · update 1.2.2 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver</sub> | Super Mario Bros. Wonder<br><sub>`v0.1.3` · update 1.2.1 · 60 fps, dips to 40</sub> |
+| Super Mario Odyssey<br><sub>`v0.2.0` · update 1.4.1 · 60 fps · shake the device to throw Cappy</sub> | Super Robot Wars 30<br><sub>`v0.5.0` · </sub> |
+| Tales of Berseria Remastered<br><sub>`v0.5.0` · </sub> | Tales of Eternia Remastered<br><sub>`v0.1.2` · update 2.0.0 · 60 fps</sub> |
+| Teenage Mutant Ninja Turtles: Shredder's Revenge<br><sub>`v0.4.1` · </sub> | The Binding of Isaac: Afterbirth+<br><sub>`v0.5.0` · </sub> |
+| The Great Ace Attorney Chronicles<br><sub>`v0.4.0` · </sub> | The Legend of Zelda: Breath of the Wild<br><sub>`v0.4.0` · update 1.9.0 · 60 fps in the open world and shrines; about 30 in the busiest villages, which hold 60 while the phone is cool (30 on Switch) · the profile turns on `DM_GPU_TURBO=1` (the GPU at its highest clock: the phone runs hot, 67-76 °C; `DM_GPU_TURBO=0` in env.txt turns it off) · tested on the Galaxy S25 Ultra (Adreno 830) with Turnip (Stable Turnip v2, Mesa 26.2.3) · **work in progress**: tested on the Great Plateau, in shrines, villages and teleports</sub> |
+| The Legend of Zelda: Echoes of Wisdom<br><sub>`v0.4.0` · version 1.1.0 · playable on Retroid Pocket 6 with PurpleVK · **work in progress**: minor transparency artifacts around rifts</sub> | The Legend of Zelda: Link's Awakening<br><sub>`v0.4.0` · update 1.1.0 · 60 fps (drops to 30 on slow frames by default; uncomment the two NOPs in `patches.py` to hold 60 on fast chips — may cause judder and slow-motion on older devices) · tested on the Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840) · needs your console's firmware for its fonts (`--firmware`): without them the game crashes at startup because the fallback font lacks `U+25A1` · a new area can hitch while it loads</sub> |
+| The Legend of Zelda: Tears of the Kingdom<br><sub>`v0.3.0` · update 1.4.3 · 30 fps, 60 in caves and shrines · smoothest with a Turnip Vulkan driver · **work in progress**: 60 fps in the open world</sub> | The World Ends with You -Final Remix-<br><sub>`v0.4.0` · base game 1.0.0 · 60 fps · played by touch</sub> |
+| Tomodachi Life: Living the Dream<br><sub>`v0.4.0` · update 1.0.4 · 60 fps</sub> | Toy Story 3 Complete Edition<br><sub>`v0.5.0` · </sub> |
+| Trails in the Sky the 2nd (Korean release)<br><sub>`v0.4.1` · update 1.0.3a · 60 fps in the opening scene · tested on the Xiaomi 23117RK66C (Android 16, Adreno 750) with a Turnip Vulkan driver</sub> | Ultra Kaiju Monster Rancher<br><sub>`v0.4.0` · update 1.0.1 · 30 fps (60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · handheld 3D resolution by default, docked in the app menu · tested through the tutorials and battles</sub> |
 | UNDER NIGHT IN-BIRTH Exe:Late[cl-r]<br><sub>`v0.2.0` · update 1.0.3 · 60 fps</sub> | UNDER NIGHT IN-BIRTH II Sys:Celes<br><sub>`v0.2.0` · update 1.42 · 60 fps</sub> |
 | Unicorn Overlord<br><sub>`v0.1.3` · update 1.05 · 60 fps · **boots**: saving and a full battle not tested yet</sub> | Unpacking<br><sub>`v0.1.2` · update 2.01 · 60 fps · played by touch</sub> |
 | Untitled Goose Game<br><sub>`v0.4.0` · update 1.1.2 · 60 fps</sub> | Viractal: Will You Trust Your Party?<br><sub>`v0.1.0` · update 1.4.5</sub> |
@@ -226,7 +227,7 @@ The PC tool is released upstream, by nx2android; this repository's releases hold
 
 A port can leave the phone as a game you install yourself, without this app.
 
-1. **Library tab** → the game → the drawer → **Export this game as an APK**. A box says what will happen and where: the data folder and the APK land in the folder you pick (by default `/storage/emulated/0/NX2A-Games/`), how big the data is, that the data folder is the exported game's home (do not move it, do not delete it), that you install the APK yourself (the first install asks you to allow apps from unknown sources), and that the app also copies the data into the exported game's own directory so that it starts right away and asks for no permission.
+1. **Library tab** → the game → the detail page's menu → **Export this game as an APK**. A box says what will happen and where: the data folder and the APK land in the folder you pick (by default `/storage/emulated/0/NX2A-Games/`), how big the data is, that the data folder is the exported game's home (do not move it, do not delete it), that you install the APK yourself (the first install asks you to allow apps from unknown sources), and that the app also copies the data into the exported game's own directory so that it starts right away and asks for no permission.
 2. The export copies the data, builds the game (the host for a NativeActivity of its own) and packs the APK. The progress is on the screen; the copy of a big game takes minutes.
 3. **Install the APK** with the system's file manager (tap the `.apk` in the folder you picked). The exported game is then a game of its own: it starts, it asks for no permission, and it does not need this app any more.
 
@@ -250,7 +251,7 @@ Every exported game is signed with the app's own key (in the app's private folde
 
 ## Saves
 
-**On the phone**: the library page → the drawer → **Saves**. **Export the saves** asks the system file manager where the package goes and writes the save there as a zip; **Import the saves…** takes a zip from anywhere the file manager can see.
+**On the phone**: the library page → the game → the detail page → **Saves**. **Export the saves** asks the system file manager where the package goes and writes the save there as a zip; **Import the saves…** takes a zip from anywhere the file manager can see.
 
 An import replaces the save the game has, so the app asks before it does it: the package's name, and the fact that the progress it replaces cannot be brought back. A package carrying another game's title ID is refused, and the unpacked size is capped. Uninstalling the app deletes its saves: copy them out first.
 
@@ -310,7 +311,7 @@ Everyone who is in this repository's history, and everyone who comes with a pull
 
 The code this repository owns and maintains — the porter, the desktop app, the phone app, the packaging, the docs and the nxnative engine tree this fork maintains — is GPL-3.0-or-later: [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) says what those terms cover, who holds the copyright on what, and which upstream code this repository continues. The third-party code in the tree keeps its own license; every component is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The phone app's frame generation ([nxnative/dm/android/lsfg/](nxnative/dm/android/lsfg/)) is GPL-3.0-or-later as well, the same terms as the rest of the tree. It can be left out of a build, but that does not change the license of the code the build was made from. What that means for the app is in [android/NOTICE.md](android/NOTICE.md).
+The phone app carries no further copyleft component: the frame generation is not in this build. The third-party components it does use are permissive, and each one is listed with its license text in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). What that means for the app is in [android/NOTICE.md](android/NOTICE.md).
 
 ## Acknowledgements
 

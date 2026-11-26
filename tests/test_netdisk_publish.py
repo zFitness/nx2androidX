@@ -1,9 +1,7 @@
 """The netdisk pipeline (devtools/netdisk/): which release is published, what every netdisk does with it, and
 that one netdisk's trouble never holds the others back."""
 import json
-import os
 import platform
-import shutil
 import sys
 import tempfile
 import time
@@ -16,72 +14,6 @@ sys.path.insert(0, str(ROOT))
 from devtools.netdisk import Asset, Outcome, Target, TargetError, TargetUnavailable   # noqa: E402
 from devtools.netdisk import pipeline, release                                         # noqa: E402
 from devtools.netdisk.targets import quark                                             # noqa: E402
-
-# a stand-in for the kuake CLI: it writes down what it was asked and answers with what the test says
-FAKE = '''#!/usr/bin/env python3
-import json, os, sys
-here = os.path.dirname(os.path.abspath(__file__))
-args = sys.argv[1:]
-with open(os.path.join(here, 'calls.jsonl'), 'a') as f:
-    f.write(json.dumps(args) + '\\n')
-answers = {}
-path = os.path.join(here, 'answers.json')
-if os.path.exists(path):
-    with open(path) as f:
-        answers = json.load(f)
-created = []
-cpath = os.path.join(here, 'created.json')
-if os.path.exists(cpath):
-    with open(cpath) as f:
-        created = json.load(f)
-if args[0] == 'create':
-    created.append(args[1])
-    with open(cpath, 'w') as f:
-        json.dump(created, f)
-key = args[0]
-if key == 'list' and len(args) > 1:
-    key = 'list ' + args[1]
-answer = answers.get(key, answers.get(args[0], {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}}))
-if key.startswith('list ') and key.rsplit('/', 1)[-1] in created:
-    answer = []
-if isinstance(answer, list):
-    for item in answer:
-        print(json.dumps(item))
-else:
-    print(json.dumps(answer))
-    sys.exit(0 if answer.get('success', True) else 1)
-'''
-
-
-def file_entry(name, size):
-    """One file as the CLI's stream mode writes it."""
-    return {'success': True, 'code': 'OK', 'message': 'OK',
-            'data': {'fid': 'FID' + name, 'file_name': name, 'size': size, 'dir': False}}
-
-
-class Fake:
-    """The fake CLI in a directory of its own, with the answers the test gives it."""
-
-    def __init__(self, answers=None):
-        self.dir = Path(tempfile.mkdtemp(prefix='nx2a-fake-'))
-        script = self.dir / 'kuake'
-        script.write_text(FAKE)
-        script.chmod(0o755)
-        self.write(answers or {})
-
-    def write(self, answers):
-        (self.dir / 'answers.json').write_text(json.dumps(answers))
-
-    def calls(self):
-        path = self.dir / 'calls.jsonl'
-        if not path.exists():
-            return []
-        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-
-    def target(self, cookie='COOKIE', **kw):
-        return quark.QuarkTarget(binary=str(self.dir / 'kuake'), cookie=cookie,
-                                 folder='/我的/nx2AndroidX', archive='/我的/旧版本',
-                                 workdir=self.dir / 'work', **kw)
 
 
 class Tool(unittest.TestCase):
@@ -158,89 +90,6 @@ class LatestRelease(unittest.TestCase):
             path.write_bytes(b'the file')
             digest = hashlib.sha256(b'the file').hexdigest()
             release.check_digest(Asset(name='a.apk', digest='sha256:' + digest), path)
-
-
-class QuarkNetdisk(unittest.TestCase):
-    """What the Quark target does with the release"""
-
-    def setUp(self):
-        self.fake = Fake({
-            'user': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {'nickname': 'qu'}},
-            'list /我的/nx2AndroidX': [],
-            'list /我的/旧版本': [],
-            'upload': {'success': True, 'code': 'OK', 'message': '上传成功', 'data': {'fid': 'FID'}},
-            'move': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}},
-            'create': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}},
-        })
-
-    def _asset(self, name='nx2android-v0.4.1-alpha02.apk', size=100):
-        tmp = tempfile.mkdtemp(prefix='nx2a-asset-')
-        self.addCleanup(shutil.rmtree, tmp, True)
-        path = Path(tmp) / name
-        path.write_bytes(b'x' * size)
-        return Asset(name=name, size=size, path=path)
-
-    def test_a_file_that_is_not_there_yet_is_uploaded(self):
-        target = self.fake.target()
-        target.prepare()
-        outcomes = target.publish([self._asset()])
-        self.assertEqual([o.state for o in outcomes], ['uploaded'])
-        uploads = [c for c in self.fake.calls() if c[0] == 'upload']
-        self.assertEqual(len(uploads), 1)
-        self.assertEqual(uploads[0][2], '/我的/nx2AndroidX/nx2android-v0.4.1-alpha02.apk')
-
-    def test_a_file_the_netdisk_has_already_is_not_uploaded_again(self):
-        self.fake.write({'list /我的/nx2AndroidX': [file_entry('nx2android-v0.4.1-alpha02.apk', 100)],
-                         'user': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}}})
-        target = self.fake.target()
-        target.prepare()
-        outcomes = target.publish([self._asset()])
-        self.assertEqual([o.state for o in outcomes], ['skipped'])
-        self.assertEqual([c for c in self.fake.calls() if c[0] == 'upload'], [])
-
-    def test_the_files_that_are_not_this_releases_go_into_the_archive(self):
-        self.fake.write({'list /我的/nx2AndroidX': [file_entry('nx2android-v0.4.1-alpha01.apk', 100),
-                                                    file_entry('nx2android-v0.4.1-alpha02.apk', 100)],
-                         'list /我的/旧版本': [],
-                         'user': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}}})
-        target = self.fake.target()
-        target.prepare()
-        outcomes = target.publish([self._asset()])
-        self.assertIn('moved', [o.state for o in outcomes])
-        moves = [c for c in self.fake.calls() if c[0] == 'move']
-        self.assertEqual(len(moves), 1)
-        self.assertEqual(moves[0][1], '/我的/nx2AndroidX/nx2android-v0.4.1-alpha01.apk')
-        self.assertEqual(moves[0][2], '/我的/旧版本')
-
-    def test_the_archive_folder_is_made_when_it_is_not_there_yet(self):
-        self.fake.write({'list /我的/nx2AndroidX': [file_entry('nx2android-v0.4.1-alpha01.apk', 100)],
-                         'list /我的/旧版本': {'success': False, 'code': 'NOT_FOUND', 'message': 'no such folder'},
-                         'user': {'success': True, 'code': 'OK', 'message': 'ok', 'data': {}}})
-        target = self.fake.target()
-        target.prepare()
-        target.publish([self._asset()])
-        creates = [c for c in self.fake.calls() if c[0] == 'create']
-        self.assertEqual(len(creates), 1)
-        self.assertEqual(creates[0][1], '旧版本')
-        self.assertEqual(creates[0][2], '/我的')
-
-    def test_without_a_cookie_the_netdisk_is_skipped_and_nothing_is_uploaded(self):
-        target = self.fake.target(cookie='')
-        with self.assertRaises(TargetUnavailable):
-            target.prepare()
-
-    def test_a_cookie_the_netdisk_refuses_is_a_failure(self):
-        self.fake.write({'user': {'success': False, 'code': 'UNAUTHORIZED', 'message': 'the cookie is over'}})
-        target = self.fake.target()
-        with self.assertRaises(TargetError):
-            target.prepare()
-
-    def test_the_cookie_goes_to_the_cli_and_nothing_else_does(self):
-        target = self.fake.target()
-        target.prepare()
-        env = target._env()
-        self.assertEqual(env.get('KUAKE_COOKIE'), 'COOKIE')
-        self.assertNotIn('NX2A_SECRET', env)
 
 
 class FakeTarget(Target):

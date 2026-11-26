@@ -34,6 +34,8 @@ On the phone they live at `$NX2A_REPO/tools/` (`NX2A_REPO` is the app's `files/t
 | `upstream_diff.py` | what the phone's porter and engine differ from the upstream's |
 | `upstream_pr.py` | the upstream's PRs and issues on GitHub that mention the symptom (the fix may already exist) |
 | `gamespec_pack.py` | a game's case file, packed into a zip the player can hand to the upstream (the document, the files that were changed, the manifest, and the diff against the originals when the case file has them) |
+| `memory_embed.py` | the static embedding model as a lookup table: the model artifact (5.6 MB) turned into a vector for a text, in plain python, no numpy |
+| `memory_search.py` | the search over what this phone knows: the upstream's pull requests, the knowledge documents, the closed issues and the player's own cases, in one index, with the pull request and issue numbers on every hit |
 
 ## Adding a tool
 

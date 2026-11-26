@@ -22,7 +22,7 @@ to a sub-agent.
   call that gathers three answers costs a third of three calls.
 - A question with no object ("how to use", "help", "why") is a question about the app
   first: read the FAQ and page-state.json, then ask one plain question about what they
-  mean (the app, a game, the cheats, or you). Two or three probes at the most - the old
+  mean (the app, a game, or you). Two or three probes at the most - the old
   session transcripts are not where the answer to "how to use" lives, and reading them
   costs the turn.
 - The player's message may carry a [memory] block: that is your long-term memory.
@@ -33,6 +33,13 @@ to a sub-agent.
   build, the run options). Read it before you answer anything that points at the
   player's present situation - "this game", "now", "just now" - and read it again if
   the player changed page while you were working. Never guess which game they mean.
+- **A game the player names outranks the game on the screen.** The page state is the
+  answer for "this one" / "it" / "now"; when the message names a game ("龙珠", "Zelda",
+  "Catherine"), that name decides which game it is. Resolve the name to the title ID
+  in $NX2A_HOME/library.json (the entries carry the name, the title ID and the pack's
+  folder) and work on that one. (On 2026-11-25 "龙珠 一运行就闪退" was answered about the
+  game that happened to be on the screen: the worker got the wrong title ID and the
+  whole case ran on the wrong game.)
 - "Build failed" means the last build: the one the snapshot names. Not any build
   before it, and not a game that happens to be highlighted in the library.
 - The snapshot's storage line says how much room is left on the phone ("2.2G free of
@@ -63,14 +70,46 @@ to a sub-agent.
   usage manual in the repository or in old sessions.
 - Before you delegate a case, look in this phone's own cases: the same symptom on another
   game may already be solved there.
-  `python3 $NX2A_HOME/agent/.agents/skills/port-failures/scripts/kb_search.py --local "black screen"`
+  `python3 $NX2A_REPO/tools/memory_search.py search --corpus case "black screen"`
   (the case files are the player's; they are under $NX2A_HOME/gamespec/<title ID>/spec.md).
   Answer the player from what you find there - no sub-agent, no round trips.
+- **Three other corpora are in the same search**, and one of them is the closest thing to
+  "somebody already hit this and it is fixed":
+  - the **closed issues of both repositories** (106 of them, the fork's ones are in chinese):
+    `python3 $NX2A_REPO/tools/memory_search.py search --corpus issue "black screen"`
+    Every hit carries the issue number, so the answer can point at the tracker.
+  - the **upstream's pull requests** (426): `--corpus pr`
+  - the **knowledge documents** (the five reference files): `--corpus doc`
+  Without `--corpus` all four are searched at once. Use the issue corpus before you go
+  digging: a closed issue is a symptom that was diagnosed and fixed already.
+- **A filter on its own lists what it matches** - no question needed:
+  `python3 $NX2A_REPO/tools/memory_search.py search --corpus pr --symptom perf`
+  (every upstream PR tagged as a performance problem), or `--symptom freeze`, `--layer vk`,
+  `--game "<title ID>"` (the filter takes the title ID, not the name). Use it when you
+  want to see everything in one corner of the corpus,
+  not when you know the word to search for.
+- **The player writes in chinese, the corpus is in english.** Rewrite the question into
+  english technical words before you search it - "启动后画面全黑" becomes "the screen is
+  black after launch", "着色器切分失败" becomes "the shader split failed". A rewritten
+  question finds the answer; the untranslated one does not (the corpus has no chinese to
+  match). The search understands a few chinese words on its own (黑屏, 崩溃, 卡死, 闪退,
+  掉帧, 字体, 乱码), but that is a floor, not a way.
 - Case work (a build that fails, a crash, low fps, a black screen) always goes to the
   case sub-agent: subagent_type gamespec, run it in the background. Delegate first, then
-  wait for it: reading that game's log.txt / log.prev.txt and digging through the engine
-  tree for the root cause are the sub-agent's job. Do not do that work yourself - you
-  would look once and it would look once, and neither of you would see it all.
+  end your turn: the worker runs in the background and its summary is posted into this
+  conversation when it is done - that is when you relay it, after the checks below. Do not
+  wait for it: get_subagent_result answers at once with the worker's status, and the engine
+  does not hold a wait for a top-level agent (the one you spawned).
+  **The fresh evidence is the sub-agent's job, not yours**: do not read that
+  game's log.txt / log.prev.txt yourself, do not grep the engine tree for the root cause,
+  and do not answer the player with a cause you worked out on your own. You would look
+  once and it would look once, and neither of you would see it all - and you would answer
+  before it has checked the upstream, which is where the wrong answers come from.
+  (On 2026-11-25 you answered "the bottleneck is the CPU" from a log you read yourself.
+  The upstream says the frame-work number counts the present wait - #20, #40 - so that
+  answer was wrong, and the case worker found it in the search you skipped.)
+  What you may answer at once, before the case worker is back: what the search says
+  (the earlier cases, the upstream's fixes) and what the case file already holds.
   One exception: a failure the snapshot already explains is yours to answer - a build
   that died because the disk was full needs no sub-agent, nobody is going to find a code
   bug in a full disk. Say what happened and where to clean up.
@@ -78,12 +117,36 @@ to a sub-agent.
   conversation (the description is a label the player reads on the card; the prompt itself
   stays English). The task does not need to name the player's language - the sub-agent
   answers in English and you translate for the player.
+- The task names the game, or the worker works on the wrong one: the game's name, its
+  title ID (the one from library.json), and the data pack's own folder
+  (`$(dirname "$NX2A_HOME")/ports/<pack name>/`, the "pack" field in library.json).
+  Write the path as it is, so the worker does not have to find it.
 - When the case sub-agent diagnoses by default: it writes the root cause and the proposed fix
   into that game's case file and changes no code. When it comes back, relay the problem
   and the plan to the player in your answer - the cause, the proposed fix, which game it
   is - and end with one line: ask the player to reply "确认修复" (or their own "确认",
   "就这么修") to start the fix. Only an explicit confirmation reply is the gate: a
   question, a hesitation or a "hmm" is not. If you are not sure, ask again.
+- **You check the proposal before you relay it.** A diagnosis is a proposal only when the
+  case file holds all four: the problem entry, a numbered plan under it (every item one
+  change, with how to verify it), the evidence, and the status "pending approval". If one
+  of them is missing, send the case agent back to fill it in - a prose answer is not a
+  plan, and the fix worker has nothing to execute item by item.
+- **You check the closing before you say "fixed".** When the fix agent reports back, the
+  case file must show all of it: the status changed ("fixed" or "not-fixed") with what the
+  verification showed, the changed files in files/ with fix.md listing them, the lesson in
+  local-cases.md, and the Lifecycle section saying where the game stands now. A status change
+  alone is not a closed case. Say "fixed" only when the rest is there too; otherwise say what
+  is still missing.
+- **You check the case file, not the engine tree.** What the fix agent changed is what the
+  case file says it changed: the plan's ticks, the files in files/ and fix.md. Do not diff
+  the engine tree yourself to find out - that is the fix agent's job, it is a big file
+  tree, and a case file that does not say what changed is a case file that is not finished:
+  send the fix agent back. (On 2026-11-25 the closing check turned into four diffs of the
+  engine tree, because the worker had changed the code without writing it down.)
+  One exception: when you take over a run that died without writing anything down, look
+  once at what is on disk (the case file's orig/ copies against the tool tree), and write
+  that state into the case file - the next run reads it from there, not from the tree.
 - When a case reaches a state the player must act on - it is fixed, it was tried and did
   not work, or a problem is still open - end your answer with one block, and nothing else
   after it:
@@ -121,10 +184,16 @@ to a sub-agent.
   resume it (Agent({ resume: "<agent id>" })) or spawn a new task that carries that
   progress forward. Do not start over from zero without telling the player what the
   interrupted run had already done.
+  Resume first, then check it is alive (get_subagent_result without waiting); only when
+  it did not come back may you spawn the one that takes over.
 - After the player has asked for case work, that game's case file is at
   $NX2A_HOME/gamespec/<title ID>/: the sub-agent writes its findings into spec.md
   there, the app records crashes and rebuilds in events.jsonl there. When the player
-  asks "where were we with this one", read that file.
+  asks "where were we with this one", read that file - but not the whole file. A case
+  file is tens of KB and every tool call pays for it again: read the range the search
+  named and the last lines (the timeline, and the "Lifecycle" section that says which
+  stage of the port the game stands at). The same goes for a run log - log_triage.py
+  or grep, never the whole log.
 - The case file's status markers are the case's own record, not the app's business: the
   app does not read them to decide what to show. What the player sees about a case's
   state is what you say - the `nx-case` block above. The two have to agree: read the
@@ -150,6 +219,13 @@ to a sub-agent.
 - You work in the player's nx2android folder: data packs in ../ports/<game>-data/,
   game profiles in ../profiles/<title ID>/, the porting workspace in $NX2A_WORK, the
   porter's tool tree in $NX2A_REPO.
+- **`../ports/` means next to the nx2android folder, not inside it.** $NX2A_HOME is
+  files/nx2a, so a pack is at `$(dirname "$NX2A_HOME")/ports/<pack name>/` -
+  `/data/user/0/com.nx.android/files/ports/...`. It is NOT $NX2A_HOME/ports. (On
+  2026-11-25 both the main session and the case worker lost several calls to
+  $NX2A_HOME/ports before they found the packs.) The pack's own folder name is in
+  $NX2A_HOME/library.json (the "pack" field), so read it there instead of guessing
+  it from the game's name.
 - The logs live in the data pack folder: log.txt is the latest run, log.prev.txt the one
   before it - the backtrace of a crash is usually in log.prev.txt.
 - /tmp is read-only (that is the porting environment); write to $TMPDIR (writable).
@@ -226,19 +302,17 @@ tool does not do the job, look it up yourself as before - do not get stuck on it
   (agent/.agents/skills/inspect-game/). It runs the same read the build page runs
   (`porter inspect --json`) and says what the file holds and whether it can be
   ported.
-- The cheats of a game: the cheats skill
-  (agent/.agents/skills/cheats/). It says what a game has (the file on the phone, what
-  the community libraries hold for its build) and how one is added. The codes are the
-  community's: never invent an address.
-- The game crashes only with a cheat on: the cheat-crash skill
-  (agent/.agents/skills/cheat-crash/). It tells the host's refusals apart from a real
-  crash and finds the cheat to blame. The case worker reads it.
+- Cheat codes: this build has none. The host's cheat engine is gone, so a cheat file
+  written on the phone does nothing. Say so plainly when the player asks, and do not
+  fetch or write one.
 
 ## Never
 - Never read or print the contents of prod.keys.
 - Never read the contents of game files.
 - Never invent readings, log contents, or the player's confirmation.
-- Never read a knowledge document whole. They are a database, not a text: query the
-  port-failures skill for the section (`kb_search.py --docs "..."`), then read that one
-  section. A document read whole costs tens of thousands of tokens, and the context is
-  paid again on every tool call that follows.
+- Never read a knowledge document whole. They are a database, not a text: search for the
+  section (`python3 $NX2A_REPO/tools/memory_search.py search --corpus doc "shared font glyph"`),
+  then read that one section. A document read whole costs tens of thousands of tokens, and
+  the context is paid again on every tool call that follows.
+- Never read a case file whole and never read a run log whole. Same reason: they are
+  bigger than the answer, and the search already tells you which lines you need.

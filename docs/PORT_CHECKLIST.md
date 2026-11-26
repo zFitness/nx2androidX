@@ -13,7 +13,7 @@ with — the game is not missing on Android.
 
 These have an official Android release too, and are ported here anyway: Unpacking.
 
-**88 / 200 ported**
+**90 / 201 ported**
 
 This file is generated: `python3 docs/gen_tables.py` reads the profiles and writes it. The facts
 in a row are the profile's own — the name and the version from `game.tsv`, the status, the note
@@ -61,7 +61,7 @@ the author of the commit that introduced them.
 - [ ] Diablo II: Resurrected · `0100726014352000` · 1.0.34.0
 - [ ] Diablo III: Eternal Collection · `01001B300B9BE000` · 2.7.7.92380
 - [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · 1.0.3
-- [x] Digimon Story: Time Stranger · `010062E01FE0C000` · wip · v262144 Poco F5 (Snapdragon 7+ Gen 2, Adreno 725, Turnip 26.99.99)
+- [x] Digimon Story: Time Stranger · `010062E01FE0C000` · wip · v262144 Poco F5 (Snapdragon 7+ Gen 2, Adreno 725, Turnip 26.99.99) · ported by @ioio1o
 - [x] Disco Elysium - The Final Cut · `01006C5015E84000` · playable · base game 1.0.7 · 30 fps (as on Switch) · tested on the Sony XQ-DQ72 and the OnePlus 15 · ported by @C1oudust
 - [x] Divinity: Original Sin 2 - Definitive Edition · `010027400CDC6000` · playable · v786432 Legion Y700 Gen 4 (Snapdragon 8 Elite, Adreno 830, Android 16) · ported by @shirai91
 - [x] Donkey Kong Country Returns HD · `01009D901BC56000` · playable · update 1.1.0 · 60 fps · ported by @shirai91
@@ -71,9 +71,9 @@ the author of the commit that introduced them.
 - [ ] DRAGON QUEST BUILDERS 2 · `010042000A986000` · 1.7.3d
 - [ ] DRAGON QUEST I & II HD-2D Remake · `0100D7C01F254000` · 1.0.2 · 60 fps
 - [ ] DRAGON QUEST III HD-2D Remake · `01003E601E324000` · 1.1.2 · 60 fps
-- [x] DRAGON QUEST VII Reimagined · `0100505021440000` · experimental · v65536 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+- [x] DRAGON QUEST VII Reimagined · `0100505021440000` · experimental · v65536 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16) · ported by @mijuu
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · 1.2.0 · 60 fps
-- [x] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · experimental · v262144 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip)
+- [x] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · experimental · v262144 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip) · ported by @rospec14
 - [ ] EA SPORTS FC 27 · `0100C49025D3E000` · 1.8d.310c · 60 fps
 - [x] FIFA 21 Legacy Edition · `01000A001171A000` · experimental · v0 Xiaomi 17 (Adreno 840, Android 17) · ported by @yidefu2012-cloud
 - [x] Final Fantasy Resonance · `0100606026F12000` · playable · update 1.0.1 · 60 fps · Asian release: tested on the Legion Y700 TB321FU (Adreno 750) with a Turnip Vulkan driver · ported by @shirai91
@@ -99,7 +99,7 @@ the author of the commit that introduced them.
 - [x] Kirby's Return to Dream Land Deluxe · `01006B601380E000` · playable · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver · needs your console's firmware for its fonts (`--firmware`) · ported by @DPR
 - [x] Layton's Mystery Journey: Katrielle and the Millionaires' Conspiracy DX+ · `0100FDB00AA80000` · playable · v65536 iQOO 9 V2171A (Snapdragon 8 Gen 1, Adreno 730, Android 15) · ported by @Bokyer
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · playable · base game 1.0.5 · 60 fps on Retroid Pocket 6 with PurpleVK · **work in progress**: brief transition glitch and occasional black/white flashes · ported by @alexsg91
-- [x] Luigi's Mansion 3 · `0100DCA0064A6000` · experimental · v327680 Xiaomi 17 (Adreno 840, Android 17)
+- [x] Luigi's Mansion 3 · `0100DCA0064A6000` · experimental · v327680 Xiaomi 17 (Adreno 840, Android 17) · ported by @yidefu2012-cloud
 - [ ] Mario & Luigi: Brothership · `01006D0017F7A000` · 1.0.0 · 60 fps
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · 1.9.589692
 - [ ] Mario + Rabbids® Sparks of Hope · `0100317013770000` · 1.6.2225577
@@ -125,7 +125,7 @@ the author of the commit that introduced them.
 - [x] OCTOPATH TRAVELER · `010057D006492000` · boots · v327680 Red Magic Astra NP05J (Snapdragon 8 Elite, Adreno 830, Android 16) · ported by @sid350
 - [x] OCTOPATH TRAVELER 0 · `01005270232F2000` · playable · update 1.0.5 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver · ported by @intermission88
 - [x] OCTOPATH TRAVELER 0 (Chinese release) · `01001300232F4000` · playable · update 1.0.5 · 60 fps · the Chinese and Korean release · tested on the Xiaomi 23117RK66C (Android 16) · port with Game language: Chinese (Simplified) (`--language zh-Hans`) · ported by @zFitness
-- [ ] OCTOPATH TRAVELER II · `0100A3501946E000` · 1.1.1 · 60 fps
+- [x] OCTOPATH TRAVELER II · `0100A3501946E000` · playable · update 1.1.1 · 30 fps (the game's own cap) · tested on the Xiaomi 23117RK66C (Android 16, Adreno 750) with a Turnip Vulkan driver · ported by @zfitness
 - [ ] Ori and the Blind Forest: Definitive Edition · `010061D00DB74000` · 1.0.2
 - [ ] Ori and the Will of the Wisps · `01008DD013200000` · 1.2.1
 - [ ] Overcooked! All You Can Eat · `0100F28011892000` · 1.0.12 · 60 fps
@@ -156,8 +156,8 @@ the author of the commit that introduced them.
 - [x] ROMANCE OF THE THREE KINGDOMS XIV · `0100CD4012DCA000` · playable · v786432 Xiaomi 2410DPN6CC haotian (Snapdragon 8 Elite, Adreno 830, Android 16) · ported by @shirai91
 - [ ] ROMANCE OF THE THREE KINGDOMS XIV: Diplomacy and Strategy Expansion Pack · `0100ED7012DB2000` · 1.0.10
 - [x] Rune Factory 3 Special · `0100E000191B4000` · experimental · ported by @rospec14
-- [x] Rune Factory 5 · `01002F7013224000` · experimental · v131072 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
-- [x] Rune Factory: Guardians of Azuma · `01003AF0200B0000` · experimental · v589824 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip)
+- [x] Rune Factory 5 · `01002F7013224000` · experimental · v131072 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13) · ported by @rospec14
+- [x] Rune Factory: Guardians of Azuma · `01003AF0200B0000` · experimental · v589824 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip) · ported by @rospec14
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · 1.0.3 · 60 fps
 - [ ] Sid Meier's Civilization VI · `010044500C182000` · 1.2.19
 - [ ] Sid Meier's Civilization VII · `0100C3601518C000` · 1.5.0.1
@@ -191,7 +191,7 @@ the author of the commit that introduced them.
 - [x] Tales of Eternia Remastered · `010006E0230AC000` · playable · update 2.0.0 · 60 fps · ported by @shirai91
 - [ ] Team Sonic Racing · `010092B0091D0000` · 1.0.3
 - [x] Teenage Mutant Ninja Turtles: Shredder's Revenge · `0100BB8017F24000` · playable · v589824 Xiaomi 23117RK66C (Android 16) · ported by @zFitness
-- [x] The Binding of Isaac: Afterbirth+ · `010021C000B6A000` · playable · v524288 OnePlus 11 CPH2449 (Snapdragon 8 Gen 2, Adreno 740, Android 15)
+- [x] The Binding of Isaac: Afterbirth+ · `010021C000B6A000` · playable · v524288 OnePlus 11 CPH2449 (Snapdragon 8 Gen 2, Adreno 740, Android 15) · ported by @randall-liao
 - [ ] The Binding of Isaac: Rebirth · `01009BC00C38A000` · 1.0
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · 1.0.0
 - [x] The Great Ace Attorney Chronicles · `0100D7F00FAAA000` · wip · v0 OPPO Pad OPD2101 (Snapdragon 870, Adreno 650, Android 15) · ported by @qzj112223
@@ -203,8 +203,9 @@ the author of the commit that introduced them.
 - [ ] The Rogue Prince of Persia · `01008D9022462000` · 1.1.0 · 60 fps
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000` · playable · base game 1.0.0 · 60 fps · played by touch · ported by @shirai91
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000` · playable · update 1.0.4 · 60 fps · ported by @shirai91
-- [x] Toy Story 3 Complete Edition · `01001DC025BC4000` · playable · v196608 Samsung Galaxy S23 Ultra SM-S918B (Snapdragon 8 Gen 2, Adreno 740, Android 17)
+- [x] Toy Story 3 Complete Edition · `01001DC025BC4000` · playable · v196608 Samsung Galaxy S23 Ultra SM-S918B (Snapdragon 8 Gen 2, Adreno 740, Android 17) · ported by @christianoguedes
 - [ ] Trails in the Sky 2nd Chapter · `01007A2027548000` · 1.0.4
+- [x] Trails in the Sky the 2nd (Korean release) · `0100E8B028B54000` · playable · update 1.0.3a · 60 fps in the opening scene · tested on the Xiaomi 23117RK66C (Android 16, Adreno 750) with a Turnip Vulkan driver
 - [ ] TRIANGLE STRATEGY · `0100CC80140F8000` · 1.1.1 · 60 fps
 - [ ] TUNIC · `0100DA801624E000` · 1.0.3 · 60 fps
 - [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · playable · update 1.0.1 · 30 fps (60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · handheld 3D resolution by default, docked in the app menu · tested through the tutorials and battles · ported by @rospec14

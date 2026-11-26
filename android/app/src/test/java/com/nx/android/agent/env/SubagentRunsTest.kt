@@ -32,7 +32,7 @@ class SubagentRunsTest {
     private fun transcript(
         id: String,
         prompt: String,
-        spawnedAt: Long,
+        lastWriteAt: Long,
         runIndex: Int = 1,
         interrupted: Boolean = false,
         messages: List<org.json.JSONObject> = emptyList(),
@@ -40,7 +40,7 @@ class SubagentRunsTest {
         agentId = id,
         prompt = prompt,
         messages = messages,
-        spawnedAt = spawnedAt,
+        lastWriteAt = lastWriteAt,
         runIndex = runIndex,
         interrupted = interrupted,
     )
@@ -120,7 +120,7 @@ class SubagentRunsTest {
         // 同一个 agent：第一次跑完了（一条记录），第二次正在跑（transcript 里两条 user 消息）
         val merged = SubagentRuns.merge(
             finished = listOf(finished("a", 10L, prompt = "first task")),
-            live = listOf(transcript("a", "first task", 20L, runIndex = 2)),
+            live = listOf(transcript("a", "first task", 200L, runIndex = 2)),
             calls = emptyList(),
         )
         assertEquals(2, merged.size)
@@ -132,7 +132,7 @@ class SubagentRunsTest {
     fun `a continued run shows its own id of the run`() {
         val merged = SubagentRuns.merge(
             finished = listOf(finished("a", 10L)),
-            live = listOf(transcript("a", "first task", 20L, runIndex = 2)),
+            live = listOf(transcript("a", "first task", 200L, runIndex = 2)),
             calls = emptyList(),
         )
         assertEquals(2, merged.map { it.runId }.distinct().size)
@@ -167,7 +167,7 @@ class SubagentRunsTest {
         // 第一次运行（已完成）+ 第二次运行（续跑，正在跑）
         val runs = SubagentRuns.merge(
             finished = listOf(finished("a", 10L, prompt = "first task")),
-            live = listOf(transcript("a", "first task", 20L, runIndex = 2)),
+            live = listOf(transcript("a", "first task", 200L, runIndex = 2)),
             calls = emptyList(),
         )
         val link = SubagentRuns.link(

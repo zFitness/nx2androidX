@@ -94,6 +94,48 @@ class PackProfileTest(unittest.TestCase):
         self.assertEqual(fingerprint, 'abc123')
         self.assertTrue(found)
 
+    def test_the_drift_path_uses_the_imported_profile_the_re_port_would_use(self):
+        """档案漂移时重建用导入层的那份：完整重移植用的也是它（它把导入的档案拷进 dm/games）。
+
+        包里那份是上一次重建用过的快照，可能已经旧了：档案改了而包里那份没跟着改时，
+        重建出来的运行库就少了那份改动（OCTOPATH TRAVELER II 的区域上限 game_args 就在 game.tsv 里，
+        少了它游戏在 nninitStartup 里要 62 GB 的引擎区域，手机的别名区域给不了）。"""
+        from porter import runtime_update as ru
+        pack_copy = self.pack / 'profile' / self.tid
+        pack_copy.mkdir(parents=True)
+        (pack_copy / 'game.tsv').write_text('stale', encoding='utf-8')
+        layer = Path(os.environ['NX2A_HOME']) / 'profiles' / self.tid
+        layer.mkdir(parents=True)
+        # 包内、工作区三份、导入层都有可读的档案，谁都不是包里记着的那份指纹
+        def fingerprint(directory):
+            if Path(directory) == layer: return 'layer'
+            if Path(directory) == pack_copy: return 'pack'
+            return 'workspace'
+        with patch.object(ru, 'profile_fingerprint', side_effect=fingerprint):
+            candidate, fingerprint_found, found = ru.find_profile(self.pack, self.tid, expected='other',
+                                                                   allow_drift=True)
+        self.assertEqual(candidate, layer)
+        self.assertEqual(fingerprint_found, 'layer')
+        self.assertTrue(found)
+
+    def test_the_drift_path_falls_back_to_the_first_candidate_without_an_imported_profile(self):
+        from porter import runtime_update as ru
+        pack_copy = self.pack / 'profile' / self.tid
+        pack_copy.mkdir(parents=True)
+        (pack_copy / 'game.tsv').write_text('stale', encoding='utf-8')
+        layer = Path(os.environ['NX2A_HOME']) / 'profiles' / self.tid
+        # 导入层没有这份档案（玩家没导入过）：包里那份就是现在唯一的一份
+        def fingerprint(directory):
+            if Path(directory) == layer: return None
+            if Path(directory) == pack_copy: return 'pack'
+            return 'workspace'
+        with patch.object(ru, 'profile_fingerprint', side_effect=fingerprint):
+            candidate, fingerprint_found, found = ru.find_profile(self.pack, self.tid, expected='other',
+                                                                   allow_drift=True)
+        self.assertEqual(candidate, pack_copy)
+        self.assertEqual(fingerprint_found, 'pack')
+        self.assertTrue(found)
+
 
 if __name__ == '__main__':
     unittest.main()

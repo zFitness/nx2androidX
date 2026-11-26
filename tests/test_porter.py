@@ -434,9 +434,9 @@ class DataPack(unittest.TestCase):
             # the app's mode: the shipped font stays where it lies (the payload), so the pack does not carry it
             app = SimpleNamespace(o=SimpleNamespace(shared_font=None, app=True), package='org.nx2a.test', data_dir=lambda: t / 'out-data')
             env, files = phone_port.PhonePort.shared_font(app)
-            self.assertEqual(env, [f'DM_SHARED_FONT={pipeline.SHARED_CJK}']); self.assertEqual(files, {})
+            self.assertEqual(env, [f'DM_SHARED_FONT={phone_port.SHARED_CJK}']); self.assertEqual(files, {})
             # the player's own font wins: it goes in the pack, and the host reads it from there
-            mine = t / 'mine.ttf'; shutil.copyfile(pipeline.SHARED_CJK, mine)
+            mine = t / 'mine.ttf'; shutil.copyfile(phone_port.SHARED_CJK, mine)
             own = SimpleNamespace(o=SimpleNamespace(shared_font=mine, app=True), package='org.nx2a.test', data_dir=lambda: t / 'out-data')
             env, files = phone_port.PhonePort.shared_font(own)
             self.assertEqual(env, [f'DM_SHARED_FONT={t / "out-data"}/standard.ttf']); self.assertEqual(files, {'standard.ttf': mine})

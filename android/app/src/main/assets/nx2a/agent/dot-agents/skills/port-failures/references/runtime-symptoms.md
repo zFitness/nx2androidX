@@ -268,7 +268,7 @@ Upstream only, not in this fork yet:
 ## This fork's own cases
 
 These are this product's own: a case worked out on a phone, with the fix on a branch under
-`case/`. The index carries them with the source `nx2androidX` - `kb_search.py --source
+`case/`. The index carries them with the source `nx2androidX` - `memory_search.py search --source
 nx2androidX` finds them, and `--symptom` and `--layer` narrow them like the upstream's.
 A case whose fix is still only in a case file says so: it is a case without a branch yet.
 

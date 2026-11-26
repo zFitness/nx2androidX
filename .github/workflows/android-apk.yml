@@ -77,6 +77,14 @@ jobs:
         run: |
           python -m pip install -r requirements.txt
           python -m unittest discover tests
+      - name: the search's model
+        # The static embedding model of the local search (the semantic half of the ranking). It is published
+        # as a release of a PUBLIC repository (zFitness/public-dist), so this needs no secret and no token:
+        # the build's own GH_TOKEN (below) is only there to lift the API's rate limit. The step fails if the
+        # download fails: a release that ships without the model would quietly ship the lexical half alone.
+        run: python devtools/fetch_memory_model.py
+        env:
+          GH_TOKEN: ${{ github.token }}   # not needed for a public repository: it only lifts the API's rate limit
       - name: the app
         run: |
           export DOTNET="$(which dotnet)"

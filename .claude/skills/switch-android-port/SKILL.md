@@ -79,8 +79,9 @@ Details and the cases behind them: `references/playbook.md`.
 2. Check that CPU replay and GPU work overlap (`DM_NVN_SEQ=N` traces the render thread); submit in pieces (`DM_VK_CB_DRAWS`) or `DM_NVN_ASYNC=1`.
 3. Cut passes and reuse descriptor sets before anything else in the backend.
 4. Pacing problems: `adaptive frame rate` and `the game sets present interval` lines; pin a rate with `env DM_FPS_PIN=40` before blaming the governor.
-5. Hitches left: sample per-thread CPU from `/proc/<pid>/task/*/stat`.
-6. GPU profile with `DM_VK_PASS_TIMES=1`; when load/store A/B saves under 1 ms the cost is the game's own shading, and the remaining levers lower quality: the user's call.
+5. **A rate that is not the one the profile names** is usually a row, not a bug: `fps_target` in `game.tsv`, the `pacing` preset in `android.tsv`, the pack's `env.txt` and the player's rate pin override each other in that order (the table in `nx2android-dev/references/new-game-profile.md`). Read the log's `pacing:` line and `env.txt` first — Octopath Traveler II's `fps_target 60` ran at the game's 30 because its `android.tsv` says `pacing game`.
+6. Hitches left: sample per-thread CPU from `/proc/<pid>/task/*/stat`.
+7. GPU profile with `DM_VK_PASS_TIMES=1`; when load/store A/B saves under 1 ms the cost is the game's own shading, and the remaining levers lower quality: the user's call.
 
 ## Measurement traps
 

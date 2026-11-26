@@ -26,7 +26,15 @@ done
 die() { echo "android-apk: $*" >&2; exit 1; }
 
 command -v gh >/dev/null || die "the gh CLI is needed (the rootfs comes from the nixport payload release)"
-command -v python3 >/dev/null || die "python3 is needed"
+# The scripts need Python 3.11+: macOS's /usr/bin/python3 is 3.9, whose TLS stack stalls on the Debian index.
+# The first interpreter that is new enough wins: the Homebrew names, then whatever python3 is.
+py=
+for c in python3.12 python3.11 python3.13 python3.14 python3; do
+    command -v "$c" >/dev/null || continue
+    if "$c" -c 'import sys; raise SystemExit(sys.version_info < (3, 11))' 2>/dev/null; then py=$c; break; fi
+done
+[[ -n $py ]] || die "Python 3.11+ is needed (macOS's own python3 is 3.9): install one or put it first on PATH"
+echo ">> python: $py ($("$py" -c 'import platform; print(platform.python_version())'))"
 
 # The Gradle build needs a JDK the Android plugin can make its image with (jlink): a GraalVM fails
 # there ("Failed to transform core-for-system-modules.jar"). Android Studio's own runtime is the one
@@ -52,18 +60,18 @@ fi
 
 # 2. the build tools
 echo ">> the build tools"
-python3 "$here/fetch_debs.py" --out "$cache/debs" --cache "$cache/.deb-cache" glslc >/dev/null
-python3 "$here/build_toolchain.py" --out "$cache/toolchain" --cache "$cache" --debs "$cache/debs"
+"$py" "$here/fetch_debs.py" --out "$cache/debs" --cache "$cache/.deb-cache" glslc >/dev/null
+"$py" "$here/build_toolchain.py" --out "$cache/toolchain" --cache "$cache" --debs "$cache/debs"
 
 # 3. the payload the app ships
 echo ">> the app's assets"
 if [[ -n $payload_flag ]]; then
     echo "   skipped (--no-payload): the phone must already have the environment"
 else
-    python3 "$here/build_assets.py" --out "$cache/assets" --apk-out "$cache/apk-assets" \
+    "$py" "$here/build_assets.py" --out "$cache/assets" --apk-out "$cache/apk-assets" \
         --payload "$cache/payload-arm64.tar.gz" --toolchain "$cache/toolchain"
     # nx_extract for the phone, built here (the phone's .NET SDK cannot): after the assets, which it joins
-    python3 "$here/build_nx_extract.py" || echo "   (no nx_extract for the phone: the .NET SDK is missing)"
+    "$py" "$here/build_nx_extract.py" || echo "   (no nx_extract for the phone: the .NET SDK is missing)"
     # The phone runs the C# tools but cannot build them: without them it would try to build the shader
     # translator itself and wait for a network that is not there.
     for t in "$cache/assets/tool/tools/nx_extract/nx_extract" "$cache/assets/tool/tools/dmsh_xlate/dmsh_xlate.dll"; do
@@ -76,13 +84,13 @@ fi
 # for the data pack (the host hands the loader the folder it sits in, and the loader looks the hooks up there).
 # The phone has no C++ compiler, so it is built here. Not part of the payload: the app needs it either way.
 echo ">> the Vulkan driver loader"
-python3 "$here/build_adrenotools.py" --out "$cache/assets/tool/tools/adrenotools" --jni-out "$cache/jniLibs/arm64-v8a" \
+"$py" "$here/build_adrenotools.py" --out "$cache/assets/tool/tools/adrenotools" --jni-out "$cache/jniLibs/arm64-v8a" \
     || die "the driver loader did not build: a Vulkan driver the player picks would not load"
 [[ -f "$cache/jniLibs/arm64-v8a/libadrenotools.so" ]] || die "the driver loader is not in the app's native library folder"
 
 # Finalize after the C# tools and hooks have joined the tree: the archive is packed again, so it holds them.
 if [[ -z $payload_flag ]]; then
-    python3 "$here/build_assets.py" --out "$cache/assets" --apk-out "$cache/apk-assets" --finalize
+    "$py" "$here/build_assets.py" --out "$cache/assets" --apk-out "$cache/apk-assets" --finalize
 fi
 
 # 4. the APK
@@ -91,7 +99,7 @@ echo ">> the APK"
 # would leave the old bytes in it (a 380 MB APK that holds 215 MB of content).
 rm -f "$root/android/app/build/outputs/apk/$variant/"*.apk
 cd "$root/android"
-./gradlew ":app:assemble$(python3 -c "print('Debug' if '$variant' == 'debug' else 'Release')")" $payload_flag --console=plain
+./gradlew ":app:assemble$("$py" -c "print('Debug' if '$variant' == 'debug' else 'Release')")" $payload_flag --console=plain
 apk=$(ls -t "$root/android/app/build/outputs/apk/$variant"/*.apk | head -1)
 echo
 echo "APK: $apk ($(du -m "$apk" | cut -f1) MB)"

@@ -63,8 +63,20 @@ a line is a key press ("A", "Down+Right", "T0.5x0.5" a touch, "B~0.15" a longer 
 <n>", "env KEY=VALUE" and more (the host's own list: `nxnative/dm/host/hle_hid.c`). The file outlives the run:
 only the lines appended from now on are read, so a walkthrough can drive the game step by step.
 
-`adb shell screencap -p` is the picture (the app's window with the game in it). The host's own "shot" line is a
-no-op on Android (the Vulkan backend has no counterpart of the Metal one).
+`adb shell screencap -p` is the picture (the app's window with the game in it); a frame of the game alone is the section below.
+
+## A frame of the game alone
+
+`adb shell screencap -p` (and `device_cli shot`) is the whole window: the game plus the app's drawer, its perf line and the menu button. A picture of the game for the repository is a frame of the swapchain instead, which the Vulkan backend writes itself:
+
+```
+env DM_VK_SHOTS=1        # a ctl line, or the same row in env.txt
+# → <DM_VK_SHOT_DIR, else DM_ROOT>/frame_000123.ppm — one PPM per present, numbered by frame
+```
+
+`DM_VK_SHOT=<n>[,<n>…]` picks single presents instead of a run of them. The file lands in the app's own folder: pull it as the app (`run-as com.nx.android`), and convert it with `devtools/ppm2png.py` (then resize and save as JPEG: the repository's pictures are 1280×720).
+
+The host's `shot <path>` line is a **no-op on Android** — `dm_gfx_shot_at` is an empty stub in `dm/android/gfx_common.c` — though the ctl reader still logs `screenshot of the next frame → <path>`. Nothing appears at that path; a frame lying in the app's folder is a leftover of an earlier `DM_VK_SHOTS` run, so check its date before using it.
 
 ## The headless host
 

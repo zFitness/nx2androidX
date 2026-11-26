@@ -86,7 +86,21 @@ class AdbWire(private val key: RSAPrivateCrtKey, private val tls: Tls, private v
     class PairingRejected : Exception("pairing code rejected")
 
     /** Runs [command] through adbd's "exec:" service and returns what it printed. */
-    fun exec(host: String, port: Int, command: String, timeoutMs: Int = 15_000): String {
+    fun exec(host: String, port: Int, command: String, timeoutMs: Int = 15_000): String =
+        exec(host, port, command, null, {}, timeoutMs)
+
+    /**
+     * Runs [command] and feeds [input] to its stdin: the child of an "exec:" service reads its stdin from
+     * the socket, which is how adb's own streamed install fills `cmd package install -S`. Returns what the
+     * command printed (its stdout and stderr share the socket). The input goes until it is done (a file's
+     * end, or a tar's end-of-archive).
+     *
+     * [onSent] reports how much has gone down the wire, because a transfer that takes minutes is not a
+     * silence. Every message the app sends is answered by an OKAY, so the sending walks in lockstep with the
+     * reading; the child's own output is interleaved with those.
+     */
+    fun exec(host: String, port: Int, command: String, input: InputStream?,
+             onSent: (Long) -> Unit, timeoutMs: Int = 15_000): String {
         val plain = Socket()
         plain.connect(InetSocketAddress(host, port), timeoutMs)
         plain.soTimeout = timeoutMs
@@ -102,23 +116,48 @@ class AdbWire(private val key: RSAPrivateCrtKey, private val tls: Tls, private v
             val inp = DataInputStream(s.inputStream)
             val out = s.outputStream
             var m = readMsg(inp)
+            // the peer's CNXN says how big a payload it takes: never send it more than that
+            var peerMax = MAX_DATA
             while (m.cmd != CNXN) {
                 if (m.cmd == AUTH) throw IOException("adbd asked for AUTH: this key is not paired")
+                if (m.cmd == STLS) throw IOException("adbd answered STLS twice")
+                peerMax = m.arg1.takeIf { it in 1024..MAX_DATA } ?: peerMax
                 m = readMsg(inp)
             }
+            peerMax = m.arg1.takeIf { it in 1024..MAX_DATA } ?: peerMax
             val localId = 1
             writeMsg(out, OPEN, localId, 0, "exec:$command\u0000".toByteArray())
             val result = ByteArrayOutputStream()
             var remoteId = 0
+            var sending = input != null
+            var sent = 0L
+            val chunk = ByteArray(minOf(peerMax, MAX_DATA, 64 * 1024))
             while (true) {
                 m = readMsg(inp)
                 when (m.cmd) {
-                    OKAY -> remoteId = m.arg0
+                    OKAY -> {
+                        if (remoteId == 0) remoteId = m.arg0
+                        // an OKAY lets the next chunk go (the open's OKAY the first one, then one per WRTE);
+                        // when the input is done there is nothing to send and the answers just come
+                        if (sending) {
+                            val n = input!!.read(chunk, 0, chunk.size)
+                            if (n < 0) {
+                                sending = false
+                            } else {
+                                writeMsg(out, WRTE, localId, remoteId, chunk.copyOf(n))
+                                sent += n
+                                onSent(sent)
+                            }
+                        }
+                    }
                     WRTE -> { result.write(m.data); writeMsg(out, OKAY, localId, m.arg0, ByteArray(0)) }
-                    CLSE -> { if (remoteId != 0) writeMsg(out, CLSE, localId, remoteId, ByteArray(0)); break }
+                    CLSE -> {
+                        // the child is done; its answer may have come before the last acks
+                        if (remoteId != 0) writeMsg(out, CLSE, localId, remoteId, ByteArray(0))
+                        return String(result.toByteArray(), Charsets.UTF_8)
+                    }
                 }
             }
-            return String(result.toByteArray(), Charsets.UTF_8)
         }
     }
 

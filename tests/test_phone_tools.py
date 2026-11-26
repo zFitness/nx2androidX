@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -420,14 +421,15 @@ class UpstreamPr(unittest.TestCase):
         self.assertEqual('network', unreachable[0]['kind'])
 
 
-class KbSearch(unittest.TestCase):
-    """The knowledge search: the upstream cases, the knowledge documents, and the phone's own cases.
+class MemorySearch(unittest.TestCase):
+    """The knowledge search: the upstream cases, the knowledge documents, the closed issues and
+    the phone's own cases, in one index.
 
-    The script is the one that ships with the App (it lives in the assistant's skill folder), and
-    it is run the way the assistant runs it.
+    The tool is the one that ships with the App (it lives in the tool tree), and it is run the
+    way the assistant runs it.
     """
 
-    SKILL = (ROOT / 'android/app/src/main/assets/nx2a/agent/dot-agents/skills/port-failures')
+    TOOL = ROOT / 'phone_tools' / 'memory_search.py'
 
     DOC = """# A document
 
@@ -439,13 +441,28 @@ fallback character and the lookup dereferenced a null.
 The port stops at a stage when the shader split finds too few shaders.
 """
 
+    # The blind spots of a keyword search: the words a player uses and the words
+    # the corpus uses for the same thing. Each row is a question that used to
+    # find nothing (or the wrong thing), and the word that carries it over.
+    BLIND_SPOTS = (
+        ('the game freezes after the intro', 'freeze'),
+        ('it hangs on the loading screen', 'hang'),
+        ('it stutters every few seconds', 'stutter'),
+        ('laggy gameplay', 'stutter'),
+        ('the controls do not respond', 'controller'),
+        ('gamepad not detected', 'controller'),
+        ('gyro aiming does not work', 'gyroscope'),
+        ('the game is capped at 30 fps', 'pin'),
+        ('the game will not start', 'boot'),
+        ('the screen is garbled', 'garbled'),
+    )
+
     def search(self, *args, **kwargs):
         """The search, run as the assistant runs it."""
         env = dict(kwargs.pop('env', {}), PYTHONUTF8='1')
         kwargs.setdefault('encoding', 'utf-8')
-        return subprocess.run([sys.executable, str(self.SKILL / 'scripts/kb_search.py'),
-                               *[str(a) for a in args]], capture_output=True, text=True,
-                              env=env, **kwargs)
+        return subprocess.run([sys.executable, str(self.TOOL), *args],
+                              capture_output=True, text=True, env=env, **kwargs)
 
     def docs(self, text=None, name='runtime-symptoms.md'):
         """A folder with one knowledge document in it."""
@@ -462,61 +479,110 @@ The port stops at a stage when the shader split finds too few shaders.
         (folder / 'case-index.tsv').write_text('\n'.join([header, *rows]))
         return folder
 
+    def build(self, public=None, player=None, issues=None, extra=()):
+        """An index built from the given folders, and its directory."""
+        index_dir = Path(tempfile.mkdtemp(prefix='nx2a_search_')) / 'index'
+        args = ['build', '--index', str(index_dir)]
+        if public:
+            args += ['--public', str(public)]
+        if player:
+            args += ['--player', str(player)]
+        if issues:
+            args += ['--issues', ','.join(str(i) for i in issues)]
+        result = self.search(*args, *extra)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return index_dir
+
     def test_a_document_is_found_by_section(self):
-        result = self.search('--docs', 'shared font glyph', '--docs-dir', self.docs())
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), 'shared font glyph')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('The crash', result.stdout)
         self.assertIn('lines', result.stdout)          # where the section is
         self.assertIn('0x25a1', result.stdout)         # a snippet of it
 
     def test_a_section_is_printed_as_it_is(self):
-        result = self.search('--docs', '--section', 'The crash', '--docs-dir', self.docs())
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), '--section', 'The crash')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('The crash', result.stdout)
         self.assertIn('it has no glyph for the', result.stdout)
 
     def test_a_section_that_is_not_there_says_so(self):
-        result = self.search('--docs', '--section', 'Nothing', '--docs-dir', self.docs())
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), '--section', 'Nothing')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('no section titled', result.stdout)
 
-    def test_a_loose_hit_is_marked(self):
-        result = self.search('--docs', 'shared font glyph nothing', '--docs-dir', self.docs())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('loose', result.stdout)          # not every word is there
-
     def test_nothing_found_points_at_the_other_corpus(self):
-        result = self.search('--docs', 'qwertyuiop', '--docs-dir', self.docs())
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), 'qwertyuiop')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('nothing found', result.stdout)
-        self.assertIn('kb_search.py', result.stdout)   # the upstream cases may have it
+        self.assertIn('rewrite the question in english', result.stdout)
 
     def test_the_answer_stays_small(self):
-        result = self.search('--docs', 'font', '--docs-dir', self.docs())
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), 'font')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertLess(len(result.stdout), 4000)
+
+    def test_a_case_carries_its_number(self):
+        index_dir = self.build(public=self.index())
+        result = self.search('search', '--index', str(index_dir), 'zero slack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('shirai91#419', result.stdout)   # the pull request number
+        self.assertIn('[pr]', result.stdout)           # which corpus it came from
+
+    def test_a_case_entry_with_a_stage_keeps_its_fields(self):
+        """An entry that carries the stage of the port's life is still an entry: the case corpus
+        has to hand out its status, cause and fix (the entry format grew the stage in 2026-11-25
+        and the search lost every field of the new format)."""
+        folder = Path(tempfile.mkdtemp(prefix='nx2a_player_'))
+        case = folder / '010078D000F88000'
+        case.mkdir(parents=True)
+        (case / 'spec.md').write_text(
+            '# DRAGON BALL XENOVERSE 2 (010078D000F88000) case file\n\n'
+            '## Runtime problems\n\n'
+            '### 2026-11-25 the guest crashes with SIGSEGV (status: pending approval) [stage 2]\n'
+            'Symptom: the game is gone five seconds in\n'
+            'Cause: a null this pointer in the guest NVN client library\n'
+            'Proposed fix: the movie module needs the queue before the texture\n'
+            'Evidence: the crash line in log.txt\n'
+            'Plan:\n- [ ] 1. one change - verify: a run that lasts\n')
+        index_dir = self.build(player=folder)
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'case', 'SIGSEGV')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('status: pending approval', result.stdout)
+        self.assertIn('a null this pointer', result.stdout)
+        self.assertIn('the movie module needs the queue', result.stdout)
 
     def test_the_cases_are_capped(self):
         rows = tuple(f'shirai91\t{n}\tMERGED\tprofile\tcrash\thost\tcore\tyes\t\t\t\t\t'
                      f'fix(host): case {n}\tsummary {n}\thttps://example/{n}' for n in range(40))
-        result = self.search('crash', '--index', self.index(rows) / 'case-index.tsv')
+        index_dir = self.build(public=self.index(rows))
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'pr', 'crash')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('40 cases match', result.stdout)
+        self.assertIn('40 matched', result.stdout)
         self.assertIn('12 shown', result.stdout)
 
     def test_the_json_gives_the_same_count_as_the_text(self):
         rows = tuple(f'shirai91\t{n}\tMERGED\tprofile\tcrash\thost\tcore\tyes\t\t\t\t\t'
                      f'fix(host): case {n}\tsummary {n}\thttps://example/{n}' for n in range(40))
-        path = self.index(rows) / 'case-index.tsv'
-        text = self.search('crash', '--index', path)
-        out = json.loads(self.search('crash', '--index', path, '--json').stdout)
+        index_dir = self.build(public=self.index(rows))
+        text = self.search('search', '--index', str(index_dir), '--corpus', 'pr', 'crash')
+        out = json.loads(self.search('search', '--index', str(index_dir), '--corpus', 'pr',
+                                      'crash', '--json').stdout)
         self.assertEqual(40, out['count'])
         self.assertEqual(12, out['shown'])
-        self.assertEqual(12, len(out['results']))
-        self.assertIn('40 cases match', text.stdout)
+        self.assertEqual(12, len(out['hits']))
+        self.assertIn('40 matched', text.stdout)
 
     def test_the_shipped_documents_are_searchable(self):
-        result = self.search('--docs', 'shared font')
+        index_dir = self.build(public=(ROOT / 'android/app/src/main/assets/nx2a/agent/'
+                                       'dot-agents/skills/port-failures/references'))
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'doc',
+                             'shared font')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('shared fonts', result.stdout.lower())
 
@@ -531,10 +597,184 @@ The port stops at a stage when the shader split finds too few shaders.
             'Symptom: the screen stays black after the logo.\n\n'
             'Cause: the shaders were not in the bundle.\n\n'
             'Fix: capture them and port again.\n')
-        result = self.search('--local', 'black screen', env={'NX2A_HOME': str(home)})
+        index_dir = self.build(player=home)
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'case',
+                             'black screen')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Super Game', result.stdout)
-        self.assertIn('shaders', result.stdout)
+        self.assertIn('0100A3501946E000', result.stdout)   # the title id
+        self.assertIn('shaders', result.stdout)             # the cause and the fix
+        self.assertIn('fixed', result.stdout)               # the status
+
+    def test_a_chinese_question_is_bridged(self):
+        home = Path(tempfile.mkdtemp(prefix='nx2a_home_'))
+        case = home / 'gamespec' / '0100A3501946E000'
+        case.mkdir(parents=True)
+        (case / 'spec.md').write_text(
+            '# Super Game (0100A3501946E000) case file\n\n'
+            '## Problems\n\n'
+            '### 2026-11-23 the black screen (status: fixed)\n\n'
+            'Symptom: the screen stays black after the logo.\n\n'
+            'Cause: the shaders were not in the bundle.\n\n'
+            'Fix: capture them and port again.\n')
+        index_dir = self.build(player=home)
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'case', '黑屏')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('0100A3501946E000', result.stdout)
+
+    def test_the_filter_picks_the_field(self):
+        index_dir = self.build(public=self.index())
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'pr',
+                             '--symptom', 'crash', 'slack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('shirai91#419', result.stdout)
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'pr',
+                             '--symptom', 'memory', 'slack')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('shirai91#419', result.stdout)
+
+    def test_an_index_is_built_when_there_is_none(self):
+        index_dir = Path(tempfile.mkdtemp(prefix='nx2a_search_')) / 'index'
+        result = self.search('search', '--index', str(index_dir), '--public',
+                             str(self.docs()), 'shared font')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('building it', result.stdout)
+        self.assertIn('The crash', result.stdout)
+
+    def test_the_command_the_documents_show_works(self):
+        """The assistant writes the command it was told to write.
+
+        The first real session on the phone failed every search with a usage
+        error: the documents showed "memory_search.py --corpus case 'black
+        screen'" and the tool wanted the verb "search" in front. The verb is
+        optional now, and this test keeps the documented form working.
+        """
+        index_dir = self.build(public=self.docs())
+        result = self.search('--index', str(index_dir), 'shared font')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('The crash', result.stdout)
+        self.assertNotIn('invalid choice', result.stderr)
+
+    def test_the_verb_is_still_accepted(self):
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir), 'shared font')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('The crash', result.stdout)
+
+    def test_a_one_word_the_corpus_spell_with_a_space_is_found(self):
+        """'framerate' in the question, 'frame rate' in the corpus.
+
+        The alias table carries the bridge between the two spellings; without
+        it the query found nothing at all (the corpus never writes "framerate").
+        """
+        folder = self.docs(text="""# A document
+
+## The pacing
+The frame rate is the wrong number for a driver comparison: the pacing and the
+frame rate pin both move with the driver.
+""")
+        index_dir = self.build(public=folder)
+        result = self.search('search', '--index', str(index_dir), 'framerate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('The pacing', result.stdout)
+
+    def test_the_questions_a_player_asks_are_found(self):
+        """The words a player uses and the words the corpus uses.
+
+        Each question here found nothing before: the corpus writes "freeze",
+        "stutter", "controller", "boot" and the player writes "freezes",
+        "stutters", "controls", "will not start". The alias tables carry the
+        question over. The document below holds the base forms only, so a
+        question that matched directly would not prove anything.
+        """
+        text = """# A document
+
+## The frozen game
+The game can freeze when the present wait is counted as the frame work.
+
+## The stutter
+A stutter of one second each time an asset loads, and the audio is missing.
+
+## The controller
+A controller that is not read: the gyroscope of the pad is ignored, and the
+aiming follows the phone instead.
+
+## The frame rate
+The rate is capped by the pin of the profile, and the game will not start
+without the boot stage.
+
+## The garbled picture
+A garbled picture on the screen.
+"""
+        index_dir = self.build(public=self.docs(text=text))
+        for query, expected in self.BLIND_SPOTS:
+            result = self.search('search', '--index', str(index_dir), query)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('(nothing found)', result.stdout, query)
+            self.assertIn(expected.lower(), result.stdout.lower(), query)
+
+    def test_the_chinese_words_a_player_uses_are_found(self):
+        """The same, from the player's side of the language.
+
+        The corpus is in english; these are the words the player writes and the
+        words the corpus writes instead.
+        """
+        text = """# A document
+
+## The stutter
+A stutter of one second each time an asset loads, and the audio is missing.
+
+## The frame rate
+The rate is capped by the pin of the profile.
+
+## The garbled picture
+A garbled picture on the screen.
+"""
+        index_dir = self.build(public=self.docs(text=text))
+        for query, expected in (('花屏', 'garbled'), ('锁帧', 'pin'),
+                                ('没有声音', 'audio'), ('很卡', 'stutter')):
+            result = self.search('search', '--index', str(index_dir), query)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('(nothing found)', result.stdout, query)
+            self.assertIn(expected.lower(), result.stdout.lower(), query)
+
+    def test_a_filter_without_a_question_lists_what_it_matches(self):
+        """'Every upstream PR about performance' is a question the filter answers.
+
+        The assistant asked for it exactly this way (search --symptom perf)
+        and got nothing back - a filter without a question is a browse, not a
+        failed search.
+        """
+        index_dir = self.build(public=self.index())
+        result = self.search('search', '--index', str(index_dir), '--corpus', 'pr',
+                             '--symptom', 'crash')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('readable zero slack', result.stdout)
+        self.assertNotIn('nothing to search for', result.stdout)
+
+    def test_the_nothing_to_search_notice_is_readable(self):
+        """The notice goes to stdout: the caller pipes the output."""
+        index_dir = self.build(public=self.docs())
+        result = self.search('search', '--index', str(index_dir))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('nothing to search for', result.stdout)
+        self.assertNotIn('nothing to search for', result.stderr)
+
+    def test_a_stale_index_is_rebuilt_and_says_so(self):
+        """The sources changed (the app updated, a case was closed).
+
+        Searching a stale index answers from the old documents, so the index is
+        rebuilt - and the notice goes to stdout, because the caller pipes the
+        output and a warning on stderr is a warning nobody reads.
+        """
+        folder = self.docs()
+        index_dir = self.build(public=folder)
+        time.sleep(1.1)
+        (folder / 'runtime-symptoms.md').write_text('# A document\n\n## The crash\nchanged\n')
+        result = self.search('search', '--index', str(index_dir), '--public', str(folder),
+                             'changed')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('rebuilding it', result.stdout)
+        self.assertIn('changed', result.stdout)
 
 
 class GamespecPack(unittest.TestCase):

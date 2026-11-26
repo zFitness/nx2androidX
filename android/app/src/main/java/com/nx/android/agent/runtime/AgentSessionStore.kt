@@ -22,10 +22,13 @@ class AgentSessionStore internal constructor(private val dir: File) {
 
     /** 玩家此刻所在的引擎会话文件；还没有过会话就是 null。 */
     fun activePath(): String? =
-        activeFile.takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotBlank() }
+        activeFile.takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotBlank() }?.takeIf { it.endsWith(".jsonl") }
 
     /** 指针落到某个引擎会话文件上。 */
     fun setActive(path: String) {
+        // 引擎有时报来的是会话的 id（`s-…`），不是文件路径：那个值解析不出会话 id，
+        // 指针存了它，子 Agent 的面板就再也找不到这一局的 transcript。指针只收文件。
+        if (!path.endsWith(".jsonl")) return
         dir.mkdirs()
         activeFile.writeText(path)
     }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The game as a standalone APK: the host built for a NativeActivity of its own, and the APK that ties it to its data folder.
 
-The app's mode runs the game itself: the host carries the player's JNI entry (libdmplay.so) and the app drives it. A
+The app's mode runs the game itself: the host carries the player's JNI entry (libdmhost.so) and the app drives it. A
 standalone APK has no app: the host is the upstream's APK front (libdmhost.so, dm/android/front_android.c) and the game
 reads its files from its own external directory (/storage/emulated/0/Android/data/<package>/files), which is where the
 data is put before the player installs the APK.
