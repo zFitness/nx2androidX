@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Layers
@@ -578,6 +579,17 @@ private fun PerfRows(pin: Int, onPick: (RatePin) -> Unit, rateSupported: Boolean
     ToggleRow(Icons.Filled.Tv, stringResource(R.string.drawer_docked), stringResource(R.string.drawer_docked_hint), docked) {
         docked = it; Native.menuSet(4, if (it) 1.0 else 0.0)
     }
+    // 超分：老宿主没有这个能力位，整组不显示（能力位随数据包里的宿主走）
+    val srSupported = remember { (runCatching { Native.frontCaps() }.getOrDefault(0) and Native.FRONT_CAPS_SR) != 0 }
+    if (srSupported) {
+        var sr by remember { mutableStateOf(Native.menuGet(8) != 0) }
+        var sharpness by remember { mutableIntStateOf(Native.menuGet(16)) }
+        ToggleRow(Icons.Filled.HighQuality, stringResource(R.string.drawer_sr), stringResource(R.string.drawer_sr_hint), sr) {
+            sr = it; Native.menuSet(8, if (it) 1.0 else 0.0)
+        }
+        SharpnessRow(sharpness, sr) { sharpness = it; Native.menuSet(16, it.toDouble()) }
+        Hint(stringResource(R.string.drawer_sharp_hint))
+    }
 }
 
 /** 提频三档的词（顺序与 GpuTurbo.MODES 一致） */
@@ -847,6 +859,22 @@ private fun OpacityRow(opacity: Int, onChange: (Int) -> Unit) {
         }
         Slider(value = opacity.toFloat(), valueRange = 10f..100f,
                onValueChange = { onChange(it.toInt()) },
+               modifier = Modifier.padding(start = 30.dp))
+    }
+}
+
+/** 超分的锐度：整 25% 一档（与宿主一致），超分关时置灰但保留值，下一次打开仍然算数 */
+@Composable
+private fun SharpnessRow(sharpness: Int, enabled: Boolean, onChange: (Int) -> Unit) {
+    Column {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Filled.Tune, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(stringResource(R.string.drawer_sharp), style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            Text("$sharpness%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Slider(value = sharpness.toFloat(), valueRange = 0f..100f, steps = 3, enabled = enabled,
+               onValueChange = { onChange((it / 25).toInt() * 25) },
                modifier = Modifier.padding(start = 30.dp))
     }
 }

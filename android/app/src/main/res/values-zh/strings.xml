@@ -245,6 +245,10 @@
     <string name="drawer_rate_row">帧率档位</string>
     <string name="drawer_rate_hint">游戏帧率常在 30–60 之间来回跳时，试试钉在 60；觉得游戏跑得太快时，改用 30。游戏自身限 30 的仍是 30。</string>
     <string name="drawer_docked_hint">开启后按电视的分辨率渲染，画面更清晰，也更耗电；关闭后帧率更高。</string>
+    <string name="drawer_sr">超级分辨率</string>
+    <string name="drawer_sr_hint">画面被放大到屏幕时用 SGSR 1.0 超分：边缘和文字更清晰，代价是多耗一点 GPU。</string>
+    <string name="drawer_sharp">锐度</string>
+    <string name="drawer_sharp_hint">只在超级分辨率开启时生效。</string>
     <string name="drawer_group_pad">手柄</string>
     <string name="drawer_group_motion">体感</string>
     <string name="drawer_group_display">画面</string>

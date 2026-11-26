@@ -10,9 +10,9 @@
 #include "dm_framegen.h"
 #include <android/input.h>
 
-int dm_menu_get(int what);   // front_player.c: the menu rows' current values (0 overlay, 1 opacity, 2 rumble, 4 docked)
+int dm_menu_get(int what);   // front_player.c: the menu rows' current values (0 overlay, 1 opacity, 2 rumble, 4 docked, 8 super resolution, 16 sharpness)
 void dm_menu_overlay_set(int); void dm_menu_opacity_set(int); void dm_menu_rumble_set(int);
-void dm_menu_mode_set(int); void dm_menu_edit_open(void);
+void dm_menu_mode_set(int); void dm_menu_sr_set(int); void dm_menu_sharp_set(int); void dm_menu_edit_open(void);
 void dm_present_sample(uint64_t out[5]);   // gfx_vk_present.c: the performance HUD's counters
 char *dm_menu_saves(void); void dm_menu_export(void); int dm_menu_import(const char *name);
 int dm_menu_export_note(char *out, int cap); int dm_menu_state(void);
@@ -158,6 +158,8 @@ Java_com_nx_android_game_Native_menuSet(JNIEnv *E, jclass c, jint what, jdouble 
     case 1: dm_menu_opacity_set((int)v); break;
     case 2: dm_menu_rumble_set((int)v); break;
     case 4: dm_menu_mode_set((int)v); break;
+    case 8: dm_menu_sr_set((int)v); break;
+    case 16: dm_menu_sharp_set((int)v); break;
     }
 }
 JNIEXPORT void JNICALL

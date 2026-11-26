@@ -246,6 +246,10 @@
     <string name="drawer_rate_row">Frame rate step</string>
     <string name="drawer_rate_hint">If the frame rate keeps bouncing between 30 and 60, try pinning it to 60; if the game runs faster than it should, pin it to 30. A game capped at 30 fps stays at 30.</string>
     <string name="drawer_docked_hint">Docked mode renders at the TV\'s resolution: a sharper picture that costs more power. Turn it off for a higher frame rate.</string>
+    <string name="drawer_sr">Super resolution</string>
+    <string name="drawer_sr_hint">Upscales the picture with SGSR 1.0 when the display is larger than the game\'s frame: sharper edges and text, at a little GPU cost.</string>
+    <string name="drawer_sharp">Sharpness</string>
+    <string name="drawer_sharp_hint">Only while super resolution is on.</string>
     <string name="drawer_group_pad">Gamepad</string>
     <string name="drawer_group_motion">Motion</string>
     <string name="drawer_group_display">Display</string>

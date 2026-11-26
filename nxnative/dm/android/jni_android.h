@@ -72,6 +72,7 @@ char *dm_pad_layout_json(void);              // the layout: the controls' places
 #define DM_FRONT_CAPS_PLAYER 1   // the player front end: the app draws the gamepad, the host draws no panel of its own
 #define DM_FRONT_CAPS_PERF 2    // the host counts the frames for the app's performance HUD (and draws no frame rate counter of its own any more)
 #define DM_FRONT_CAPS_EXTERNAL 4 // the host takes a second window: the game goes to an external display and the phone becomes the gamepad
+#define DM_FRONT_CAPS_SR 8       // the present pass has super resolution (settings.txt sr=/sharpness=; the drawer's Performance tab sets them)
 int dm_front_caps(void);
 
 #endif

@@ -16,6 +16,8 @@ object Native {
     const val FRONT_CAPS_PERF = 2
     /** 能力位：宿主能接第二个窗口（游戏到外接屏上，手机当手柄） */
     const val FRONT_CAPS_EXTERNAL = 4
+    /** 能力位：呈现通路带超分（性能页的「超级分辨率」与「锐度」，存进数据包的 settings.txt） */
+    const val FRONT_CAPS_SR = 8
 
     @JvmStatic external fun start(pack: String, internal: String, titleId: String?, dpi: Int, env: Array<String>, ctx: Context): Boolean
     @JvmStatic external fun setSurface(surface: Surface?)
@@ -95,7 +97,7 @@ object Native {
     /** 宿主现在的 GPU 提频档："0" / "1" / "auto" */
     @JvmStatic external fun gpuTurboGet(): String
 
-    /** 运行中抽屉的宿主菜单行（画面与操作/存档）：what 0 overlay 1 opacity 2 rumble 4 docked */
+    /** 运行中抽屉的宿主菜单行（画面与操作/存档）：what 0 overlay 1 opacity 2 rumble 4 docked 8 超分 16 锐度 */
     @JvmStatic external fun menuGet(what: Int): Int
     @JvmStatic external fun menuSet(what: Int, v: Double)
     @JvmStatic external fun menuState(): String

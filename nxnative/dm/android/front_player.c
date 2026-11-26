@@ -56,7 +56,18 @@ static ALooper *g_ilooper;   // the input thread's looper (the accelerometer's q
 static JavaVM *g_app_vm; static jobject g_app_act;   // the app's Activity: the notices to it, and the display's rotation for the motion
 
 // ---- the front end's capabilities: what this host can do (the app asks right after loading it) ----
-int dm_front_caps(void) { return DM_FRONT_CAPS_PLAYER | DM_FRONT_CAPS_PERF | DM_FRONT_CAPS_EXTERNAL; }   // the player front: the app draws the gamepad, the host draws no panel of its own; the host counts the frames for the app's HUD; the host takes a second window for an external display
+// The SR bit follows the present pass's shader: this layer carries only the settings and the drawer's rows,
+// the upscaler itself comes with the core (gfx_vk_present.c + shaders/sr.frag), so the app must not show
+// its controls before that file is here.
+#if defined(__has_include)
+#if __has_include("shaders/sr.frag")
+#define FRONT_HAS_SR 1
+#endif
+#endif
+#ifndef FRONT_HAS_SR
+#define FRONT_HAS_SR 0
+#endif
+int dm_front_caps(void) { return DM_FRONT_CAPS_PLAYER | DM_FRONT_CAPS_PERF | DM_FRONT_CAPS_EXTERNAL | (FRONT_HAS_SR ? DM_FRONT_CAPS_SR : 0); }   // the player front: the app draws the gamepad, the host draws no panel of its own; the host counts the frames for the app's HUD; the host takes a second window for an external display; the present pass can upscale with super resolution
 
 // ---- the window: the app's Surface, passed over from Java (jni_android.h) ----
 // Two windows: the phone's own (the app's SurfaceView, where the gamepad is drawn) and the optional external one
@@ -102,6 +113,8 @@ const char *dm_front_root(void) { return g_root; }   // overlay_theme.c: the gam
 // The gamepad's own two values (shown, opacity) are the app's business now: the app's preferences are the only
 // truth about them, the host keeps them as runtime state (dm_pad_prefs) and does not save them here.
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1;   // the gamepad shown (the app's); rumble and tap vibration
+static _Atomic int g_set_sr;   // super resolution: the present pass upscales the picture into a larger window (gfx_vk_present.c sr_ready; DM_VK_SR overrides it for a run)
+static _Atomic int g_set_sharp;   // its sharpness, percent by 25 (settings.txt sharpness=)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX) — the app's
 static _Atomic int g_cust[2][2][DM_AOV_N][3], g_cust_ver;   // the player's own layout: [the editor's copy][the layout][the control][x, y, size]
 static const char *const LAYOUT_NAMES[2] = {"tablet", "phone"};
@@ -112,6 +125,8 @@ static void settings_load(void) {
     char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
     if (!f) return;
     while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
+        else if (sscanf(line, "sr=%d", &v) == 1) atomic_store(&g_set_sr, v != 0);
+        else if (sscanf(line, "sharpness=%d", &v) == 1) atomic_store(&g_set_sharp, v < 0 ? 0 : v > 100 ? 100 : v / 25 * 25);
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, l, i;
@@ -128,7 +143,7 @@ static void settings_load(void) {
 static void settings_save(void) {
     char p[600], tmp[610]; snprintf(p, sizeof p, "%s/settings.txt", g_root); snprintf(tmp, sizeof tmp, "%s.new", p);
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
-    fprintf(f, "rumble=%d\ndocked=%d\n", atomic_load(&g_set_rumble), dm_opmode() != 0);
+    fprintf(f, "rumble=%d\ndocked=%d\nsr=%d\nsharpness=%d\n", atomic_load(&g_set_rumble), dm_opmode() != 0, atomic_load(&g_set_sr), atomic_load(&g_set_sharp));
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
         _Atomic int *c = g_cust[0][l][i]; int x = atomic_load(&c[0]), y = atomic_load(&c[1]), z = atomic_load(&c[2]);
         if ((x && y) || z) fprintf(f, "ui=%s,%s,%d,%d,%d\n", LAYOUT_NAMES[l], OV_LAYOUTS[0][i].name, x && y ? x - 1 : -1, x && y ? y - 1 : -1, z ? z : 1000);
@@ -408,6 +423,8 @@ int dm_menu_get(int what) {
     case 1: return atomic_load(&g_set_opacity);
     case 2: return atomic_load(&g_set_rumble);
     case 4: return dm_opmode() != 0;
+    case 8: return atomic_load(&g_set_sr);
+    case 16: return atomic_load(&g_set_sharp);
     }
     return 0;
 }
@@ -419,6 +436,13 @@ void dm_menu_rumble_set(int on) { atomic_store(&g_set_rumble, on != 0); dm_hapti
 int dm_menu_rumble_get(void) { return atomic_load(&g_set_rumble); }
 void dm_menu_mode_set(int docked) { dm_set_opmode(docked ? 1 : 0); settings_save(); }
 int dm_menu_mode_get(void) { return dm_opmode() != 0; }
+void dm_menu_sr_set(int on) { atomic_store(&g_set_sr, on != 0); settings_save(); }
+int dm_menu_sr_get(void) { return atomic_load(&g_set_sr); }
+void dm_menu_sharp_set(int v) { atomic_store(&g_set_sharp, v < 0 ? 0 : v > 100 ? 100 : v / 25 * 25); settings_save(); }
+int dm_menu_sharp_get(void) { return atomic_load(&g_set_sharp); }
+// the present pass reads these (gfx_vk_present.c: its weak defaults return 0 in a front that has no settings)
+int dm_overlay_sr(void) { return atomic_load(&g_set_sr); }
+int dm_overlay_sharp(void) { return atomic_load(&g_set_sharp); }
 void dm_menu_edit_open(void) { LOG("[RED] [overlay] the layout editor is the app's now: the host has no editor to open"); }
 int dm_menu_state(void) { return -1; }   // the host has no panel of its own: the app's drawer is the only one
 
