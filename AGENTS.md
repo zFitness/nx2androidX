@@ -2,12 +2,13 @@
 
 > 本文件是本仓库对 AI agent 的**权威上下文**。`CLAUDE.md` 只指向这里，不重复维护内容。
 >
-> **一句话：本 fork 只做 Android 端，产品是手机 app（APK）。** 看到仓库里的 PC / iOS 相关目录，
-> 不要因此以为项目要往那个方向做。
+> **一句话：本 fork 的产物是手机 app（APK）。** 看到仓库里的 PC / iOS 相关目录，
+> 不要因此以为项目要往那个方向做。仓库里另有一条 ARM Linux 线（`launcher/`，图形启动器）：
+> 它是本线自有的第二个门面，与 APK 并存，运行时那一侧还在做。
 
 ## 1. 项目身份
 
-**nx2androidX 的产品只有一个：Android 手机 app（APK）。**
+**nx2androidX 的产物是 Android 手机 app（APK）**；另有一条在做的 ARM Linux 线（`launcher/`）。
 
 - 血统：`shirai91/nx2android`（桌面工具，在 PC 上移植游戏、产出数据包）→ 本 fork 把移植搬进手机 app，
   移植、游戏运行、数据包管理都在手机上完成，没有电脑在中间；引擎来自 `seedds/nxnative`（Apple/iOS 路线），
@@ -24,6 +25,7 @@
 | `porter/` | 移植流水线本体（Python） | 活跃代码：玩家桌面工具与手机 app 共用同一套 pipeline |
 | `phone_tools/` | 手机上的小工具（Python） | 随 payload 进手机（`tool/tools/`）：助手与玩家按名字调用，与流水线同版本 |
 | `gui/` | 桌面壳（PySide/Tk） | 玩家向工具，不是开发重心 |
+| `launcher/` | ARM Linux 线的图形启动器（Python + GTK 3/PyGObject） | 本线自有：库页、构建页、桌面条目与 Steam 条目；调 `porter.phone_cli`，不复制流水线 |
 | `packaging/` | 玩家桌面 zip + `android-apk/` 出 APK | 桌面 zip 是玩家分发物；**APK 才是本 fork 的产物** |
 | `nxnative/`（其余） | 上游引擎 fork | 运行时在 `dm/android/`；`nxnative/AGENTS.md` 与 `nxnative/docs/` 讲的是上游的 Apple/iOS 路线，不是本 fork 的方向 |
 | `nxnative/dm/ios/` | 上游 iOS 侧代码 | 上游遗产，本 fork 不动 |
@@ -42,6 +44,16 @@
 - ❌ 不要引用上游的 iOS / IPA / Metal 流程（`nxnative/AGENTS.md`、`nxnative/docs/agents/`）当作本 fork 的做法
 
 README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家分发物 —— 它只是不是本 fork 的开发对象。
+
+### ARM Linux 线（`launcher/`）
+
+- 这条线是**本线自有**的，与 APK 并存：图形启动器（库页 / 构建页 / Steam 条目），调 `porter.phone_cli`
+- 它**还没有 Linux 运行时**：宿主在 Linux 上的前端（WSI、音频、影片解码）是另一件事，
+  在那之前启动器只能构建、只能列库，「运行」入口会说明运行时不在
+- 这条线**不发版**：APK 仍是本 fork 唯一的发布物；不要把它当成"桌面版发布流程"
+- 它的分发形态是 **AppImage**（`packaging/arm-linux/build_appimage.py`）：ARM64 Linux 上一个文件，自带流水线与一份中文字体，不带 glibc、不带 Python 与游戏档案（档案走 release 的档案包导入）；厚包（`--with-profiles`）把档案也打进去
+- 界面是 **GTK 3**，跑在**系统 python3 + PyGObject**（`python3-gi`）上：包只带代码，不带工具包——所以包很小（~33 MB），机器上要装 `python3` 与 `python3-gi`；没有 FUSE 的机器用 `APPIMAGE_EXTRACT_AND_RUN=1` 解包运行
+- 上游同步时 `launcher/` 不参与：`porter/`、`gui/`、`nxnative/dm/android/` 各自的规则照旧
 
 ## 3. 发布（唯一真相）
 

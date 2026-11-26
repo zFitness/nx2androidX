@@ -1,0 +1,63 @@
+#!/bin/sh
+# nx2androidX ARM64 Linux AppImage entry.
+#
+# The launcher is GTK, so it runs on the machine's own Python with PyGObject
+# (Debian/Ubuntu: apt install python3-gi): the package carries the code, not the
+# toolkit.  The package is read-only (mounted, or unpacked to /tmp/.mount_* with
+# APPIMAGE_EXTRACT_AND_RUN=1 on a machine without FUSE), so the player's data —
+# the library, the settings, the imported profiles — stays in their own folders.
+#
+# Fonts: a machine may have none at all (a bare proot, for instance), and then the
+# interface shows random glyphs instead of Chinese.  The package carries one Chinese
+# font and one monospace face, and a fontconfig configuration is written at run time
+# that points at them; the machine's own fonts stay in use as well.
+#
+# This script uses nothing but shell builtins: on a minimal system even readlink,
+# dirname and cat may be broken links.  The only external program is the Python
+# it ends up exec'ing.
+HERE="${APPDIR:-${0%/*}}"
+case "$HERE" in
+    "$0") HERE=. ;;
+esac
+case "$HERE" in
+    /*) ;;
+    *) HERE="$PWD/$HERE" ;;
+esac
+
+PYTHON=/usr/bin/python3
+if [ ! -x "$PYTHON" ]; then
+    PYTHON=$(command -v python3 2>/dev/null)
+fi
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    printf '%s\n' 'nx2androidX: no python3 on this machine (Debian/Ubuntu: apt install python3 python3-gi)'
+    exit 1
+fi
+
+# The package's own code: launcher/ and porter/ sit in usr/, and the pipeline is
+# started as a child process with this same environment.
+export PYTHONPATH="$HERE/usr${PYTHONPATH:+:$PYTHONPATH}"
+
+FONTS="$HERE/usr/share/fonts"
+if [ -d "$FONTS" ]; then
+    TMP="${TMPDIR:-/tmp}"
+    CONF="$TMP/nx2androidX-fonts-$$.conf"
+    if [ -f /etc/fonts/fonts.conf ]; then
+        INCLUDE='  <include ignore_missing="yes">/etc/fonts/fonts.conf</include>'
+    else
+        INCLUDE=''
+    fi
+    {
+        printf '%s\n' '<?xml version="1.0"?>'
+        printf '%s\n' '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">'
+        printf '%s\n' '<fontconfig>'
+        if [ -n "$INCLUDE" ]; then
+            printf '%s\n' "$INCLUDE"
+        fi
+        printf '%s\n' "  <dir>$FONTS</dir>"
+        printf '%s\n' "  <cachedir>$TMP/nx2androidX-fontcache-$$</cachedir>"
+        printf '%s\n' '</fontconfig>'
+    } > "$CONF" 2>/dev/null && export FONTCONFIG_FILE="$CONF"
+fi
+
+cd "$HERE/usr" || exit 1
+exec "$PYTHON" -m launcher "$@"

@@ -47,3 +47,7 @@ android/gradle/gradle-daemon-jvm.properties
 
 .memembed
 .memembed-m5
+# The ARM64 Linux package (packaging/arm-linux/build_appimage.py): the pinned downloads it caches and its output
+/packaging/arm-linux/.cache/
+/packaging/arm-linux/dist/
+/packaging/arm-linux/dist-*/

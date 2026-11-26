@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=nx2androidX
+Comment=Play your own ported Nintendo Switch games on this machine
+Exec=AppRun
+Icon=nx2androidX
+Categories=Game;
+Terminal=false
