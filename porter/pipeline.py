@@ -910,7 +910,7 @@ class Port:
     # ---- rewrite: patch_nso.py for the Android host's thread slots ----
     def rewrite(self):
         self.patched = self.aw / f'patched_{self.pkg_ver}'   # beside, not over, an iOS build's patched_<version>: the rewrite's reuse key does not include the target
-        nsp.rewrite(PY, NXNATIVE, self.game / 'ExeFS', self.patched, dict(self.env, DM_TARGET='android'), self.logs, self.g)
+        nsp.rewrite(PY, NXNATIVE, self.game / 'ExeFS', self.patched, dict(self.env, DM_TARGET=os.environ.get('DM_TARGET') or 'android'), self.logs, self.g)   # the linux line rewrites for its own TLS mode
         if self.derived or self.provisional:   # the keys that need the rewritten modules (upstream's provisional steps)
             nsp.provisional_prep(PY, NXNATIVE, self.env, self.logs, self.g)
             self.g = nsp.refine_after_rewrite(self.g, self.game, self.patched)
