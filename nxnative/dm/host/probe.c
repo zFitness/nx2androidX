@@ -373,8 +373,9 @@ static void *heaptrace_run(void *arg) {
         uint64_t df = mm ? *(uint64_t *)(mm->base + 0x17584f8) : 0;
         uint64_t p = 0, ctx = 0;
         if (mm && ht_word((uint64_t)(mm->base + 0x1724738), &p) && p) ht_word(p, &ctx);   // the game's own current-thread global (readable from any host thread)
-        uint64_t a88 = ctx ? *(uint64_t *)(ctx + 0x88) : 0;
-        uint64_t e2 = ctx;
+        uint64_t ctx2 = ctx ? ctx + 0xB0 : 0;   // the alloc path's context is the second one ([obj+144] = ctx+0xB0)
+        uint64_t a88 = ctx2 ? *(uint64_t *)(ctx2 + 0x88) : 0;
+        uint64_t e2 = ctx2;
         if (df == last_df && a88 == last_a88 && e2 == last_e2) continue;
         LOG("HEAPTRACE %.2fs default-block=%#llx tls2=%#llx ctx[0x88]=%#llx", (now_ns() - g_t0_ns) / 1e9,
             (unsigned long long)df, (unsigned long long)e2, (unsigned long long)a88);
