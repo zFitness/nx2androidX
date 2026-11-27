@@ -96,6 +96,51 @@ apple 模式探针**不必跑**：`tsd_check` 读 `tpidrro_el0`——Linux 64 �
 调用点（thread.c:12-27、hle_thread.c:341,354）在新宏下零改动；`-ffixed-x18`
 （build.py:152）保证宿主代码生成不碰 x18。
 
+### 3.3.1 v2（2026-11-27 实证后的重设计）：Horizon 布局复刻块
+
+3.3 的首版（裸 `MRS tpidr_el0` + `slot_off + key*8` key page + 4 槽数组）**实证不够**：
+SDK 不只经改写站点用槽，还把 TLS 基址**缓存进自己的全局**再按 Horizon 固定偏移
+（如当前 ThreadType 在 TLS区+0x18、TLR 槽 0x1f8）访问——裸 TCB 基址下这些固定偏移
+会撞进 glibc 的 TCB 字段或错槽（实证：SDK 把门值当成线程记录，分配器查空 →
+`operator new` 返回 0 → 构造函数写空指针 SIGSEGV）。**android 的 TLS_SLOT_APP 块
+本就是 Horizon 布局的完整复刻，linux 必须同形**：
+
+1. `loader.c`：`__thread uint64_t dm_slots[512]`（静态 TLS，每线程自动就位；
+   覆盖 Horizon 全部固定偏移槽）；`create_keys` 算 `slot_off`（实测 72）不变
+2. `patch_nso.py`：`emit_tp`（linux）= `MRS tpidr_el0; ADDI t,t,#0`——imm12=0 占位，
+   每个 TLS 站点的 ADDI 偏移写进 fixups.tsv（`# TPBASE_N`（**十六进制**，header
+   解析器按 %lx 读）/ `# TPBASE_OFF` 逐条）；main 9875 / subsdk0 10209 / sdk 12969 处
+3. `loader.c install_tpbase`：映射后（text 仍 RW）把每条 ADDI 的 imm12 烤成
+   `slot_off` → 所有站点基址 = `tpidr_el0 + slot_off = &dm_slots[0]`；
+   `install_key_page` 回归 android 形（`key*8`）——key 槽（dm_slots[1..4]）与
+   SDK 固定偏移槽（dm_slots[H/8]）同落数组，永不触碰 glibc TCB
+4. `dm.h`：`extern _Thread_local uint64_t dm_slots[512]`；dm_tsd_set/get 宏不变
+   （dm_slots[k]，k=key 1..4）
+5. 宿主每 guest 线程初始化（thread.c guest_thread_init，android/linux 共用）：
+   dm_slots[2]=8KB TLS 块（KTLS）、dm_slots[3]=0x200 TLR 复刻（KTLR，tlr+0x1f8=
+   宿主线程对象）、dm_slots[4]=dm_gate——语义与 android 完全一致
+
+**实证状态**：tsd_check ✓；33053 个 tp 基址全部烘焙 ✓；SDK 跳板链
+（*(base+0x18)=当前 ThreadType → TLR → 0x1f8 → 线程对象 → +504 → 值数组）
+逐级解引用全通 ✓；无漏改 mrs/msr 站点（全量扫描 = TPBASE 计数）✓；
+游戏启动推进到与 android 相同的位置（nnMain ✓ romfs ✓ NVN 建窗 ✓ HID ✓）。
+
+### 3.3.2 当前阻塞点（M2 尾巴）：游戏的 TLS-2 堆上下文从未注册
+
+崩溃点（确定性，0.4s）：`main+0x65a084`——游戏引擎首个 `operator new`（560B）→
+`GetTlsValue(curThread, idx=2)`（idx 来自游戏线程信息 ctx+104=2）→ **entry[2]
+从未被写（SDK 静态数组里是原始代码字节）** → 兜底「默认堆描述符
+main+0x17584f8」也未写（=0）→ new 返回 null → 构造函数 strb [null+8] 崩。
+同版本（v65536=1.0.1）同档案在 android dmhost 上可玩（上游 35 分钟 soak），
+⇒ 纯 linux 宿主行为差异，非档案/版本问题。已排除：漏改站点（无）、
+TPBASE 未烘焙（全烤）、TLR/ThreadType 链断裂（全通）、msr 切换未落槽
+（dm_slots[2] 全程 = 宿主初值，但游戏自己的「当前 TLS 区」全局
+main+0x1724738 指向堆上新分配的区域——两条「当前线程」链不一致是**最强线索**：
+游戏全局链（堆对象，[+104]=2）vs TLR 链（SDK 静态 ThreadType，其值数组从未被写）。
+下一步：找 android 上写 entry[2] 的执行路径（对 main:0x1724738 的写入者、
+或 SDK 的 SetThreadLocalPtr 调用者），以及为何 linux 上那条路径没跑
+（疑似更早的宿主 HLE 分叉，BOOT 日志止于 "hid supported controller styles" 之后）。
+
 ### 3.4 已否决的路线（记录，防重蹈）
 
 | 路线 | 否决原因 |
