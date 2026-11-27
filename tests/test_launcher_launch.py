@@ -22,6 +22,7 @@ def make_game(root, with_exe=True, exe_name='Mario'):
     exe_field = f', "exe": "{exe_name}"' if with_exe else ''
     (pack / 'nx2a-data.json').write_text(
         '{"title_id": "0100000000010000", "name": "Mario", "version": "1.0"' + exe_field + '}', encoding='utf-8')
+    (pack / 'mods').mkdir()   # the porter's pack keeps the rewritten modules there
     if with_exe:
         exe = pack / exe_name
         exe.parent.mkdir(parents=True, exist_ok=True)
@@ -50,20 +51,41 @@ class Script(unittest.TestCase):
             self.assertIn('exe="$dir"/host/dmhost', text)
             self.assertNotIn('exe="$dir"/dmhost', text)
 
+    def test_an_executable_written_without_the_bit_gets_it(self):
+        """An earlier porter copied the host into the pack without the executable bit."""
+        with tempfile.TemporaryDirectory() as root:
+            game = make_game(root)
+            game.exe_path.chmod(0o644)
+            self.assertFalse(os.access(game.exe_path, os.X_OK))
+            script = launch.write_script(game)
+            self.assertTrue(os.access(game.exe_path, os.X_OK))
+            out = subprocess.run(['sh', str(script)], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 0)
+
     def test_a_path_with_spaces_is_quoted(self):
         with tempfile.TemporaryDirectory() as root:
             game = make_game(root, exe_name='my host/dm host')
             text = launch.write_script(game).read_text(encoding='utf-8')
             self.assertIn('exe="$dir"/' + shlex.quote('my host/dm host'), text)
 
-    def test_a_pack_without_a_modules_folder_says_so(self):
+    def test_a_pack_without_a_modules_folder_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
             game = make_game(root)
-            (game.path / 'mods').mkdir()
+            (game.path / 'mods').rmdir()
             script = launch.write_script(game)
-            out = subprocess.run(['sh', str(script)], capture_output=True, text=True, env={'PATH': os.environ['PATH']})
-            self.assertNotIn('no mods folder', out.stderr)   # the folder is there: the stub executable runs instead
-            self.assertEqual(out.returncode, 0)
+            out = subprocess.run(['sh', str(script)], capture_output=True, text=True)
+            self.assertEqual(out.returncode, 1)
+            self.assertIn('no mods folder', out.stderr)
+
+    def test_the_script_runs_the_executable_with_the_modules_folder(self):
+        """End to end on a stub: the script's own arguments, as the host receives them."""
+        with tempfile.TemporaryDirectory() as root:
+            game = make_game(root, exe_name='host/dmhost')
+            game.exe_path.write_text('#!/bin/sh\nprintf \'%s\\n\' \"$@\" > \"$DM_ROOT/seen.txt\"\n', encoding='utf-8')
+            script = launch.write_script(game)
+            out = subprocess.run(['sh', str(script)], capture_output=True, text=True, cwd='/')
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual((game.path / 'seen.txt').read_text(encoding='utf-8'), str(game.path / 'mods') + '\n')
 
     def test_a_game_without_an_executable_has_no_script(self):
         with tempfile.TemporaryDirectory() as root:

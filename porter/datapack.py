@@ -119,6 +119,8 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     for name, body in (text or {}).items():
         (tmp / name).write_text(body, encoding='utf-8', newline='\n'); n += 1
         b += len(body.encode('utf-8')); tick(len(body.encode('utf-8')), 'the lists')
+    if exe and (tmp / exe).is_file():
+        (tmp / exe).chmod(0o755)   # the launcher runs it: copyfile above copies the bytes only, so the mode is set here
     base = pack_base or str(dst)   # where the pack lives on the device: its own folder (the app's mode); the PC tool's install puts it in the app's files folder
     rows = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
             f'DM_LANG={language}']

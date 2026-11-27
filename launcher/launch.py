@@ -53,6 +53,11 @@ def write_script(game: Game) -> Path:
     exe = game.exe_path
     if not exe:
         raise NoExecutable(f'{game.name}: no executable in {game.path}')
+    if not os.access(exe, os.X_OK):
+        try:
+            exe.chmod(0o755)   # an earlier porter wrote the pack's executable without the bit; the script's check would turn it away
+        except OSError:
+            pass   # a pack the player cannot write: the script says so when it is run
     rel = executable_in_pack(game, exe)
     path = script_path(game)
     path.write_text(
