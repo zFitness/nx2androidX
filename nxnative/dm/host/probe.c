@@ -362,6 +362,7 @@ static void watch_install(void) {
 // DM_HEAPTRACE: every 50 ms, log the boot's two decisive heap fields while they change: the game's
 // default-heap block pointer (main+0x17584f8) and the current thread's heap context (TLS slot 2, its
 // [0x88] allocator field). The linux host's first engine allocation fails when both are still 0.
+static int ht_word(uint64_t a, uint64_t *w) { vm_size_t got = 0; return vm_read_overwrite(mach_task_self(), (vm_address_t)a, 8, (vm_address_t)w, &got) == KERN_SUCCESS && got == 8; }
 static void *heaptrace_run(void *arg) {
     (void)arg;
     uint64_t now_ns(void); extern uint64_t g_t0_ns;
@@ -370,10 +371,10 @@ static void *heaptrace_run(void *arg) {
         usleep(50000);
         if (!mm) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; } }
         uint64_t df = mm ? *(uint64_t *)(mm->base + 0x17584f8) : 0;
-        uint64_t tlr = (uint64_t)(uintptr_t)dm_tsd_get(g_keytlr);
-        uint64_t obj = tlr ? *(uint64_t *)(tlr + 0x1f8) : 0;
-        uint64_t e2 = obj ? *(uint64_t *)((uint8_t *)obj + 144) : 0;
-        uint64_t a88 = e2 ? *(uint64_t *)((uint8_t *)e2 + 0x88) : 0;
+        uint64_t p = 0, ctx = 0;
+        if (mm && ht_word(mm->base + 0x1724738, &p) && p) ht_word(p, &ctx);   // the game's own current-thread global (readable from any host thread)
+        uint64_t a88 = ctx ? *(uint64_t *)(ctx + 0x88) : 0;
+        uint64_t e2 = ctx;
         if (df == last_df && a88 == last_a88 && e2 == last_e2) continue;
         LOG("HEAPTRACE %.2fs default-block=%#llx tls2=%#llx ctx[0x88]=%#llx", (now_ns() - g_t0_ns) / 1e9,
             (unsigned long long)df, (unsigned long long)e2, (unsigned long long)a88);
