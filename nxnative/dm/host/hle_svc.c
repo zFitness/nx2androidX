@@ -351,9 +351,16 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
     if (cap == 60000) { LOG("[svc] trace cap hit, stopping"); cap++; return svc_dispatch_inner(num, regs, orig_addr); }
     uint32_t thr_cur_handle(void);
     char b[192]; crash_addr_str(b, sizeof b, orig_addr);
-    LOG("[svc] #%d thr=%#x @%s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", num, thr_cur_handle(), b,
-        (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], (unsigned long long)regs[3]);
+    uint64_t save0 = regs[0];
+    LOG("[svc] #%d thr=%#x @%s x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx x5=%#llx", num, thr_cur_handle(), b,
+        (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2],
+        (unsigned long long)regs[3], (unsigned long long)regs[4], (unsigned long long)regs[5]);
     uint64_t r = svc_dispatch_inner(num, regs, orig_addr);
+    if (num == 6) {   // QueryMemory: its answer is the MemoryInfo struct at the saved x0, not a register
+        uint64_t *m = (uint64_t *)save0;
+        LOG("[svc] #6 MemoryInfo @%#llx: base=%#llx size=%#llx state=%#llx perm=%#llx", (unsigned long long)save0,
+            (unsigned long long)m[0], (unsigned long long)m[1], (unsigned long long)m[2] >> 32, (unsigned long long)m[3]);
+    }
     LOG("[svc] #%d -> x0=%#llx x1=%#llx", num, (unsigned long long)regs[0], (unsigned long long)regs[1]);
     cap += 2;
     return r;
