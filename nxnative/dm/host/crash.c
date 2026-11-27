@@ -248,6 +248,22 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
                         uint64_t e2 = 0; if (arr) stack_word(arr + 2 * 8 + 128, &e2);
                         fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx arr=%#llx entry[2]=%#llx\n",
                             (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)arr, (unsigned long long)e2);
+                        // classify each address against the module ranges and dump the array surroundings
+                        for (int round = 0; round < 3; round++) {
+                            uint64_t a = round == 0 ? rec : round == 1 ? obj : arr;
+                            const char *where = "host";
+                            for (int i = 0; i < g_nmod; i++) if (a >= (uint64_t)g_mod[i].base && a < (uint64_t)g_mod[i].base + g_mod[i].size) { where = g_mod[i].name; break; }
+                            fprintf(stderr, "[dm] probe: %s (%#llx) in %s\n", round == 0 ? "rec" : round == 1 ? "obj" : "arr", (unsigned long long)a, where);
+                        }
+                        if (obj) {
+                            uint64_t f[2]; fprintf(stderr, "[dm] probe: obj+496=");
+                            for (int i = 0; i < 2; i++) { stack_word(obj + 496 + 8 * i, &f[i]); fprintf(stderr, " %#llx", (unsigned long long)f[i]); }
+                            fprintf(stderr, "\n[dm] probe: arr+80..136=");
+                            for (int i = 0; i < 8; i++) { stack_word(arr + 80 + 8 * i, &f[0]); fprintf(stderr, " %#llx", (unsigned long long)f[0]); }
+                            fprintf(stderr, "\n[dm] probe: arr+136..192=");
+                            for (int i = 0; i < 8; i++) { stack_word(arr + 136 + 8 * i, &f[0]); fprintf(stderr, " %#llx", (unsigned long long)f[0]); }
+                            fputc('\n', stderr);
+                        }
                     }
                 }
             }
