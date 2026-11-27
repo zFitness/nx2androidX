@@ -256,13 +256,25 @@ block 字段注册被跳过/失败的分支条件（注意：这与「默认堆�
 传入的名字、main+0x129157a 处的字符串）与一次 `bl 0x678df4`，任一失败即走
 失败路径。**这些调用的语义未定性**（不凭字符串名下结论）。
 
-**尚未建立的关系**：查询失败 ↔ 0xe851e4 绕过（管理器 block=0）↔ 560B 分配
-返回 0，三者之间的因果未证；linux 上第 9 个 CreateBlock 起堆内偏移已漂移
-（0x1ef0 vs 0x2870），时间上更早。
+**根因（实测确认）**：查询失败 = 游戏读不到配置文件。`DM_FS=1` 显示 linux 上
+`fs path not found: content:/System/HeapSize/Product.Nin_NX_NVN.HeapDef.byml.zs`
+（以及 RomConfig、AddressTable、RegionLangMask 等一串）——**库目录里的
+`romfs/` 是空目录（0 个文件）**，而 `work/<tid>_build/extract/v65536/RomFS`
+有 3162 个文件、含 HeapDef。手动运行 dmhost 时只传了 `DM_ROOT`，loader 默认
+取 `$DM_ROOT/romfs`；app 线由运行器经 build.json 的 `romfs` 字段传
+`DM_ROMFS` 指向完整 RomFS，所以 android 正常。**传
+`DM_ROMFS=<extract>/v65536/RomFS` 后 linux 上游戏越过原崩溃点**：0.266s hid →
+0.358s TextureBuilderSetSwizzle（与 android 同序列）→ 跑满 30s 由 SIGTERM
+优雅退出，零 CRASH、零 path-not-found。
 
-**下一步**：在 0xd8e614 内部的 after-bl 槽位（0xd8e674/0xd8e68c/0xd8e6a4/
-0xd8e6b8/0xd8e6d0，均为合法位置）加门记录每步的实参与返回，确定 linux 上
-是哪一步失败及其输入；再决定追查询输入、配置来源还是堆分配内部。
+⇒ 本节此前追踪的 TLS-2 堆上下文、管理器 block=0、0xe851e4 绕过、560B 分配
+返回 0，全部是**空 romfs 的下游症状**，不是宿主语义问题。查询 0xd8e614 的
+内部各步（0x678c40/0x678df4）语义未再深究——配置文件到位后它直接成功。
+
+**遗留**：共享字体 `[RED] cannot open the standard shared font`（linux 运行
+环境需提供 DM_SHARED_FONT / DM_FONT_DIR，与崩溃无关）；linux 线的运行器
+（launcher → 运行入口）必须像 app 一样显式传 `DM_ROMFS`，不能依赖库目录的
+`romfs/`（M2 收尾项）。
 
 ### 3.4 已否决的路线（记录，防重蹈）
 
