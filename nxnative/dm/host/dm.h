@@ -63,6 +63,7 @@ typedef struct {
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     char build_id[33];         // First 16 bytes of the NSO build ID (hex); empty for older build outputs
     unsigned key_idx[4];       // key page index of each thread slot (K18, KTLS, KTLR, KGATE)
+    uint32_t *tpbase; unsigned ntpbase;   // DM_TSD_LINUX: patch offsets of every site's tp-base ADDI; the loader bakes the IE-TLS slot offset into the imm12
     const Elf64_Dyn *dyn;
     const Elf64_Sym *symtab;
     const char *strtab;
@@ -92,8 +93,9 @@ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 #define dm_tsd_set(k, v) pthread_setspecific((k), (v))
 #define dm_tsd_get(k) pthread_getspecific(k)
 #elif defined(DM_TSD_LINUX)
-// 直读 loader 的 IE-TLS 数组（loader.c 定义 dm_slots；key page 存 tp 相对偏移）
-extern _Thread_local uint64_t dm_slots[8];
+// 直读 loader 的 IE-TLS 复刻块（loader.c 定义 dm_slots[512]：每线程的 Horizon TLS 布局复刻；key page 存 key*8，
+// SDK 经缓存基址的固定偏移访问与 key 槽都落在同一数组，永不触碰 glibc 自己的 TCB 字段）
+extern _Thread_local uint64_t dm_slots[512];
 #define dm_tsd_set(k, v) (dm_slots[k] = (uint64_t)(uintptr_t)(v))
 #define dm_tsd_get(k) (dm_slots[k])
 #else

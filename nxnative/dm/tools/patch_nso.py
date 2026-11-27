@@ -105,6 +105,7 @@ KEY_INDEX = {k: i for i, k in enumerate(('K18', 'KTLS', 'KTLR', 'KGATE'))}
 
 md = Cs(CS_ARCH_ARM64, CS_MODE_ARM); md.detail = True
 patch = bytearray(); fix = []; gates = []; stats = {}
+tpbase = []   # DM_TARGET=linux: the patch offsets of every site's tp-base ADDI; the loader bakes the IE-TLS slot offset into its imm12
 def stat(k): stats[k] = stats.get(k, 0) + 1
 def here(): return PATCH_OFF + len(patch)
 def emit(w, kind=None):
@@ -117,7 +118,8 @@ def emit(w, kind=None):
 TARGET = os.environ.get('DM_TARGET', 'apple'); assert TARGET in ('apple', 'android', 'linux'), f'DM_TARGET {TARGET}: apple, android or linux'
 def emit_tp(t):
     if TARGET == 'android': emit(MRS_TPIDR(t)); emit(LDRX(t, t, 2))
-    elif TARGET == 'linux': emit(MRS_TPIDR(t))   # glibc 的 TCB 指针；槽位偏移由 loader 写进 key page
+    elif TARGET == 'linux':
+        emit(MRS_TPIDR(t)); tpbase.append(here()); emit(ADDI(t, t, 0))   # the loader bakes the IE-TLS slot offset into the imm12 at load: base = tpidr_el0 + slot_off = &dm_slots[0]
     else: emit(MRS_TPIDRRO(t))
 
 def emit_key_addr(reg, kind):
@@ -1184,6 +1186,9 @@ with open(P('fixups.tsv'), 'w') as f:
     if FS_STATE_OFF: f.write(f'# FPS_STATE_OFF\t{FS_STATE_OFF:#x}\n')   # frame step state page (FRAME_STEP): the loader writes the target fps there
     if RENDER_SCALE: f.write('# RENDER_SCALE\t1\n')   # a render-scale stub reads state +0x10 (the loader ignores the key; dm/games/settings.py offers the setting by it)
     f.write(f'# TARGET\t{TARGET}\n')   # the slot access differs per OS: the host refuses an image rewritten for the other one
+    if TARGET == 'linux':
+        f.write(f'# TPBASE_N\t{len(tpbase)}\n')
+        for off in tpbase: f.write(f'# TPBASE_OFF\t{off:#x}\n')
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # the host identifies the build by it: features with hard-coded addresses only run on the build they belong to
 with open(P('gates.tsv'), 'w') as f:
     for ret, k, arg, orig in gates: f.write(f'{ret:#x}\t{k}\t{arg}\t{orig:#x}\n')

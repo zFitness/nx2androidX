@@ -45,24 +45,36 @@ static void tsd_check(void) {
     pthread_setspecific(g_key18, 0);
 }
 #elif defined(DM_TSD_LINUX)
-// Linux (glibc): the loader owns an initial-exec TLS array (__thread → in the static TLS
-// block, reachable at tp + a fixed per-process offset). create_keys computes that offset
-// from the real thread pointer, install_key_page bakes it into the module's key page, and
-// the rewritten code reads [tpidr_el0 + entry] = dm_slots[key] — no bionic, no Darwin.
-__thread uint64_t dm_slots[8];
+// Linux (glibc): the same shape as Android's TLS_SLOT_APP block — every thread that runs guest
+// code owns a replica of the guest's TLS layout, as the loader's initial-exec array
+// __thread dm_slots[512] (static TLS: every pthread has it at tp + a fixed per-process offset,
+// computed at startup). The rewritten sites compute their base as tpidr_el0 + that offset
+// (install_tpbase bakes it into each site's ADDI imm12 at load), and the key page holds plain
+// key*8 offsets — so both the key-mediated slots and the SDK's cached-base fixed-offset slots
+// (e.g. the current-thread record at +104) land in dm_slots, never in glibc's own TCB fields.
 static uint64_t **tp_now(void) { uint64_t **tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp)); return tp; }
 static unsigned long g_slot_off;
 static void create_keys(void) {
     uint64_t tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
     g_slot_off = (unsigned long)((uint8_t *)dm_slots - (uint8_t *)tp);
     g_key18 = 1; g_keytls = 2; g_keytlr = 3; g_keygate = 4;
-    LOG("guest thread slots in the loader's IE-TLS array: slot_off=%lu K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu", g_slot_off, g_key18, g_keytls, g_keytlr, g_keygate);
+    LOG("guest TLS replica in the loader's IE-TLS array: slot_off=%lu (512 slots), K18=1 KTLS=2 KTLR=3 KGATE=4", g_slot_off);
 }
-// K slot check: the slot the rewritten code reads (tpidr_el0 + the key page entry) is the one dm_tsd_set wrote
+// Bake the IE-TLS slot offset into every site's tp base ("mrs xt, tpidr_el0; addi xt, xt, #0"), while the text is still writable
+static void install_tpbase(module_t *m) {
+    for (unsigned i = 0; i < m->ntpbase; i++) {
+        uint32_t *w = (uint32_t *)(m->base + m->tpbase[i]);
+        if ((*w >> 22) != 0x244 || ((*w >> 10) & 0xFFF)) die("%s: tp base site %u is not a zero-imm addi", m->name, i);
+        *w = (*w & ~0x3FFC00u) | ((unsigned)(g_slot_off & 0xFFF) << 10);
+    }
+    if (m->ntpbase) __builtin___clear_cache((char *)(m->base + m->tpbase[0]), (char *)(m->base + m->tpbase[m->ntpbase - 1] + 4));
+    LOG("%s: tp base baked into %u sites (slot_off=%lu)", m->name, m->ntpbase, g_slot_off);
+}
+// K slot check: the slot the rewritten code reads (base + key*8, base = tp + slot_off) is the one dm_tsd_set wrote
 static void tsd_check(void) {
     dm_tsd_set(g_key18, (void *)0x1234);
     uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
-    if (*(uint64_t *)((uint8_t *)tp_now() + off) != 0x1234) die("guest thread slot layout mismatch");
+    if (*(uint64_t *)((uint8_t *)tp_now() + g_slot_off + off) != 0x1234) die("guest thread slot layout mismatch");
     dm_tsd_set(g_key18, 0);
 }
 #else
@@ -237,7 +249,7 @@ static void read_layout(module_t *m, const char *dir) {
     FILE *f = fopen(path, "r");
     if (!f) die("open %s", path);
     static const char *kn[KEY_N] = {"K18", "KTLS", "KTLR", "KGATE"};
-    char line[256], key[32], target[16] = "apple"; unsigned long v; unsigned seen = 0;   // an output without TARGET predates the Android port: Apple
+    char line[256], key[32], target[16] = "apple"; unsigned long v; unsigned seen = 0, ntb = 0;   // an output without TARGET predates the Android port: Apple
     while (fgets(line, sizeof line, f)) {
         if (!strncmp(line, "# TARGET", 8)) { sscanf(line + 8, "%15s", target); continue; }
         if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
@@ -251,6 +263,8 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
         else if (!strcmp(key, "BUILD_ID")) sscanf(line, "# %*s %32s", m->build_id);
+        else if (!strcmp(key, "TPBASE_N")) { m->ntpbase = v; m->tpbase = malloc(sizeof(uint32_t) * (v ? v : 1)); }
+        else if (!strcmp(key, "TPBASE_OFF")) { if (m->tpbase && ntb < m->ntpbase) m->tpbase[ntb++] = v; }
         else for (int k = 0; k < KEY_N; k++) {
             size_t n = strlen(kn[k]);
             if (!strncmp(key, "KEY_", 4) && !strncmp(key + 4, kn[k], n) && !strcmp(key + 4 + n, "_IDX")) {
@@ -269,6 +283,9 @@ static void read_layout(module_t *m, const char *dir) {
     if (strcmp(target, want)) die("%s: the module was rewritten for %s, this host runs on %s: rewrite it with DM_TARGET=%s dm/tools/patch_nso.py", path, target, want, want);
     if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != (1u << KEY_N) - 1)
         die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
+#ifdef DM_TSD_LINUX
+    if (!m->ntpbase) die("%s: the output comes from an old rewriter (no TPBASE sites); rewrite the modules again with DM_TARGET=linux dm/tools/patch_nso.py", path);
+#endif
     if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
         die("%s: patch area before the base, but IMAGE_SIZE / FILE_IMAGE_LEN missing or wrong", path);
 }
@@ -302,10 +319,9 @@ static void install_key_page(module_t *m) {
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
     memset(page, 0, m->key_page_size);
 #ifdef DM_TSD_LINUX
-    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = g_slot_off + (uint64_t)key_value(i) * 8;   // tp 相对偏移：tp+entry = dm_slots[key]
-#else
-    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
+    install_tpbase(m);   // the text is still writable here
 #endif
+    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;   // 偏移 = key*8：key 槽与 SDK 固定偏移槽同落 dm_slots 复刻块
     for (int k = 0; k < KEY_N; k++) if (!page[m->key_idx[k]]) die("%s: key page entry %d is 0 (host key not created) -- the game would read TSD slot 0", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s key page mprotect", m->name);
     if (m->fps_state_off) install_fps_state(m);
