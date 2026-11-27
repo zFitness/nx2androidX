@@ -6,6 +6,7 @@
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <dirent.h>
 void probe_install(void); void hid_keys_init(void); void stubs_report(void); void crash_install(void); void guest_thread_init(void); uint32_t svc_thread_main_init(void);
 typedef void (*fn0)(void); typedef void (*fn2)(uint64_t, uint64_t); typedef void (*fnp)(void *);
 static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbol %s", n); return p; }
@@ -62,8 +63,57 @@ static uint64_t proc_start_mono_ns(void) {
 static pthread_key_t g_race_keys[512];
 static unsigned g_race_n, g_race_want;
 static void *keyrace_thread(void *unused);
+#ifdef DM_LINUX
+// The linux line has no app to apply the data pack's env.txt (the Android app reads it before it loads the host): KEY=VALUE rows, '#' comments.
+// A variable that is already set in the environment wins, so a runner can still override a row.
+static void pack_env_apply(const char *dir) {
+    char path[1024]; snprintf(path, sizeof path, "%s/env.txt", dir);
+    FILE *f = fopen(path, "r");
+    if (!f) { LOG("[RED] %s: the data pack's env.txt cannot be read (DM_ROMFS and the shared fonts come from it)", path); return; }
+    char line[4096]; unsigned n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *s = line; while (*s == ' ' || *s == '\t') s++;
+        if (*s == '#' || *s == '\n' || !*s) continue;
+        s[strcspn(s, "\r\n")] = 0;
+        char *eq = strchr(s, '=');
+        if (!eq || eq == s) continue;
+        *eq = 0;
+        if (!getenv(s)) { setenv(s, eq + 1, 0); n++; }
+        else if (strcmp(s, "DM_LANG")) LOG("env.txt %s: already set in the environment, the environment wins", s);
+    }
+    fclose(f);
+    LOG("env.txt: %u rows applied from %s", n, path);
+}
+static int dir_has_files(const char *d) {
+    DIR *dp = opendir(d); if (!dp) return 0;
+    struct dirent *e; int found = 0;
+    while ((e = readdir(dp))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { found = 1; break; }
+    closedir(dp); return found;
+}
+// Where the game's files are, checked before anything reads them: DM_ROMFS as set (the environment, or the pack's env.txt row that points at the port's
+// extracted RomFS), else the pack's own RomFS/ or romfs/. A folder without files is a setup error the game cannot recover from -- it reads its
+// configuration from there (Mario vs. Donkey Kong sizes its heaps from /System/HeapSize and crashes in its first engine allocation without it)
+static void romfs_check(const char *dir) {
+    const char *r = getenv("DM_ROMFS");
+    if (!r || !*r) {
+        static char buf[1024];
+        for (int k = 0; k < 2 && (!r || !*r); k++) {
+            snprintf(buf, sizeof buf, "%s/%s", dir, k ? "romfs" : "RomFS");
+            if (dir_has_files(buf)) { setenv("DM_ROMFS", buf, 0); r = buf; }
+        }
+    }
+    if (r && *r) {
+        if (!dir_has_files(r)) die("[RED] DM_ROMFS=%s: not a folder with files. The game reads its data from there: point it at the port's extracted RomFS (work/<title ID>_build/extract/<version>/RomFS)", r);
+        LOG("RomFS: %s", r);
+    } else LOG("[RED] no RomFS: neither DM_ROMFS nor %s/RomFS holds files (a game without a RomFS of its own goes on; another one misses its data)", dir);
+}
+#endif
+
 static void host_preload(int argc, char **argv) {
     g_t0_ns = proc_start_mono_ns();
+#ifdef DM_LINUX
+    if (argc >= 2) { pack_env_apply(argv[1]); romfs_check(argv[1]); }
+#endif
     flags_init();
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
     // Time zone: the game converts absolute time to local time along two paths, both ending in the host libc -- nn::time::ToCalendarTime (hle_time.c, localtime_r) and the guest libc's
