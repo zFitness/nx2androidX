@@ -6,6 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
+        This issue is a case where the built-in Agent repaired a game. Download the zip below and let the
+        built-in Agent apply that fix to your own port. Contributions are welcome.
+
         The app's assistant worked a game over and the export button packed that work into a zip.
         This is where the zip lands: the diff in it can be read, applied and landed in the repository,
         and the case's author gets the credit.
