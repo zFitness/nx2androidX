@@ -200,6 +200,35 @@ CreateThread(0x1006)] 窗口内的代码。崩溃锚点：pc main+0x65a084 ← 0
 block 字段注册被跳过/失败的分支条件（注意：这与「默认堆未注册」是同一
 观察的两面，谁因谁果由 A 裁定）。
 
+### 3.3.4 A 阶段首轮（2026-11-27）：tp 基址形状错误（真根因）+ 现状
+
+**真根因确认**：v2 的 linux `emit_tp`（`mrs; addi #slot_off`）形状错了——android 的
+`emit_tp`（`mrs; ldr t,[t,#16]`）加载的是 **KTLS 槽里的 TLS 区指针**（dm_slots[2]，
+宿主 guest_thread_init 填、guest `msr tpidr_el0` 切换），后续 Horizon 固定偏移索引
+**区的内部布局**；v2 却停在 `&dm_slots[0]`，偏移全落在复刻数组上——SDK 经缓存
+基址的 TLS 访问（如 [区+0x18] 的当前 ThreadType）读到错误对象。这就是引擎分配
+拿到 null 的原因（读链整体错位）。**修复**（4590fa71 + c3d8f9d1）：linux
+`emit_tp` = `mrs; ldr t,[t,#0]`，loader `install_tpbase` 烘焙 imm12 =
+`(slot_off+16)/8`（ldr x-form 按 8 字节缩放）——与 android 完全同形。
+
+**修复后的新状态**（崩溃前移但性质改变）：旧崩溃（strb [null+8]）消失；游戏
+**创建出引擎自己的线程池**（新崩溃线程 = 引擎新建线程），新崩溃 = 引擎线程
+入口桩 `sdk+0xe02e6c`（`mrs→区→[区+*(0xddc018)]=当前 ThreadType→blr`）读到 0
+→ blr 0。⇒ 新线程的 TLS 区里「当前 ThreadType」字段无人填写——android 上
+同一桩能工作，说明 android 上该字段在入口前被填好（填写路径 = guest 经
+改写站点的存储，或引擎预填）。**下一步仪器修正**（外部评审 2026-11-27 的
+三条批评全部成立，记录在案）：
+1. `site_tpidr_write` 是内联 STR 直写槽位，不经 dm_tsd_set_traced →
+   DM_TRACETLS 看不到 guest 的区切换；android 侧也无对应仪器。→ 改造
+   site_tpidr_write 发 `bl` 到宿主被追踪的 setter（双平台等价），恢复可见性。
+2. DM_TRACESVC 的「一致」判据仅 (num, site)：GetInfo 返回值已单独比对一致，
+   但 CreateThread 的 w4/w5（现 trace 已扩到 x0-x5）、QueryMemory 应答结构
+   （现 trace 已转储）在首轮对照中未覆盖。
+3. SVC trace 不覆盖直接 HLE 调用，「无 SVC ≠ 纯 guest」。
+已上线的取证工具：游戏 patches.py 的 OBS 观察门（分配调用入参/结果、构造
+函数入口、heap-ctx 查找、CreateBlock 入口/返回，7 个门）+ 宿主
+hle_obstrace.c（DM_OBSTRACE，双平台寄存器日志）——同链双平台逐行差分。
+
 ### 3.4 已否决的路线（记录，防重蹈）
 
 | 路线 | 否决原因 |
