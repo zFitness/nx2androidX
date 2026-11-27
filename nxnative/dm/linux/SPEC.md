@@ -174,6 +174,32 @@ default-block（main+0x17584f8）的执行路径，在 linux 上没跑或写失�
 DM_HEAPTRACE（双平台）、DM_PROBE_WATCH（注意页粒度一次性盲区）、
 崩溃探针（crash.c，linux-only 块已守卫）。
 
+### 3.3.3 B 阶段结论（2026-11-27：宿主调用逐条对照 → 转入 A）
+
+对等核验先行：两平台 Build ID、cuts/obs/gates 表、改写器源码哈希、档案
+（android.tsv/game.tsv md5）、player_api_revision、--gfx null 全部一致 ✓。
+
+新仪器 `DM_TRACESVC`（hle_svc.c：svc_dispatch 包一层，进出各记一行：
+编号、线程句柄、相对化调用点（两平台模块布局一致 → 偏移直接可比）、
+x0-x3、返回值；6 万行封顶）+ `DM_TRACETLS`（loader.c：KTLS/KTLR 槽变化
+即记，即 guest `msr tpidr_el0` 的区域切换）。
+
+**主线程 SVC 序列逐条对照：前 48 个事件完全一致**——GetInfo 内存布局
+爆发（各 region 尺寸/偏移 SAME，绝对基址 DIFF = ASLR，相对化后同一布局，
+含 option C 的内存布局与系统信息查询）、SetHeapSize（同尺寸 0xc9400000、
+同对齐级别）、线程 0x1004/0x1005 创建与启动、优先级/核掩码设置。
+**第 49 个事件起分叉：android 主线程继续 QueryMemory+MapMemory（新线程栈）
+→ CreateThread 0x1006 → 引擎线程池（0x1006-0x1024）；linux 主线程在
+StartThread(0x1005) 后无任何 SVC，纯 guest 代码 ~60ms 后崩溃。**
+
+⇒ 按方法论：宿主调用一致 → **转 A**：分析游戏在 [StartThread(0x1005) →
+CreateThread(0x1006)] 窗口内的代码。崩溃锚点：pc main+0x65a084 ← 0xecf314
+← 0x3159f8 ← 0xe85290 ← 0xe843e8 ← 0xe83bd4 ← 0x43cd04 ← 0x43d478 ←
+0x439e08 ← 0x438158 ← 0x439690 ← 0x3a8ca4 ← guest_main。A 的任务：找
+0x438158/0x439690/0x439e08/0x43d478/0x43cd04 引擎初始化帧里，管理器
+block 字段注册被跳过/失败的分支条件（注意：这与「默认堆未注册」是同一
+观察的两面，谁因谁果由 A 裁定）。
+
 ### 3.4 已否决的路线（记录，防重蹈）
 
 | 路线 | 否决原因 |
