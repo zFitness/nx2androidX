@@ -62,6 +62,9 @@ static double present_time_get(uint64_t ticket) {
     pthread_mutex_unlock(&g_pres_mu);
     return t;
 }
+#ifdef DM_LINUX
+static void surface_retire(VkSurfaceKHR s);   // a surface for the window's thread to destroy (the handshake block below swap_destroy)
+#endif
 static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
 // The swapchain's format follows the window texture's sRGB-ness: a blit from an sRGB image into a UNORM one decodes to linear and stores that unencoded, which darkened the whole
 // picture (Donkey Kong Country Returns HD presents RGBA8_SRGB, NVN format 0x38; issue #4). The Switch scans the window texture's bytes out as they are, and an SRGB -> SRGB blit
@@ -185,9 +188,7 @@ static int rot_setup(void) {
     return 1;
 }
 #ifdef DM_LINUX
-uint64_t dm_front_vk_px(void);
-static void surface_retire(VkSurfaceKHR s);
-static int swap_make(void);   // front_linux.c: the window's size in pixels, (width << 32) | height, as the SDL main thread last read it
+uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, (width << 32) | height, as the SDL main thread last read it
 
 // The window belongs to the SDL main thread (Wayland's display is that thread's): everything that touches it is done there, and the present
 // thread only asks. One request at a time through a state word: IDLE -> REQ (the asker) -> ANS (the front thread, once the surface is made) ->
