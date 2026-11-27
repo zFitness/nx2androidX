@@ -148,7 +148,7 @@ static void *alias_windows_thread(void *arg) {
 
 int svc_thread(int num, uint64_t *regs);   // hle_thread.c: thread and synchronization kind
 
-uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+static uint64_t svc_dispatch_inner(int num, uint64_t *regs, uint64_t orig_addr) {
     { void hlecount_svc(int); hlecount_svc(num); }   // DM_HLECOUNT: svc counts by number
     mem_init();
     if (svc_thread(num, regs)) return regs[0];
@@ -339,4 +339,22 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         if (!g_seen[num & 0xff]) { g_seen[num & 0xff] = 1; LOG("SVC %#x x0=%#llx x1=%#llx x2=%#llx (placeholder returns success)", num, regs[0], regs[1], regs[2]); }
         regs[0] = 0; return 0;
     }
+}
+
+// DM_TRACESVC: every guest svc, entry and exit, with the relativized call site, the thread, args and
+// results -- the android/linux boot comparison runs on this (the module layout is identical on both, so
+// the site offsets and the sequences compare line for line until the first semantic divergence)
+uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
+    static int on = -1; static long cap = 0;
+    if (on < 0) on = !!getenv("DM_TRACESVC");
+    if (!on || cap > 60000) return svc_dispatch_inner(num, regs, orig_addr);
+    if (cap == 60000) { LOG("[svc] trace cap hit, stopping"); cap++; return svc_dispatch_inner(num, regs, orig_addr); }
+    uint32_t thr_cur_handle(void);
+    char b[192]; crash_addr_str(b, sizeof b, orig_addr);
+    LOG("[svc] #%d thr=%#x @%s x0=%#llx x1=%#llx x2=%#llx x3=%#llx", num, thr_cur_handle(), b,
+        (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2], (unsigned long long)regs[3]);
+    uint64_t r = svc_dispatch_inner(num, regs, orig_addr);
+    LOG("[svc] #%d -> x0=%#llx x1=%#llx", num, (unsigned long long)regs[0], (unsigned long long)regs[1]);
+    cap += 2;
+    return r;
 }
