@@ -245,9 +245,15 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
                         uint64_t rec = 0; stack_word(base + X, &rec);
                         uint64_t obj = 0; if (rec) stack_word(rec + 0x1f8, &obj);
                         uint64_t arr = 0; if (obj) stack_word(obj + 504, &arr);
+                        uint64_t obj144 = 0; if (obj) stack_word(obj + 144, &obj144);
                         uint64_t e2 = 0; if (arr) stack_word(arr + 2 * 8 + 128, &e2);
-                        fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx arr=%#llx entry[2]=%#llx\n",
-                            (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)arr, (unsigned long long)e2);
+                        fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx obj+144=%#llx arr=%#llx arr+144=%#llx\n",
+                            (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)obj144, (unsigned long long)arr, (unsigned long long)e2);
+                        if (sm) {
+                            uint32_t tr = 0; stack_word((uint64_t)sm->base + 0xe016b8, &tr);   // the baked ADDI of the sdk tls trampoline
+                            uint64_t ct = 0; stack_word(base + 0x18, &ct);                    // *(tls replica +0x18) = the current ThreadType per the trampoline
+                            fprintf(stderr, "[dm] probe: trampoline addi=%#x (expect 0x91001208)  cur-thread *(base+0x18)=%#llx\n", tr, (unsigned long long)ct);
+                        }
                         // classify each address against the module ranges and dump the array surroundings
                         for (int round = 0; round < 3; round++) {
                             uint64_t a = round == 0 ? rec : round == 1 ? obj : arr;
