@@ -15,6 +15,11 @@ OBS = {
     (0x4448c0, 6, '120000a5', 'CreateBlock: the arguments as the caller passed them'),
     (0xe851e4, 7, 'f9000260', 'CreateBlock returned: x0 = the block (stored at [x19] = the manager\'s block field)'),
     (0x44490c, 8, 'aa0003f3', 'CreateBlock: the heap-context lookup returned (x0; null -> the fail path)'),
+    (0xd8e614, 12, 'd101c3ff', 'the query: x0 = the singleton, x1 = the name buffer, x8 = the indirect return buffer ([+0] size, [+8] flag)'),
+    (0xe837e4, 16, '9100a3e8', 'the first call (0xd8e728) returned: x0'),
+    (0xe837f8, 13, '3940c3e8', 'the query returned: [sp+0x28] = size, [sp+0x30] = flag byte (the caller reads both)'),
+    (0xe8380c, 14, 'aa1f03e0', 'the direct zero path: the singleton was null, no query ran, size = 0'),
+    (0xe83834, 15, 'f9016e73', 'this CreateBlock returned: x0 = the block or 0'),
     # gate 9 (0x444940, the context virtual's return) was dropped: that slot does not satisfy the
     # gate placement rules either. Its data is inferred: gate 8 shows the context, and if the block
     # then fails, the virtual returned < 0x121 (the fail threshold in the disassembly).
