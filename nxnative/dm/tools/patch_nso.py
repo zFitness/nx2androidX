@@ -114,9 +114,10 @@ def emit(w, kind=None):
 # Where a thread's slots are (DM_TARGET). apple: Darwin's TSD, slot = tpidrro_el0 + key number * 8. android: tpidrro_el0 reads 0 for 64-bit Linux tasks and
 # bionic owns tpidr_el0, so each guest thread's slot block hangs off bionic's TLS_SLOT_APP (tpidr_el0[2], reserved for app use) and the key page holds offsets
 # into that block (the Android host's dm_tsd_*): one more load per slot access
-TARGET = os.environ.get('DM_TARGET', 'apple'); assert TARGET in ('apple', 'android'), f'DM_TARGET {TARGET}: apple or android'
+TARGET = os.environ.get('DM_TARGET', 'apple'); assert TARGET in ('apple', 'android', 'linux'), f'DM_TARGET {TARGET}: apple, android or linux'
 def emit_tp(t):
     if TARGET == 'android': emit(MRS_TPIDR(t)); emit(LDRX(t, t, 2))
+    elif TARGET == 'linux': emit(MRS_TPIDR(t))   # glibc 的 TCB 指针；槽位偏移由 loader 写进 key page
     else: emit(MRS_TPIDRRO(t))
 
 def emit_key_addr(reg, kind):
