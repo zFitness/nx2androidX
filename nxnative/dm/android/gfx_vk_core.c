@@ -20,6 +20,10 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef DM_LINUX
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+#endif
 void crash_thread_init(void);   // the signal alternate stack is per thread (dm.h): the completion thread faults on a bad frame, and without it the crash is silent
 
 #define VK_DEF(f) PFN_##f f;
@@ -155,6 +159,26 @@ void vk_init(void) {
     // of the Kingdom 1.4.3 that also replays NVN on Vulkan, measured its Great Sky Island forest at GPU 16-17 ms a frame on Turnip on an Adreno 830 (docs/FPS-2026-10-31.md),
     // against 22-27 ms here on Qualcomm's driver. A driver that does not load, or offers no Vulkan 1.3 GPU, leaves the system's
     const char *drv = getenv("DM_VK_DRIVER"); void *lib = NULL;
+#ifdef DM_LINUX
+    // Linux: the loader picks the driver itself (ICDs in /usr/share/vulkan/icd.d; Mesa's freedreno on Adreno). DM_VK_DRIVER=<library> is loaded
+    // directly in its place, without adrenotools: a driver or loader of the player's own
+    if (drv && *drv) {
+        if ((lib = dlopen(drv, RTLD_NOW | RTLD_LOCAL))) p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+        if (!lib || !p_vkGetInstanceProcAddr) { VKLOG("[RED] DM_VK_DRIVER %s: cannot be loaded (%s); the system's loader instead", drv, dlerror()); lib = NULL; }
+        else VKLOG("Vulkan driver %s, not the system's loader", drv);
+    }
+    if (!lib) {
+        if (!(lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL)) && !(lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL))) die("[vk] libvulkan: %s", dlerror());
+        p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+    }
+    vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+    // The window-system extensions are SDL3's: what its video driver (Wayland) needs for a surface on the window the front made. Without a window
+    // (no display: the front's headless fallback) there are none, and the instance gets the surface extension alone
+    Uint32 nsext = 0; const char *const *sext = SDL_Vulkan_GetInstanceExtensions(&nsext);
+    const char *iext[24] = {"VK_KHR_surface"}; unsigned nbase = 1;
+    for (Uint32 i = 0; i < nsext && nbase < 23; i++) { const char *e = sext[i]; unsigned k = 0; while (k < nbase && strcmp(iext[k], e)) k++; if (k == nbase) iext[nbase++] = e; }
+    if (!nsext) VKLOG("[RED] SDL names no window-system extensions (%s): an instance without a surface", SDL_GetError());
+#else
     if (drv && *drv) {
         Dl_info di; char dir[512] = "", dirs[520] = "";   // the APK's extracted libraries (mkapk.py: extractNativeLibs), where adrenotools finds its hooks
         if (dladdr((void *)vk_init, &di) && di.dli_fname && strrchr(di.dli_fname, '/')) {
@@ -175,19 +199,24 @@ void vk_init(void) {
             VKLOG("[RED] DM_VK_DRIVER %s: no Vulkan 1.3 GPU through it; the system's driver instead", drv); lib = NULL; }   // (left loaded: a driver does not always unload cleanly)
         else VKLOG("Vulkan driver %s through adrenotools, not the system's (%s)", drvname, drvdir);
     }
+#endif
+#ifndef DM_LINUX
     if (!lib) {
         if (!(lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL))) die("[vk] libvulkan.so: %s", dlerror());
         p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
     }
     vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
     const char *iext[] = {"VK_KHR_surface", "VK_KHR_android_surface", "VK_EXT_debug_utils"};
-    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "dmhost", 1, "nxnative", 1, VK_API_VERSION_1_3};
-    // DM_VK_VALIDATE=1: Khronos's validation layer, which the APK carries only when built with it (mkapk.py --extra-so); its messages go to the log
+    unsigned nbase = 2;   // without the validation layer's extension
+#endif
     int validate = getenv("DM_VK_VALIDATE") && atoi(getenv("DM_VK_VALIDATE"));
+    if (validate) iext[nbase++] = "VK_EXT_debug_utils";
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "dmhost", 1, "nxnative", 1, VK_API_VERSION_1_3};
+    // DM_VK_VALIDATE=1: Khronos's validation layer (the APK carries it only when built with it, mkapk.py --extra-so; Linux: the system's); its messages go to the log
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, validate ? 1u : 0u, layers, validate ? 3u : 2u, iext};
+    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, validate ? 1u : 0u, layers, nbase, iext};
     VkResult ir = vkCreateInstance(&ici, NULL, &V.inst);
-    if (ir && validate) { VKLOG("[RED] validation layer not available (%d): running without it", ir); validate = 0; ici.enabledLayerCount = 0; ici.enabledExtensionCount = 2; ir = vkCreateInstance(&ici, NULL, &V.inst); }
+    if (ir && validate) { VKLOG("[RED] validation layer not available (%d): running without it", ir); validate = 0; ici.enabledLayerCount = 0; ici.enabledExtensionCount = --nbase; ir = vkCreateInstance(&ici, NULL, &V.inst); }
     VKCHK(ir);
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT mk = (PFN_vkCreateDebugUtilsMessengerEXT)p_vkGetInstanceProcAddr(V.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -555,7 +584,13 @@ typedef struct slab_t { struct slab_t *next; AHardwareBuffer *ahb; int fd; uint8
                         uint64_t bits[SLAB_SLOTS / 64], fence[SLAB_SLOTS]; } slab_t;   // bits: 1 = slot free; fence: the submission the GPU must have passed before it is taken
 static slab_t *g_slab[SLAB_NCLS]; static pthread_mutex_t g_slab_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_slab_used, g_slab_bytes;   // pools placed in slabs so far, slab memory (under g_slab_mu: the pool line)
-static int slab_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_SLABS"); v = !(e && !atoi(e)); } return v; }
+static int slab_on(void) {
+#ifdef DM_LINUX
+    return 0;   // the slabs are AHardwareBuffers too
+#else
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_SLABS"); v = !(e && !atoi(e)); } return v;
+#endif
+}
 static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported (no lock held)
     uint64_t sb = (uint64_t)SLAB_PAGES[c] << 12; uint32_t n = 64;
     if (sb * n < (2u << 20)) n = (uint32_t)((2u << 20) / sb); if (sb * n > (8u << 20)) n = (uint32_t)((8u << 20) / sb); if (n > SLAB_SLOTS) n = SLAB_SLOTS;
@@ -879,7 +914,13 @@ static int zc_uncached(void) {
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
-static int zc_off(void) { static int v = -1; if (v < 0) v = getenv("DM_VK_NO_ZEROCOPY") != NULL; return v; }   // DM_VK_NO_ZEROCOPY (set at all): every pool copied
+static int zc_off(void) {
+#ifdef DM_LINUX
+    return 1;   // no AHardwareBuffers off Android: every pool is a copied one, refreshed from the game's pages before each submission (v1; SPEC §5 v2 = dma-buf export)
+#else
+    static int v = -1; if (v < 0) v = getenv("DM_VK_NO_ZEROCOPY") != NULL; return v;
+#endif
+}   // DM_VK_NO_ZEROCOPY (set at all): every pool copied
 void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;

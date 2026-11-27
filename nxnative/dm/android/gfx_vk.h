@@ -5,6 +5,11 @@
 // Version 1 is correct-first: whole-pipeline barriers between passes, full pipelines with a small dynamic state set, descriptor sets per draw.
 #pragma once
 #define VK_NO_PROTOTYPES
+#ifdef DM_LINUX
+#define VK_USE_PLATFORM_WAYLAND_KHR   // Linux: the window is SDL3's Wayland window, its surface SDL_Vulkan_CreateSurface's, made on the front thread (gfx_vk_present.c)
+#endif
+// Android's types stay in the backend on Linux too (AHardwareBuffer slabs, ANativeWindow): they come from dm/linux/include/android there, and the
+// zero-copy paths behind them are never taken (DM_LINUX: zc_off() is always set, gfx_vk_core.c). vkCreateAndroidSurfaceKHR is never called on Linux
 #define VK_USE_PLATFORM_ANDROID_KHR
 #include <android/hardware_buffer.h>
 #include <android/native_window.h>

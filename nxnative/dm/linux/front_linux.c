@@ -20,6 +20,8 @@
 // gfx_vk_present（DM_LINUX）把窗口当 opaque 的 ANativeWindow 用：同一 opaque 类型对接
 typedef struct SDL_Window ANativeWindow;
 ANativeWindow *dm_front_window(void);
+// The Vulkan backend's work on the window's thread: the surface (android/gfx_vk_present.c, DM_LINUX). Weak: the null-device build has none
+__attribute__((weak)) void dm_front_tick(void);
 
 static SDL_Window *g_win;
 static volatile int g_quit;
@@ -122,7 +124,9 @@ void front_run(void (*guest)(void)) {
         guest();
         return;
     }
-    fprintf(stderr, "[front] window up (1280x720, wayland)\n");
+    // The Vulkan loader SDL makes the surface with: the same libvulkan the backend's own pointers come from
+    if (!SDL_Vulkan_LoadLibrary(NULL)) fprintf(stderr, "[front] SDL_Vulkan_LoadLibrary failed: %s (the backend loads libvulkan itself)\n", SDL_GetError());
+    fprintf(stderr, "[front] window up (1280x720, %s)\n", SDL_GetCurrentVideoDriver());
 
     pthread_t th;
     if (pthread_create(&th, NULL, guest_trampoline, &guest)) {
@@ -166,6 +170,7 @@ void front_run(void (*guest)(void)) {
             if (g_quit) break;
         }
         if (g_quit) break;
+        if (dm_front_tick) dm_front_tick();   // the surface the Vulkan backend's present thread asked for
         SDL_Delay(4);
     }
     fprintf(stderr, "[front] quit: exiting the process (guest thread included; v1 无优雅停机)\n");

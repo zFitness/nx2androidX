@@ -3,9 +3,16 @@
 // presented with FIFO (vsync) pacing. Headless (dmhost from adb shell): frames are counted, and DM_VK_SHOT=n1,n2,... writes those presented frames as PPM files to
 // DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
 #include "gfx_vk.h"
+#ifdef DM_LINUX
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
+#include <unistd.h>
+#endif
 #include "dm_pacing.h"   // the frame-pacing policy
 #include <android/native_window.h>
+#ifndef DM_LINUX
 #include <jni.h>
+#endif
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -173,21 +180,56 @@ static int rot_setup(void) {
     vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);
     return 1;
 }
+#ifdef DM_LINUX
+// The surface belongs to the thread that owns the window (SDL3's Wayland display): the present thread asks here, under g_present_mu, and the
+// front thread makes it from its event loop (dm_front_tick, dm/linux/front_linux.c) -- the front thread never takes that mutex, so the asker's
+// waiting holds nothing the front needs. The asker gives up after a second, which only a front thread without a loop could cause
+static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; volatile int req, done; } g_sreq;
+void dm_front_tick(void) {
+    if (__atomic_load_n(&g_sreq.req, __ATOMIC_ACQUIRE)) {
+        g_sreq.r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sreq.w, g_sreq.inst, NULL, &g_sreq.surf) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+        __atomic_store_n(&g_sreq.req, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_sreq.done, 1, __ATOMIC_RELEASE);
+    }
+}
+static int surface_make(ANativeWindow *w) {
+    g_sreq.surf = VK_NULL_HANDLE; g_sreq.w = w; g_sreq.inst = V.inst;
+    __atomic_store_n(&g_sreq.done, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_sreq.req, 1, __ATOMIC_RELEASE);
+    for (int i = 0; i < 1000 && !__atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE); i++) usleep(1000);
+    if (!__atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE)) VKRED_ONCE(141, "the front thread made no surface in a second");
+    g_surf = g_sreq.surf;
+    return __atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE) && g_sreq.r == VK_SUCCESS && g_surf != VK_NULL_HANDLE;
+}
+#endif
 static int swap_make(void) {
     ANativeWindow *w = dm_front_window();
     if (w != g_win) { swap_destroy(); g_win = w; }
     if (!w) return 0;
-    int ww = ANativeWindow_getWidth(w), wh = ANativeWindow_getHeight(w);
+    int ww, wh;
+#ifdef DM_LINUX
+    SDL_GetWindowSize((SDL_Window *)w, &ww, &wh);
+#else
+    ww = ANativeWindow_getWidth(w); wh = ANativeWindow_getHeight(w);
+#endif
     if (g_swap && ww > 0 && wh > 0 && ((uint32_t)ww != g_sext.width || (uint32_t)wh != g_sext.height)) swap_destroy();
     if (g_swap) return 1;
+#ifdef DM_LINUX
+    if (!surface_make(w)) return 0;   // SDL's surface, on the front thread: the window (and Wayland's display) is that thread's
+#else
     VkAndroidSurfaceCreateInfoKHR si = {VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, NULL, 0, w};
     if (vkCreateAndroidSurfaceKHR(V.inst, &si, NULL, &g_surf)) return 0;
+#endif
     VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.pd, g_surf, &caps);
     uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, NULL); VkSurfaceFormatKHR sf[32]; if (nf > 32) nf = 32; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, sf);
     g_sfmt = sf[0].format; for (uint32_t i = 0; i < nf; i++) if (sf[i].format == VK_FORMAT_R8G8B8A8_UNORM) g_sfmt = sf[i].format;
     for (uint32_t i = 0; i < nf; i++) if (sf[i].format == g_want) g_sfmt = g_want;   // the window texture's sRGB-ness (g_want), so the blit copies its bytes as they are
     if (g_sfmt != g_want) VKRED_ONCE(95, "the surface offers no format %d for the window texture: its picture is %s", g_want, g_want == VK_FORMAT_R8G8B8A8_SRGB ? "darker" : "lighter");
+#ifdef DM_LINUX
+    SDL_GetWindowSize((SDL_Window *)w, &ww, &wh); g_sext = (VkExtent2D){(uint32_t)ww, (uint32_t)wh};   // the window as it is now
+#else
     g_sext = (VkExtent2D){(uint32_t)ANativeWindow_getWidth(w), (uint32_t)ANativeWindow_getHeight(w)};   // the window as it is now; Android's compositor rotates (identity transform)
+#endif
     if (!g_sext.width || !g_sext.height) g_sext = caps.currentExtent;
     uint32_t n = caps.minImageCount < 3 ? 3 : caps.minImageCount; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
     int want = 1; { const char *e = getenv("DM_VK_PRETRANSFORM"); if (e && *e) want = atoi(e) != 0; }
@@ -620,6 +662,7 @@ static void ov_panel(int st, int position) {   // the pause menu, the text entry
     else ov_menu_panel(&cv, st, position);
 }
 // The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
+#ifndef DM_LINUX   // the app's ExternalActivity reads the menu raster through these (JNI); there is no app on Linux
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuScroll(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_scroll_position(); }
 JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
@@ -643,6 +686,7 @@ JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JN
     if (out) (*env)->SetIntArrayRegion(env, out, 0, (jsize)(count + 2), argb);
     free(argb); free(pixels); return out;
 }
+#endif
 static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
     memset(px, 0, (size_t)w * (h + sh) * 4);
     int ts = h > 600 ? 3 : 2;
