@@ -1,0 +1,188 @@
+# dm/linux · Linux 运行时规格（SPEC）
+
+> 目标：Switch 游戏以**原生 aarch64 Linux 进程**直接运行（DroidSpaces 容器 / 任何
+> glibc ≥ 2.41 的 aarch64 Linux）。构建与运行环境 = DroidSpaces 容器
+> （Ubuntu 26.04，python 3.14，glibc 2.43，Mesa freedreno Vulkan，anland Wayland 桥）。
+> 开发循环入口：payload 的 `bin/nx2a-{env,build,run,probe}.sh`。
+
+## 1. 已实证的事实（2026-11-27，全部一次点击/一条命令实测）
+
+| 事实 | 证据 |
+|---|---|
+| porter 全 7 阶段在容器内原生全速 ✓ ×2 | `/opt/port-run.log`（extract 1.3GB、12,691 着色器、clang 181 源、pack）|
+| 容器无 app seccomp 问题（线程池 1957 文件 ✓）| pool 测试 |
+| SDL3 wayland 窗口 + Vulkan swapchain 上屏 ✓（180 帧）| `probe/sdl3_vk_clear.c`，GPU = Adreno 830v1（Mesa freedreno）|
+| payload 二进制（trixie 2.41 构建）在容器 glibc 2.43 上直接运行 ✓ | 全程 |
+| dmhost（linux 构建）启动即 FATAL `bionic's TLS_SLOT_APP is already in use` | 本 spec 的核心问题（§3）|
+
+## 2. 架构总览：共享资产 + 三道缝
+
+**共享（Android 线与 Linux 线同一份代码，一行不改）**：
+- gfx_vk 全族渲染核心（gfx_vk_core/exec/dq/shader/tex/subgroup/quirks/ubo_comp）
+  ——NVN 仿真 → Vulkan，跑在 **Mesa freedreno** 上（手机 = 同家族 Turnip/freedreno，
+  同一颗 Adreno）
+- 12,691 个翻译好的着色器 bundle（数据）
+- hle 层主体、nvn_dirty 脏页跟踪、音频/影片的 hle 契约
+
+**缝（平台差异，Linux 线的全部平台代码）**：
+
+| 缝 | Android 侧 | Linux 侧 |
+|---|---|---|
+| S1 呈现/窗口 | ANativeWindow → VK_KHR_android_surface | SDL3 wayland 窗口 → SDL_Vulkan_CreateSurface |
+| S2 内存 | 游戏内存页 → AHardwareBuffer(BLOB) → dma-buf → VkBuffer 导入 | memfd → udmabuf（或直接 VkDeviceMemory mmap）→ 同页 MAP_FIXED |
+| S3 TLS 槽位 | bionic TLS_SLOT_APP 块 | loader 的 IE-TLS 数组（§3）|
+
+## 3. TLS 槽位模式（本 spec 的核心设计）
+
+### 3.1 机制现状（读 patch_nso.py + loader.c 确认）
+
+改写后的代码访问四个特殊槽（K18=游戏的 x18、KTLS=tpidr_el0、KTLR=tpidrro_el0、
+KGATE=宿主门入口）的序列是：
+
+```
+STP(保存) → emit_tp(T) → emit_key_addr(K) → ADD(base, K) → LDR/STR
+```
+
+- `emit_tp`：apple → `MRS tpidrro_el0`；android → `MRS tpidr_el0` + `LDR [t,t,2]`
+- **key page**（模块补丁区的一页，loader 填写）：存的是**每键相对 tp 的偏移**
+  （loader.c 的 tsd_check/tls 读取实证：`key_page_off + key_idx[kind]*8`）
+
+⇒ **改写器对目标的支持 = emit_tp 一个函数**。apple 的 emit_tp = 裸 `MRS tpidrro_el0`
+——Linux 内核的同名寄存器语义相同（线程指针）⇒ **改写器零改动**（DM_TARGET=apple
+原样使用）。
+
+### 3.2 Linux 变体的设计：loader 自有的 IE-TLS 数组
+
+**关键洞察**：key page 的内容由 loader 填写 ⇒ 槽位位置由 loader 决定，不依赖任何
+libc 布局。
+
+```c
+// loader.c（DM_TSD_LINUX 模式）
+__thread uint64_t dm_slots[8];            // initial-exec：落在 glibc 静态 TLS 块，
+                                          // 每线程一份，tp+固定偏移可达
+// 初始化：off[k] = (uint64_t *)(&dm_slots[k]) - tp_now()   // 运行时实测偏移
+//   写入模块的 key page（K18/KTLS/KTLR/KGATE 四项）
+// dm_tsd_set/get：dm_slots[k] = v / 读 dm_slots[k]
+```
+
+- 改写后的代码：`MRS tpidrro_el0`（读 tp ✓ Linux 原生）→ `LDR [tp + off[k]]`
+  = dm_slots[k] ✓ —— 落点 = **loader 自己的变量**，不碰 glibc 任何字段 ✓
+- `dm.h`：`DM_TSD_APPLE` 下 dm_tsd_set/get 的 pthread 形式在 glibc 同样可用
+  （pthread keys 与 tp 布局无关 ✓），但 dm_slots 直读更快更确定 → 统一用数组形式
+- `tsd_check`：dm_slots[K18]=0x1234 → 读 `[tp+off[K18]]` 对比 ✓ 按构造成立
+- 工作量：loader.c ≈ 50 行 + dm.h ≈ 10 行 + `patch_nso.py` **0 行**
+
+### 3.3 TLS：直接实现 linux 目标（CR 后定案；apple 探针已从代码层面否决）
+
+apple 模式探针**不必跑**：`tsd_check` 读 `tpidrro_el0`——Linux 64 位任务该寄存器内核
+不维护（读到 0/残渣），随后按 key*8 小整数对近零地址解引用 = **SIGSEGV 野指针崩溃**
+（不是干净的 die）。路线直接定为 `DM_TARGET=linux`（约 100 行，4 个文件）：
+
+1. `patch_nso.py`：`TARGET` assert 加 `'linux'`；`emit_tp`（:118-120）加分支——
+   `linux` = `emit(MRS_TPIDR(t))` **一条指令**（比 android 的两条还少）；
+   `emit_key_addr/emit_slot_addr`（:122-126）目标无关，零改动；`# TARGET linux` 自动落盘
+2. 宿主侧（loader.c）：`__thread uint64_t dm_slots[8]`（initial-exec；dmhost = PIE exe
+   → 必然落静态 TLS，无 surplus 风险；若将来以 libdmhost.so dlopen，需
+   `-ftls-model=initial-exec` 并验证）；启动时算
+   `slot_off = (uint8_t*)&dm_slots[0] - (uint8_t*)__builtin_thread_pointer()`，
+   `install_key_page`（:281）改写 `slot_off + key*8`
+3. `dm.h`（:91-97）：DM_TSD_LINUX 分支——dm_tsd_set/get 直读数组（**无 pthread key、
+   无析构器**：静态 TLS 随线程消亡，比 android 模式的 g_tsd_free 块管理更简单）；
+   `read_layout` 的 `want`（:241-246）加 `"linux"`；`tsd_check` 照 android 版改读
+   `tpidr_el0` 校验
+4. apple 探针若要跑（诊断目的）：预期在 loader.c:44 对近零地址解引用 SIGSEGV，
+   不是干净的 die
+
+调用点（thread.c:12-27、hle_thread.c:341,354）在新宏下零改动；`-ffixed-x18`
+（build.py:152）保证宿主代码生成不碰 x18。
+
+### 3.4 已否决的路线（记录，防重蹈）
+
+| 路线 | 否决原因 |
+|---|---|
+| android 模式直接跑（现状）| 放置依赖 bionic 的 TLS_SLOT_APP；glibc 线程无此概念 → create_keys FATAL（实测）|
+| apple 模式原样（pthread_setspecific 当 TSD）| glibc 的 pthread_setspecific 写在 specific 数组，不在 tp+key*8；且 Linux 上 tpidrro_el0 读 0 → 探针是野指针 SIGSEGV，非干净失败（CR 定案：跳过探针）|
+| FEX + x64 dotnet（C# 工具跑 FEX）| 可行但只解决 C# 工具；python 侧仍需 rootfs python + 显式 loader；混合栈复杂度 > 收益（已放弃，FEX 实证记录在案）|
+
+## 4. 缝 1：呈现（SDL3 + Vulkan surface；CR 后细化）
+
+四个致命/高项（CR F1/F2/F3/H1）：
+
+1. **实例扩展（F1，第一个启动闸门）**：gfx_vk_core.c:183 的 iext 写死
+   `VK_KHR_android_surface`，Linux loader 上该扩展不存在 → vkCreateInstance 直接
+   die。DM_LINUX 下用 `SDL_Vulkan_GetInstanceExtensions()` 的返回构造 iext
+2. **Android 头（F2）**：gfx_vk.h:8-10 的 VK_USE_PLATFORM_ANDROID_KHR +
+   android/hardware_buffer.h + android/native_window.h + jni.h——glibc 无这些头。
+   补 `android/compat/include/` 的 stub 头（类型/无操作原型返回失败），**不用
+   #if 掉 700 行**（diff 最小、Android 路径零风险）
+3. **链接缺失符号（F3）**：`dm_perf_frame/cost/window`（perf_android.c，非 weak）与
+   `dm_overlay_font/theme`（overlay_theme.c，含 AAssetManager）不在 linux 文件集 →
+   链接失败。补 `linux/perf_stub.c`（三个空实现）+ overlay_theme 的 DM_LINUX 读取
+   路径（`dm_front_root()` 由 front_linux 提供，asset() 的文件分支现成）
+4. **surface 创建线程（H1）**：窗口在主线程创建，swap_make 在 present 专用线程——
+   SDL/wayland 的线程亲和坑。surface 只依赖 VkInstance → 由 front 线程在 vk_init 后
+   代建，`VkSurfaceKHR` 存全局交 present 线程用
+
+其余（CR M2/M3 确认）：format 选择/compositeAlpha/preTransform（Wayland 恒
+IDENTITY）/FIFO/resize+swapchain 重建路径——现有代码已完整覆盖，DM_LINUX 分支
+只需把 `ANativeWindow_getWidth/Height`（:180,190）换成 `SDL_GetWindowSize`，
+extent 建议 clamp 到 min/maxImageExtent。VK_GOOGLE_display_timing 在 Mesa
+wayland 可能没有 → 现有 fallback 顶替（帧率图精度降级，非阻塞）。
+
+## 5. 缝 2：内存（CR 后修正：v1 copied-pool 先行，v2 dma-buf 导出）
+
+**方案原表述的修正**：“host-visible VkDeviceMemory 直接 mmap MAP_FIXED”前提不成立
+——VkDeviceMemory 无 fd，须 `VkExportMemoryAllocateInfo` + `vkGetMemoryFdKHR`
+（VK_KHR_external_memory_fd / VK_EXT_external_memory_dma_buf）导出后再 mmap——机械
+结构与 AHB 路线**同构**（`zc_fill` 消费的本来就只是 fd + VkBuffer），并不更简单；
+且 ReBAR（host-visible+device-local 大堆）在 Adreno（UMA SoC）上不存在，
+HOST_CACHED 与否须实测。
+
+**v1（1-2 天，先落地能跑的）**：DM_LINUX 编译期强制零拷贝关闭
+（`zc_off()`，gfx_vk_core.c:882，现为 opt-out 环境变量），池全走 **copied 层**——
+`pool_copied_alloc`（:473-489）+ `vk_pools_sync`（:1126-1199，增量 64KB 脏块）+
+`pools_copy_back`（:1260-1293）。这条路径今天就在 Android 上作为兜底运行，纯
+Vulkan，freedreno 上必然工作。用 `zc_uncached`（:861-878）的思路测 turnip 的
+host-visible 内存是否 CPU-cached，评估成本。
+
+**v2（3-6 天，有设备探测风险）**：零拷贝换水源——`VkExportMemoryAllocateInfo(DMA_BUF)`
++ `vkGetMemoryFdKHR` + mmap MAP_FIXED，接入现有
+`zc_fill/zc_unplace/slab/zcf/嵌套池` 机器（它们只消费 fd + VkBuffer，:621-633 实证）。
+探测三件事：export 支持、该内存类型 HOST_CACHED 与否、CPU 读速与 malloc 之比
+（复用 `zc_uncached`）。任一不满足就停在 v1。
+
+**注意**：860 MB 池逐帧全量拷贝的先例（:1123-1124 “每秒几帧”、:879-880）说明
+v1 的性能结论不能靠猜——先拿真机数据再决定 v2 投入。
+
+配套：AHB 头做成 compat stub（无操作原型返回失败）而非 `#if` 掉 700 行；
+`DM_VK_NO_ZEROCOPY` 在 DM_LINUX 编译期强制；MODULE_SLACK 的 `#ifdef __ANDROID__`
+（loader.c:652-658，Link's Awakening 越界读 4.2MB 的 slack）并入 DM_LINUX。
+
+
+## 6. 里程碑
+
+| M | 内容 | 验收 |
+|---|---|---|
+| M1 | payload + 全 7 阶段构建（容器）✓ + front_linux 窗口化 ✓ | ✓ 已达成 |
+| M2 | TLS linux 目标（§3.3，~100 行 4 文件）| dmhost 过 tsd_check，进入 guest_main |
+| M3 | 缝 1 呈现（§4：F1-F3/H1 四项 + SDL surface，主线程代建）| 游戏画面上 DroidDeck 屏幕 |
+| M4 | 缝 2 内存 **v1 copied-pool**（DM_LINUX 强制 zc_off）| 游戏资源加载/帧渲染稳定 |
+| M5 | 真实游玩：输入/音频/影片（null）| 可玩性判定 |
+| M6 | 缝 2 内存 **v2 零拷贝**（dma-buf 导出，探测驱动支持后）| 性能达标（对照 v1 数据）|
+
+工作量（CR 复核）：M2 ≈ 2-3 天；M3 ≈ 2-3 人日；M4 v1 ≈ 1-2 天；遗漏项 ≈ 1-2 天；
+**v1 可玩合计 ≈ 8-15 人日**；v2 零拷贝 +3-6 天（先拿 v1 真机数据再决定）。
+
+## 7. 风险与开放问题
+
+1. anland 桥的 Wayland 协议覆盖（xdg-shell/decoration）——SDL3 清屏已过 ✓，
+   全功能窗口（resize/maximize）待验
+2. freedreno 对交换链 present mode（FIFO ✓）与格式（BG8R8A8 ✓）已验；
+   游戏着色器在 freedreno 上的编译正确性 = M3 后的实测项
+3. udmabuf 内核配置未确认（§5 v2 的开关）；缺则 v1 copied-pool 顶上
+4. glibc 静态 TLS：dmhost = PIE exe → dm_slots 必落静态 TLS ✓（CR 确认无
+   surplus 风险；libdmhost.so 形态需 -ftls-model=initial-exec）
+5. 内存池地址空间布局：MAP_FIXED 覆盖已有映射 = 现有机制已处理 ✓
+6. turnip/freedreno 的 HOST_CACHED 与导出支持 = v2 前置探测（§5）
+7. VK_GOOGLE_display_timing 缺失（Mesa wayland）→ pacing 精度降级，非阻塞
+8. adrenotools 分支在 Linux 上 dlopen 失败 → [RED] 噪音日志，可 DM_ANDROID 静音
