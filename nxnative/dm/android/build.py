@@ -152,6 +152,12 @@ def port_files():
 INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include', str(DM / 'android/dm_settings.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', '-I/usr/include/SDL3', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 if DM_LINUX: INC.insert(0, f'-I{DM / "linux/include"}')   # the Linux stand-ins for the Android headers (linux/include/android): first, and for Linux builds only -- Android keeps its own
+if DM_LINUX and Path('/usr/include/SDL3').is_dir():
+    # SDL3's headers include each other as <SDL3/...>, which needs their parent folder on the search path; under the glibc sysroot the system's
+    # /usr/include is not (and must not be: another libc's headers). A folder holding SDL3 alone, linked to the system's
+    _sdl_inc = gen / 'sdl-inc'; _sdl_inc.mkdir(parents=True, exist_ok=True)
+    if not (_sdl_inc / 'SDL3').exists(): os.symlink('/usr/include/SDL3', _sdl_inc / 'SDL3')
+    INC.insert(0, f'-I{_sdl_inc}')
 CFLAGS = TARGET + [f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
           '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', *(['-DDM_TSD_APPLE=1'] if DM_TSD_APPLE else []), *(['-DDM_TSD_LINUX=1'] if DM_TSD_LINUX else []), '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
