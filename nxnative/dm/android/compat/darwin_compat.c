@@ -27,8 +27,17 @@
 mach_port_t mach_task_self(void) { return getpid(); }
 mach_port_t mach_thread_self(void) { return gettid(); }
 kern_return_t mach_port_deallocate(task_t task, mach_port_t name) { (void)task; (void)name; return KERN_SUCCESS; }
+// ports: a mach port names a kernel tid on Linux. glibc has no tid from a pthread_t (bionic's
+// pthread_gettid_np is private state); every caller either asks for its own thread or only names
+// a thread back, so the self case answers gettid() and the rest answer "no port".
+#ifdef __GLIBC__
+mach_port_t pthread_mach_thread_np(pthread_t t) { return t == pthread_self() ? gettid() : 0; }
+int pthread_threadid_np(pthread_t t, uint64_t *id) { *id = (!t || t == pthread_self()) ? (uint64_t)gettid() : 0; return 0; }
+pthread_t pthread_from_mach_thread_np(mach_port_t t) { (void)t; return 0; }   // no tid → pthread_t map (crash logs lose host-thread names; the __ANDROID__ /proc path has them)
+#else
 mach_port_t pthread_mach_thread_np(pthread_t t) { return pthread_gettid_np(t); }
 int pthread_threadid_np(pthread_t t, uint64_t *id) { *id = (uint64_t)(t ? pthread_gettid_np(t) : gettid()); return 0; }
+#endif
 int dm_setname_self(const char *name) { char n[16]; snprintf(n, sizeof n, "%s", name); return pthread_setname_np(pthread_self(), n); }
 static int stack_of(pthread_t t, uint8_t **lo, size_t *size) {
     pthread_attr_t a; if (pthread_getattr_np(t, &a)) return -1;

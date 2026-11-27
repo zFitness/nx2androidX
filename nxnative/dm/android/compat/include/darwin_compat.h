@@ -20,7 +20,14 @@ int dm_setname_self(const char *name);
 void *pthread_get_stackaddr_np(pthread_t t);
 size_t pthread_get_stacksize_np(pthread_t t);
 int pthread_threadid_np(pthread_t t, uint64_t *id);
+// Apple's <pthread.h> declares it and the Mac's crash paths call it; glibc's has none and the
+// compat's answer (a tid is not a pthread_t on glibc) is a null thread
+pthread_t pthread_from_mach_thread_np(int t);   // mach_port_t is an int (a tid)
+// glibc declares getdtablesize in <unistd.h> (bionic has none): the inline shim is bionic's alone
+#if !defined(__GLIBC__)
 static inline int getdtablesize(void) { return (int)sysconf(_SC_OPEN_MAX); }
+#endif
+#include <stdbool.h>   // host sources that use bool/true/false without including it (bionic reached it by other headers; glibc does not)
 #include <time.h>
 #ifndef DM_CLOCK_NSEC_NP
 #define DM_CLOCK_NSEC_NP

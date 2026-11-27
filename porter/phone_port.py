@@ -93,6 +93,11 @@ def on_android():
     if v is not None: return v not in ('0', '', 'no', 'false')
     return Path('/system/build.prop').is_file() or os.environ.get('ANDROID_ROOT') == '/system'
 
+
+def on_linux():
+    """NX2A_HOST_OS=linux: the launcher's line — the host builds as a Linux ELF with the machine's own compiler (build.py --os linux), no NDK, and the pack carries it (the manifest's exe)."""
+    return os.environ.get('NX2A_HOST_OS') == 'linux'
+
 def volume_of(path):
     """The filesystem a path is on, as the device number of its nearest existing folder (None when it cannot be told: Windows).
     Two paths on the same volume can be written in place (a rename), two on different ones cannot"""
@@ -267,9 +272,18 @@ class PhonePort(pipeline.Port):
         """The headless host with null graphics (dm/android/gfx_null.c): the game's own modules and the game's own compiler, run without a window"""
         out = self.aw / ('host-glslc-debug' if self.o.debug else 'host-glslc')
         PROG.set(step='building the headless host')
-        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--exe', '--gfx', 'null', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
+        nsp.run(self.build_cmd(out, ['--exe', '--gfx', 'null']) + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_glslc_host.log', env=self.env)
         return out / 'dmhost'
+
+    def build_cmd(self, out, extra):
+        """build.py's command line: --os linux on the launcher's line (the machine's own compiler, no NDK), the NDK's clang on Android"""
+        cmd = [PY, DM / 'android/build.py', '--game', self.g.id, '--out', out, '--jobs', str(self.o.jobs)]
+        if on_linux():
+            cmd += ['--os', 'linux']
+            if '--gfx' not in extra: cmd += ['--gfx', 'null']   # the headless line: the null device until dm/linux grows a window (the VK files' window path is Android's)
+            return cmd + extra
+        return cmd + ['--ndk', str(self.tools['ndk'])] + extra
 
     def glslc_capture(self):
         """The run-time shader capture, where the game can boot: the phone app's porter IS the device (the game's own compiler runs here, with no adb and no second device),
@@ -326,7 +340,7 @@ class PhonePort(pipeline.Port):
         folder, so its objects serve both → the executable"""
         out = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
         PROG.set(step="building the host as a tool for the game's Oodle decoder")
-        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release'])
+        nsp.run(self.build_cmd(out, ['--exe']) + ([] if self.o.debug else ['--release'])
                ,
                 self.logs / 'android_oodle_host.log', env=self.env)
         return out / 'dmhost'
@@ -802,7 +816,7 @@ class PhonePort(pipeline.Port):
             adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
             host = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
             PROG.set(step="building the host as a tool for the game's Oodle decoder")
-            nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', host, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
+            nsp.run(self.build_cmd(host, ['--exe']) + ([] if self.o.debug else ['--release']),
                     self.logs / 'android_oodle_host.log', env=self.env)
             adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
             adb.push_file(host / 'dmhost', f'{self.ODEV}/dmhost'); adb.push_tree(self.patched, f'{self.ODEV}/mods')
@@ -988,13 +1002,18 @@ class PhonePort(pipeline.Port):
         return build_translator(self.tools['dotnet'], self.env, self.logs)
 
     def host(self):
-        PROG.stage('host', step=f'NDK {self.tools["ndk"].name}')
         out = self.aw / ('host-debug' if self.o.debug else 'host')
-        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out,
-                 '--play' if self.o.app else '--lib', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release'])
-               
-                + (['--adrenotools'] if not prebuilt_loader() else []), self.logs / 'android_host.log', env=self.env)
-        self.so = out / 'libdmhost.so'   # --play (the app's :play runtime, with the app's JNI entry) and --lib (the APK's front) both produce this name
+        if on_linux():   # the launcher's line: a Linux ELF the launcher runs itself (dm/linux/'s front, the machine's compiler), no NDK anywhere
+            PROG.stage('host', step="the machine's own compiler")
+            nsp.run(self.build_cmd(out, ['--exe']) + ([] if self.o.debug else ['--release']),
+                    self.logs / 'linux_host.log', env=self.env)
+            self.so = out / 'dmhost'
+        else:
+            PROG.stage('host', step=f'NDK {self.tools["ndk"].name}')
+            nsp.run(self.build_cmd(out, ['--play' if self.o.app else '--lib']
+                                   + (['--adrenotools'] if not prebuilt_loader() else []))
+                    + ([] if self.o.debug else ['--release']), self.logs / 'android_host.log', env=self.env)
+            self.so = out / 'libdmhost.so'   # --play (the app's :play runtime, with the app's JNI entry) and --lib (the APK's front) both produce this name
         if not self.so.is_file(): raise BuildError(f'build.py made no {self.so}')
         ph = out / 'gen' / self.g.id / 'game_profile.h'   # the profile the host was built from, for the data pack (porter host compares it with its checkout's)
         self.profile_h = hashlib.sha256(ph.read_bytes()).hexdigest() if ph.is_file() else None
@@ -1084,10 +1103,11 @@ class PhonePort(pipeline.Port):
                     copy_into(self.o.vulkan_driver, driver_lib_name(self.o.vulkan_driver))
                 write_marker(target / 'build.json', build_marker(getattr(self, 'profile_h', None), romfs_at or ''))   # the RomFS is not in the pack: the marker says where the host reads it from
             else:
-                host = 'host/libdmhost.so'
+                host = 'host/dmhost' if on_linux() else 'host/libdmhost.so'
                 files[host] = self.so
-                for d in self.loader_libs(): files[f'drivers/{d.name}'] = d
-                drivers = sorted({f'drivers/{d.name}' for d in self.loader_libs()})
+                if not on_linux():   # the loader's four hooks travel with the host on Android; Linux runs the system's Vulkan driver
+                    for d in self.loader_libs(): files[f'drivers/{d.name}'] = d
+                drivers = sorted({f'drivers/{d.name}' for d in self.loader_libs()}) if not on_linux() else []
             # 档案随包走：构建这份宿主实际用的**整个档案目录**（实验性是派生/扩容后的副本，含
             # shader_map 等数据表——指纹按目录整体计算，缺文件会让重建误判漂移）写进包内
             # profile/<title ID>/，重建运行库时它是第一候选——导出、导入与 PC 的包因此自给自足。
@@ -1102,6 +1122,7 @@ class PhonePort(pipeline.Port):
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, languages=getattr(self, 'languages', ()), package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])                             + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files=files, text=self.lists(), icon=icon, drivers=drivers, profile_h=getattr(self, 'profile_h', None),
+                             exe=host if on_linux() else None,   # the launcher's line: the manifest names the ELF the launcher runs
                              pack_base=str(dst) if self.o.app else None,   # the app's mode: the pack lives in the app's own folder, not in the app's files folder
                              progress=lambda what, done, total: PROG.set(step=f'linking {what}', done=done, total=total, unit='B'))
         self.data_path = dst; self.result['data'] = str(dst)

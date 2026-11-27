@@ -77,7 +77,7 @@ def romfs_sizes(d):   # {path in the RomFS: size} of the pack in d, '/'-separate
 
 
 def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', languages=(), package=None, env=(), settings=None, files=None, text=None,
-          icon=None, drivers=None, profile_h=None, pack_base=None, romfs_at=None, progress=None):
+          icon=None, drivers=None, profile_h=None, pack_base=None, romfs_at=None, exe=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
     languages: supported Switch language codes from the NACP when language is 'system';
     files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font; subfolders for the app's mode: host/, drivers/, overlay/, icon.png);
@@ -140,6 +140,7 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
                sysdata=sorted(p.name for p in sysdata.iterdir() if p.is_dir()) if sysdata else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))
     if icon: man['icon'] = icon
     if drivers: man['drivers'] = list(drivers)
+    if exe: man['exe'] = exe   # the Linux line's own executable in the pack (host/dmhost), which the launcher runs
     if profile_h: man['profile_h'] = profile_h
     man['player_api_revision'] = PLAYER_API_REVISION   # the runtime interface the pack was built against: the app rebuilds the runtime when its own revision differs
     if parts := {p: k for p in SEEDABLE if (k := part_key(tmp, p))}: man['parts'] = parts   # the content keys install's seeding compares

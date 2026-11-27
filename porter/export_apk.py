@@ -147,11 +147,15 @@ def set_driver(data: Path, driver: Path = None) -> bool:
 
 
 def pack_apk(so: Path, out: Path, key: Path, man: dict, data: Path, driver: Path = None,
-             version_code: int = 1, label: str = '') -> int:
+             version_code: int = 1, label: str = '', package: str = '', version_name: str = '') -> int:
     """The APK: the host, the data folder's theme and icon, the overlay's font, the loader and its hooks, and the
     driver when there is one. Signed with the key (the app's own). → the APK's size in bytes"""
+    # the package the player picked travels as the manifest's own row: everything downstream (the APK's
+    # identity, the game's own files folder) reads the manifest and follows
+    if package: man['package'] = package
     from porter.pipeline import version_code as version_code_of
-    ver = str(man.get('version') or man.get('display') or '1.0')
+    # the versionName is display-only (the player can pick it); the versionCode keeps the Switch version + offset
+    ver = version_name or str(man.get('version') or man.get('display') or '1.0')
     code = version_code if version_code else version_code_of(ver)
     args = [sys.executable, str(DM / 'android/apk/mkapk.py'), str(so), str(out), str(key),
             '--package', str(man['package']), '--label', label or str(man.get('name') or man['package']),
@@ -171,7 +175,7 @@ def pack_apk(so: Path, out: Path, key: Path, man: dict, data: Path, driver: Path
 
 
 def export(data: Path, out: Path, key: Path, driver: Path = None, vercode_offset: int = 0,
-           jobs: int = 8, emit=print) -> dict:
+           package: str = None, version_name: str = None, jobs: int = 8, emit=print) -> dict:
     """The APK of a game whose data folder is ready: the host, the APK, the driver's line in env.txt.
     → {'apk', 'data', 'package', 'size', 'driver'}"""
     man = manifest(data)
@@ -184,7 +188,8 @@ def export(data: Path, out: Path, key: Path, driver: Path = None, vercode_offset
             emit(f'{man.get("name") or tid}: the host is {so.stat().st_size / 2**20:.1f} MB')
             size = pack_apk(so, out, key, man, data, driver=driver,
                             version_code=version_code(str(man.get('version') or '1.0'), vercode_offset),
-                            label=str(man.get('name') or man.get('display') or ''))
+                            label=str(man.get('name') or man.get('display') or ''), package=package,
+                            version_name=version_name or '')
         if not set_driver(data, driver):
             emit(f'[RED] {data}/env.txt could not be written: the game runs on the device\'s own driver')
     finally:

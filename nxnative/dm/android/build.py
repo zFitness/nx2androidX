@@ -23,12 +23,15 @@ ap.add_argument('--only-compile', action='store_true', help='compile every sourc
 ap.add_argument('--keep-going', action='store_true')
 ap.add_argument('-O', default='2')
 ap.add_argument('--gfx', default='vk', choices=('vk', 'null'), help='graphics backend: Vulkan or the null device')
+ap.add_argument('--os', default='android', choices=('android', 'linux'), help='target system: Android (the NDK\'s bionic) or Linux (this machine\'s own compiler and libc: the launcher\'s ELF, dm/linux/\'s front)')
 ap.add_argument('--release', action='store_true', help='a build to keep installed: no debug information, stripped, no DM_CTL')
 ap.add_argument('--adrenotools', action='store_true', help='also libadrenotools.so and its hooks (third_party/libadrenotools), which the APK carries with a custom Vulkan driver')
 a = ap.parse_args()
 if not (a.exe or a.lib or a.play): a.exe = a.lib = True
 
 import platform as _pf, shutil as _sh, stat as _st0
+
+DM_LINUX = a.os == 'linux'   # the launcher's ELF: cross-built with this machine's clang and a Debian arm64 sysroot, no NDK anywhere
 
 def host_dir(base, tool):
     """The NDK's host folder for a tool under base. On arm64 Linux the NDK ships x86-64 host tools only, so a folder named linux-aarch64 with an arm64 build of the tool beside the NDK's sysroot
@@ -44,7 +47,27 @@ host = host_dir('toolchains/llvm/prebuilt', 'bin/clang')
 NX2A_ARM_HOST = sys.platform.startswith('linux') and _pf.machine().lower() in ('aarch64', 'arm64')
 bin_ = Path(a.ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
 CC = str(bin_ / ('clang.exe' if os.name == 'nt' else 'clang'))
-if NX2A_ARM_HOST:
+if DM_LINUX:
+    # The Linux build runs on the machine that hosts the game (the launcher's line): the
+    # system's clang -- or the fat package's own (NX2A_TOOLCHAIN: the phone payload's
+    # clang plus a glibc prefix -- headers, crt, builtins -- from one Debian suite),
+    # targeting its own aarch64 Linux. No NDK anywhere.
+    tc = os.environ.get('NX2A_TOOLCHAIN', '')
+    _cc = _sh.which('clang') or _sh.which('gcc')
+    if not _cc and tc and (Path(tc) / 'clang/bin/clang').is_file():
+        _cc = str(Path(tc) / 'clang/bin/clang')
+    if not _cc:
+        sys.exit('linux build: no clang or gcc on PATH (a --with-toolchain package brings one)')
+    CC, bin_ = _cc, Path(_cc).parent
+    CC_EXTRA = []
+    _glibc = Path(tc) / 'glibc' if tc else None
+    if _glibc and (_glibc / 'usr/include/stdio.h').is_file():
+        CC_EXTRA = [f'--sysroot={_glibc}']
+        _res = sorted(_glibc.glob('usr/lib/llvm-*/lib/clang/*'))
+        if _res: CC_EXTRA.append(f'-resource-dir={_res[-1]}')
+    if tc:
+        os.environ['LD_LIBRARY_PATH'] = str(Path(tc) / 'lib') + os.pathsep + os.environ.get('LD_LIBRARY_PATH', '')
+elif NX2A_ARM_HOST:
     _sysroot = next(Path(a.ndk).glob('toolchains/llvm/prebuilt/*/sysroot'), None)
     _res = next(iter(sorted(Path(a.ndk).glob('toolchains/llvm/prebuilt/*/lib/clang/*'))), None)   # the NDK's resource dir: the builtin headers and the compiler-rt
     _sys_clang = _sh.which('clang')
@@ -56,7 +79,9 @@ if NX2A_ARM_HOST:
     CC_EXTRA = [f'--sysroot={_sysroot}', f'-resource-dir={_res}', '-rtlib=compiler-rt']
 else:
     CC_EXTRA = []
-TARGET = f'--target=aarch64-linux-android{a.api}'
+# The target as flags (a list, since gcc targets the machine it runs on and takes no --target)
+TARGET = (['--target=aarch64-linux-gnu'] if Path(CC).name.startswith('clang') else []) if DM_LINUX \
+    else [f'--target=aarch64-linux-android{a.api}']
 out = Path(a.out) if a.out else DM / 'android/out' / (a.game + ('-release' if a.release else ''))
 DBG = [] if a.release else ['-g']
 obj = out / 'obj'; gen = out / 'gen'; obj.mkdir(parents=True, exist_ok=True); (gen / a.game).mkdir(parents=True, exist_ok=True)
@@ -76,9 +101,9 @@ _settings_names()
 # the backend's own small shaders (dm/android/shaders): compiled with the NDK's glslc, embedded as gen/<name>_<stage>.spv.h
 GL_SRC = sorted(p for p in (DM / 'android/shaders').iterdir() if p.suffix in ('.vert', '.frag', '.comp'))   # (the folder also keeps a third-party shader's license)
 GLSLC = Path(a.ndk) / 'shader-tools' / host_dir('shader-tools', 'glslc') / ('glslc.exe' if os.name == 'nt' else 'glslc')
-if NX2A_ARM_HOST and host_dir('shader-tools', 'glslc') != 'linux-aarch64':   # the NDK's shader-tools are host binaries for x86-64: the phone's own glslc
-    _glslc = _sh.which('glslc')
-    if not _glslc: sys.exit('aarch64 host: glslc not found (install the shaderc tools, or put glslc on PATH)')
+if DM_LINUX or (NX2A_ARM_HOST and host_dir('shader-tools', 'glslc') != 'linux-aarch64'):   # no NDK (Linux), or the NDK's shader-tools are x86-64 host binaries: the system's glslc
+    _glslc = _sh.which('glslc') or (str(Path(tc) / 'bin/glslc') if tc and (Path(tc) / 'bin/glslc').is_file() else '')
+    if not _glslc: sys.exit('glslc not found (apt install glslc, or a --with-toolchain package)')
     GLSLC = Path(_glslc)
 for sh in GL_SRC:
     hdr = gen / a.game / f'{sh.stem}_{sh.suffix[1:]}.spv.h'
@@ -102,6 +127,17 @@ ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader
 # the adapter jni_android.c instead). frame generation and the player's own front are gone with this line's
 # convergence: the host has no lsfg/ or vka/ code, and front_player.c is deleted.
 def port_files():
+    if DM_LINUX:
+        # The Linux front (dm/linux/: the headless front, the audio and movie stand-ins),
+        # the portable compat shims (the Android audio stack's two files excluded), and the
+        # Android folder's platform-neutral pieces the core shares (the settings registry,
+        # the common gfx helpers, and the null device the tools build with).
+        out = list(srcs('linux/*.c'))
+        out += [p for p in srcs('android/compat/*.c')
+                if p.name not in ('audiotoolbox_aaudio.c', 'audioconverter_mediacodec.c')]
+        out += [DM / 'android/dm_settings.c', DM / 'android/gfx_common.c']
+        if a.gfx == 'null': out.append(DM / 'android/gfx_null.c')
+        return out
     out = []
     for p in srcs('android/compat/*.c', 'android/*.c'):
         if p.name == 'gfx_null.c' and a.gfx != 'null': continue   # one graphics backend
@@ -112,11 +148,11 @@ def port_files():
 
 INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include', str(DM / 'android/dm_settings.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
-CFLAGS = [TARGET, f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
+CFLAGS = TARGET + [f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
-          '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_ANDROID=1', '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
-VPX_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/libvpx/config"}', '-w']
-ZSTD_FLAGS = [TARGET, '-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-w']   # its API stays inside libdmhost.so
+          '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
+VPX_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/libvpx/config"}', '-w']
+ZSTD_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-w']   # its API stays inside libdmhost.so
 
 import hashlib, shutil
 _stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, CC)).encode()).hexdigest()
@@ -141,7 +177,7 @@ def compile_one(s):
         if not src.exists() or src.stat().st_mtime < s.stat().st_mtime:
             subprocess.run([sys.executable, str(DM / 'android/tools/darwin2elf.py'), str(s), str(src)], check=True)
     if not dep_stale(o, d, src): return s, o, 0, ''
-    flags = VPX_FLAGS if 'third_party/libvpx' in str(rel).replace(os.sep, '/') else ZSTD_FLAGS if 'third_party/zstd' in str(rel).replace(os.sep, '/') else [TARGET] + DBG if s.suffix == '.S' else CFLAGS + INC
+    flags = VPX_FLAGS if 'third_party/libvpx' in str(rel).replace(os.sep, '/') else ZSTD_FLAGS if 'third_party/zstd' in str(rel).replace(os.sep, '/') else TARGET + DBG if s.suffix == '.S' else CFLAGS + INC
     r = subprocess.run([CC] + CC_EXTRA + flags + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
     return s, o, r.returncode, r.stderr
 
@@ -162,15 +198,19 @@ def shape_files():
 FILES = shape_files()
 PLAYS = srcs('android/jni_android.c')   # the app's JNI adapter: compiled always (the errors surface here too), linked only for --play
 objs, failed = build(FILES)
-pobjs, pfailed = build(PLAYS)
+if not DM_LINUX: pobjs, pfailed = build(PLAYS)   # jni_android.c: the app's adapter, Android only (the Linux link never takes it)
+else: pobjs, pfailed = [], []
 vobjs, vfailed = build(VPX + ZSTD)
 failed += pfailed + vfailed
 print(f'compiled {len(FILES) + len(PLAYS) + len(VPX) + len(ZSTD)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
-LIBS = ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmediandk', '-lz', '-lm', '-ldl']   # -lz: the gamepad theme's PNGs (overlay_theme.c)
-LDFLAGS = [TARGET, '-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc']
+LIBS = (['-lz', '-lm', '-ldl', '-lpthread'] + (['-lvulkan'] if a.gfx == 'vk' else []) if DM_LINUX else
+        ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmediandk', '-lz', '-lm', '-ldl'])   # -lz: the gamepad theme's PNGs (overlay_theme.c)
+LDFLAGS = TARGET + ['-Wl,-z,max-page-size=16384', '-Wl,--build-id']
+if not DM_LINUX: LDFLAGS += ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,nostart-stop-gc']
+elif _sh.which('ld.lld'): LDFLAGS += ['-fuse-ld=lld']   # brew llvm's linker; the system's default when there is none
 def link(args, name):
     # The 192 object paths under a long checkout exceed Windows' command-line limit (WinError 206).
     # Clang reads Windows-quoted arguments from a UTF-8 response file, including paths with spaces.
@@ -208,7 +248,7 @@ if a.lib:
 # as its CMake files build them: linkernsbypass inside libadrenotools and libhook_impl, the three small hooks over libhook_impl with -z global
 if a.adrenotools:
     AT = DM / 'third_party/libadrenotools'; LN = AT / 'lib/linkernsbypass'
-    ATF = [TARGET, '-O2'] + DBG + ['-fPIC', '-w', f'-I{AT / "include"}', f'-I{AT}', f'-I{LN}']
+    ATF = TARGET + ['-O2'] + DBG + ['-fPIC', '-w', f'-I{AT / "include"}', f'-I{AT}', f'-I{LN}']
     ATL = ['-fuse-ld=lld', '-shared', '-Wl,-z,max-page-size=16384', '-static-libstdc++', '-landroid', '-llog', '-ldl']
     CXX = str(bin_ / ('clang++.exe' if os.name == 'nt' else 'clang++'))
     libs = [('libadrenotools.so', [AT / 'src/driver.cpp', AT / 'src/bcenabler.cpp', LN / 'android_linker_ns.cpp', LN / 'elf_soname_patcher.cpp'], []),

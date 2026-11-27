@@ -190,8 +190,10 @@ def checks(cfg=None, keys=None):
     aes = _importable('Crypto.Cipher') or _importable('Cryptodome.Cipher')
     out.append(Check('pycryptodome', aes, 'NSZ / XCZ dumps (porter.dumps)' if aes else 'missing: NSZ / XCZ dumps must be decompressed to NSP / XCI first', required=False, fix='' if aes else 'pip install pycryptodome'))
     out.append(Check('fontTools', _importable('fontTools'), 'the button icons in game text' if _importable('fontTools') else 'missing: button icons in game text draw as "?"', required=False, fix='pip install fonttools'))
+    linux = os.environ.get('NX2A_HOST_OS') == 'linux'   # the launcher's line: the machine's own compiler builds the host (build.py --os linux), no NDK
     ndk, rev = find_ndk(cfg)
-    if not ndk: out.append(Check('Android NDK', False, 'not found', fix=f'Download missing tools, or install NDK {NDK_RELEASE} (developer.android.com/ndk/downloads) and set its folder'))
+    if not ndk: out.append(Check('Android NDK', not linux, 'not found' if not linux else 'not needed: the host builds with the machine\'s own compiler',
+                                 required=not linux, fix='' if linux else f'Download missing tools, or install NDK {NDK_RELEASE} (developer.android.com/ndk/downloads) and set its folder'))
     else: out.append(Check('Android NDK', rev == NDK_REVISION, f'{rev} at {ndk}' + ('' if rev == NDK_REVISION else f': the host is built with {NDK_RELEASE} ({NDK_REVISION}); others are untested'),
                            required=rev.split('.')[0] == NDK_REVISION.split('.')[0], path=str(ndk), fix='' if rev == NDK_REVISION else f'install NDK {NDK_RELEASE}'))
     dn = find_dotnet(cfg)
