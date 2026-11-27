@@ -33,8 +33,8 @@ class GameDetailViewModelTest {
         val options = FakeRunOptionsRepository()
         val store = ViewModelStore()
         try {
-            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState())
-            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState())
+            val first = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState(), FakeApkMetaStore())
+            val second = GameDetailViewModel(SavedStateHandle(), FakeSaveRepository(), FakeSaveIo(), options, FakeExportService(), com.nx.android.appstate.ExportState(), FakeApkMetaStore())
             store.put("detail-one", first)
             store.put("detail-two", second)
             val firstPack = File("/games/one")
@@ -93,13 +93,23 @@ class GameDetailViewModelTest {
 
     /** The export is not what this test is about: it only has to be there. */
     private class FakeExportService : GameApkExportService {
-        override fun export(game: GameRef, targetDir: File,
+        override fun export(game: GameRef, meta: com.nx.android.domain.ApkMeta,
                             onProgress: (GameApkExport.Progress) -> Unit,
                             log: (String) -> Unit): GameApkExport.Result = GameApkExport.Result(false, "not_used")
-        override fun paired(): Boolean = false
+        override fun channel(): com.nx.android.domain.ChannelState = com.nx.android.domain.ChannelState.OFF
         override fun moveData(game: GameRef, packageName: String,
                               onProgress: (GameApkExport.Progress) -> Unit,
                               log: (String) -> Unit): Boolean = false
+    }
+
+    /** 导出身份的假存取：内存里一份，够预填与保存的用例 */
+    private class FakeApkMetaStore : com.nx.android.domain.ApkMetaStore {
+        private var saved: com.nx.android.domain.ApkMeta? = null
+        private val used = mutableListOf<String>()
+        override fun read(titleId: String): com.nx.android.domain.ApkMeta? = saved
+        override fun write(titleId: String, meta: com.nx.android.domain.ApkMeta) { saved = meta }
+        override fun usedVersions(titleId: String): List<String> = used
+        override fun recordUsed(titleId: String, versionName: String) { used.add(0, versionName) }
     }
 
     private companion object {

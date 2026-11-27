@@ -34,6 +34,8 @@ class GameDetailViewModel @Inject constructor(
     val exportService: GameApkExportService,
     /** 那口导出状态：活儿在前台 ExportService 里跑，界面从这口看进度与结果 */
     val exportState: com.nx.android.appstate.ExportState,
+    /** 导出身份（包名/作者/邮箱/描述）按 titleId 存着，弹框打开自动预填 */
+    val apkMetaStore: com.nx.android.domain.ApkMetaStore,
 ) : ViewModel() {
     private val mutableUiState = MutableStateFlow(
         GameDetailUiState(savedStateHandle[KEY_TITLE_ID]),

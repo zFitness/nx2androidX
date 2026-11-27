@@ -15,13 +15,6 @@ class GameApkExportTest {
     private val gameDir = "/storage/emulated/0/Android/data/org.nx2a.t0100bb8017f24000/files"
 
     @Test
-    fun `the names are the game's name, cleaned`() {
-        assertEquals("Red Dead Redemption.apk", GameApkExport.apkName("Red Dead Redemption"))
-        // a name a file system refuses becomes underscores
-        assertEquals("Half_Life.apk", GameApkExport.apkName("Half/Life"))
-    }
-
-    @Test
     fun `the exported game reads its own directory`() {
         assertEquals(gameDir, GameApkExport.gameFilesDir("org.nx2a.t0100bb8017f24000"))
     }

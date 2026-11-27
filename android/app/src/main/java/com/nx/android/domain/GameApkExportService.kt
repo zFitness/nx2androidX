@@ -2,6 +2,18 @@ package com.nx.android.domain
 
 import java.io.File
 
+/** 通道的三种状态：就绪、无线调试没开（端口找不到）、没配过对（adbd 要 AUTH）。 */
+enum class ChannelState { READY, OFF, UNPAIRED }
+
+/** 导出时玩家填的身份：包名、版本（显示用，默认 1.0.0）、作者、邮箱、描述（预填 Powered by nx2androidX）。 */
+data class ApkMeta(
+    val packageName: String,
+    val versionName: String = "1.0.0",
+    val author: String = "",
+    val email: String = "",
+    val description: String = "",
+)
+
 /**
  * 导出需要知道的游戏身份：数据包在哪、散装游戏文件在哪、叫什么。用基础类型说话，是为了让前台服务能从
  * Intent 的 extra 里把它拼回来（导出跑在前台服务里，Activity 的对象过不去）。
@@ -24,25 +36,25 @@ data class GameRef(
 interface GameApkExportService {
 
     /**
-     * Exports the game, in one go: the APK is built into [targetDir] (that folder holds nothing else — the
-     * data is not written into the player's storage), installed on this phone over the App's ADB channel, and
-     * the data is streamed into the exported game's own directory over the same channel. The data exists
-     * twice when this returns: in the pack it came from, and in the game's own directory.
+     * Exports the game, in one go: the APK is built into the App's private cache (a temporary file, deleted
+     * when this returns) and installed on this phone over the App's ADB channel, and the data is streamed
+     * into the exported game's own directory over the same channel. Nothing lands in the player's storage:
+     * the data exists twice — in the pack it came from, and in the game's own directory.
      *
      * The channel has to be there before this is called ([paired]); the caller asks the player to pair first.
      *
      * @param onProgress how far it has come (the build, the install, the data)
      * @param log the guest's own lines (the last one is what the player reads)
      */
-    fun export(game: GameRef, targetDir: File,
+    fun export(game: GameRef, meta: ApkMeta,
                onProgress: (GameApkExport.Progress) -> Unit = {},
                log: (String) -> Unit = {}): GameApkExport.Result
 
     /**
-     * Whether the App's key is paired with this phone's adbd (the channel the install and the data ride on).
-     * False when wireless debugging is off, or the player has never paired.
+     * The channel's state: ready, wireless debugging off, or the App never paired. The interface's answer
+     * decides the button the player sees (open Developer options, pair, or go).
      */
-    fun paired(): Boolean
+    fun channel(): ChannelState
 
     /**
      * The data only, again: the game is installed but its data did not make it (the channel dropped

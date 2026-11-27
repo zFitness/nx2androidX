@@ -31,6 +31,8 @@ class TarWriter(private val out: OutputStream) : Closeable {
     fun putFile(name: String, file: File, mtime: Long = file.lastModified() / 1000,
                 onBytes: ((Long) -> Unit)? = null): Boolean {
         if (!file.isFile) return false
+        // ustar 的 size 域只有 11 位八进制（8 GiB 上限）：超了宁可让这次导出失败，也不写一个静默损坏的归档
+        if (file.length() > MAX_FILE) throw IllegalStateException("file too large for a ustar archive: $name (${file.length()} bytes)")
         out.write(entryHeader(name, file.length(), mtime, MODE_FILE, '0'))
         file.inputStream().use { input ->
             while (true) {
@@ -125,6 +127,8 @@ class TarWriter(private val out: OutputStream) : Closeable {
 
     companion object {
         private const val BLOCK = 512L
+        private const val MAX_FILE = (1L shl 33) - 1   // 11 位八进制：8 GiB − 1
+
         /** 0755（rwxr-xr-x）与 0644（rw-r--r--）：落地的 chmod 反正会把它们理顺，这里只是写进头里 */
         private const val MODE_DIR = 0x1EDL
         private const val MODE_FILE = 0x1A4L

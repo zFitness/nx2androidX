@@ -11,6 +11,7 @@ import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.nx.android.appstate.ExportState
 import com.nx.android.data.AppLocale
+import com.nx.android.domain.ApkMeta
 import com.nx.android.domain.GameApkExport
 import com.nx.android.domain.GameApkExportService
 import com.nx.android.domain.GameRef
@@ -36,8 +37,11 @@ class ExportService : Service() {
         private const val LABEL = "label"
         private const val PACK = "pack"
         private const val ROMFS = "romfs"
-        private const val TARGET = "target"
         private const val PACKAGE = "package"
+        private const val VERSION = "version"
+        private const val AUTHOR = "author"
+        private const val EMAIL = "email"
+        private const val DESCRIPTION = "description"
 
         /** The game's identity crosses the Intent as plain strings: the Activity's objects cannot. */
         private fun intent(ctx: Context, action: String, game: GameRef) =
@@ -46,14 +50,15 @@ class ExportService : Service() {
                 .putExtra(PACK, game.pack.absolutePath).putExtra(ROMFS, game.romfsAt)
 
         /** Starts the whole export: build, install, data. 从头导出：构建 → 安装 → 数据 */
-        fun start(ctx: Context, game: GameRef, targetDir: String) {
-            ContextCompat.startForegroundService(ctx, intent(ctx, ACTION_START, game).putExtra(TARGET, targetDir))
-        }
+        fun start(ctx: Context, game: GameRef, meta: ApkMeta) =
+            ContextCompat.startForegroundService(ctx, intent(ctx, ACTION_START, game)
+                .putExtra(PACKAGE, meta.packageName).putExtra(VERSION, meta.versionName)
+                .putExtra(AUTHOR, meta.author).putExtra(EMAIL, meta.email)
+                .putExtra(DESCRIPTION, meta.description))
 
         /** Moves the data only (the retry: the game is installed, the transfer died halfway). 只搬数据 */
-        fun startMove(ctx: Context, game: GameRef, packageName: String) {
+        fun startMove(ctx: Context, game: GameRef, packageName: String) =
             ContextCompat.startForegroundService(ctx, intent(ctx, ACTION_MOVE, game).putExtra(PACKAGE, packageName))
-        }
     }
 
     @Inject lateinit var exportService: GameApkExportService
@@ -74,6 +79,8 @@ class ExportService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 重入保护（PortService 同款）：一次只跑一个导出——两次 start 会写同一个临时 APK、互相 stopSelf
+        if (state.running) { stopSelf(startId); return START_NOT_STICKY }
         if (intent == null) return stop(startId)
         val packPath = intent.getStringExtra(PACK) ?: return stop(startId)
         val game = GameRef(
@@ -82,14 +89,18 @@ class ExportService : Service() {
             java.io.File(packPath),
             intent.getStringExtra(ROMFS) ?: "",
         )
+        val meta = ApkMeta(
+            packageName = intent.getStringExtra(PACKAGE) ?: "",
+            versionName = intent.getStringExtra(VERSION) ?: "",
+            author = intent.getStringExtra(AUTHOR) ?: "",
+            email = intent.getStringExtra(EMAIL) ?: "",
+            description = intent.getStringExtra(DESCRIPTION) ?: "",
+        )
         when (intent.action) {
             ACTION_START -> {
-                val target = intent.getStringExtra(TARGET) ?: return stop(startId)
                 begin(game, locale.str(R.string.export_notification_build))
                 thread(name = "nx2a-export") {
-                    val r = exportService.export(game, java.io.File(target),
-                        { p -> onProgress(p) }, { })
-                    done(r)
+                    done(exportService.export(game, meta, { p -> onProgress(p) }, { }))
                 }
             }
             ACTION_MOVE -> {

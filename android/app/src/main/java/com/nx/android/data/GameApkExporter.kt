@@ -31,11 +31,11 @@ class GameApkExporter @Inject constructor(private val guestLauncher: GuestProces
      * @param vercodeOffset the versionCode offset (the app counts the exports of the same game)
      */
     fun build(dataFolder: File, apk: File, key: File, driver: File?, vercodeOffset: Int,
-              log: (String) -> Unit): GameApkBuild {
+              packageName: String = "", versionName: String = "", log: (String) -> Unit): GameApkBuild {
         var reason = ""
         var built = GameApkBuild(false)
         return try {
-            val process = guestLauncher.guest(args(dataFolder, apk, key, driver, vercodeOffset))
+            val process = guestLauncher.guest(args(dataFolder, apk, key, driver, vercodeOffset, packageName, versionName))
             process.inputStream.bufferedReader().useLines { lines ->
                 lines.forEach { line ->
                     val event = PortEvents.parse(line)
@@ -62,7 +62,8 @@ class GameApkExporter @Inject constructor(private val guestLauncher: GuestProces
 
     companion object {
         /** The command line the guest runs. */
-        fun args(dataFolder: File, apk: File, key: File, driver: File?, vercodeOffset: Int): List<String> {
+        fun args(dataFolder: File, apk: File, key: File, driver: File?, vercodeOffset: Int,
+                 packageName: String = "", versionName: String = ""): List<String> {
             val args = mutableListOf(
                 "-m", "porter.phone_cli", "export-apk", dataFolder.absolutePath,
                 "--out", apk.absolutePath,
@@ -70,6 +71,8 @@ class GameApkExporter @Inject constructor(private val guestLauncher: GuestProces
                 "--vercode-offset", vercodeOffset.toString(),
                 "--progress", "json",
             )
+            if (packageName.isNotBlank()) args += listOf("--package", packageName)
+            if (versionName.isNotBlank()) args += listOf("--version-name", versionName)
             if (driver != null) args += listOf("--driver", driver.absolutePath)
             return args
         }

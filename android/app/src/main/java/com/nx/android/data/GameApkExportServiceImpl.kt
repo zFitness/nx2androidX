@@ -4,6 +4,9 @@ import android.content.Context
 import android.os.StatFs
 import android.util.Log
 import com.nx.android.core.storage.AppPaths
+import com.nx.android.domain.ApkMeta
+import com.nx.android.domain.ApkMetaStore
+import com.nx.android.domain.ChannelState
 import com.nx.android.domain.GameApkExport
 import com.nx.android.domain.GameApkExportService
 import com.nx.android.domain.GameRef
@@ -48,24 +51,26 @@ class GameApkExportServiceImpl @Inject constructor(
     private val paths: AppPaths,
     private val exporter: GameApkExporter,
     private val prefs: PrefsStore,
+    private val apkMeta: ApkMetaStore,
     @ApplicationContext private val context: Context,
 ) : GameApkExportService {
 
-    override fun export(game: GameRef, targetDir: File,
+    override fun export(game: GameRef, meta: ApkMeta,
                onProgress: (GameApkExport.Progress) -> Unit,
                log: (String) -> Unit): GameApkExport.Result {
         val manifest = PortablePack.readManifest(game.pack) ?: return fail("no_manifest")
-        val packageName = manifest.optString("package")
+        val packageName = meta.packageName.ifBlank { manifest.optString("package") }
         if (packageName.isEmpty()) return fail("no_package")
         val gameDir = GameApkExport.gameFilesDir(packageName)
-        val apk = File(targetDir, GameApkExport.apkName(game.label))
-        // the player's folder already holds an APK of this game's: nothing is overwritten
-        if (apk.exists()) return fail("exists")
+        // the APK is a temporary file in the App's own cache: it is installed over the wire and then it is
+        // gone — nothing lands in the player's storage
+        val apk = File(paths.tmp, "export-${game.titleId}.apk")
+        apk.delete()
         val romfs = if (game.romfsAt.isNotEmpty()) File(game.romfsAt) else File(game.pack, PortablePack.ROMFS)
         if (!romfs.isDirectory) return fail("no_romfs")
 
-        // the room: the APK in the player's folder, the data in the game's own directory
-        if (freeBytes(targetDir) < GameApkExport.APK_LIMIT_WITH_DRIVER) return fail("no_space")
+        // the room: the APK on the App's own volume, the data in the game's own directory
+        if (freeBytes(paths.tmp) < GameApkExport.APK_LIMIT_WITH_DRIVER) return fail("no_space")
         val dataBytes = dataBytes(game, romfs)
         if (freeBytes(File(gameDir)) < dataBytes) return fail("no_space")
 
@@ -75,44 +80,51 @@ class GameApkExportServiceImpl @Inject constructor(
         //    icon and the theme are what the APK carries — the data is not part of it)
         onProgress(GameApkExport.Progress(GameApkExport.Stage.BUILD, 0f))
         val driver = GameApkExport.envValue(env, "DM_VK_DRIVER")?.let { File(it) }?.takeIf { it.isFile }
-        val built = exporter.build(game.pack, apk, keyFile(), driver, nextOffset(game.titleId)) { log(it) }
+        val built = exporter.build(game.pack, apk, keyFile(), driver, nextOffset(game.titleId), packageName,
+            meta.versionName.ifBlank { "1.0.0" }) { log(it) }
         if (!built.ok) {
             apk.delete()
             return fail(built.reason.ifEmpty { "build_failed" })
         }
 
-        // 2. the install: the APK goes down the wire into the package manager
+        // 2. the install: the APK goes down the wire into the package manager. `-d` allows a downgrade: the
+        //    player's copy may carry a higher versionCode (an export made when the count was higher), and a
+        //    fresh export must still install over it
         onProgress(GameApkExport.Progress(GameApkExport.Stage.INSTALL, 0f))
-        val answer = runCatching {
-            AdbChannels.exec(context, "cmd package install -r -S ${apk.length()}",
-                apk.inputStream().buffered(),
-                { sent -> onProgress(GameApkExport.Progress(GameApkExport.Stage.INSTALL,
-                    (sent.toFloat() / apk.length().toFloat()).coerceIn(0f, 1f))) },
-                WIRE_IDLE_TIMEOUT_MS)
-            }.onFailure {
-                Log.i(TAG, "the streamed install failed: ${it.message}")
-                log("[RED] the game could not be installed: ${it.message}")
-            }.getOrNull()
-        if (answer == null || !answer.contains("Success")) {
-            log("[RED] the game did not install: ${answer?.trim()?.lineSequence()?.lastOrNull() ?: "no answer"}")
-            return GameApkExport.Result(ok = false, failure = "install_failed", detail = answer?.takeLast(300),
-                apk = apk.absolutePath, packageName = packageName, size = built.size)
-        }
+        try {
+            val answer = runCatching {
+                AdbChannels.exec(context, "cmd package install -r -d -S ${apk.length()}",
+                    apk.inputStream().buffered(),
+                    { sent -> onProgress(GameApkExport.Progress(GameApkExport.Stage.INSTALL,
+                        (sent.toFloat() / apk.length().toFloat()).coerceIn(0f, 1f))) },
+                    WIRE_IDLE_TIMEOUT_MS)
+                }.onFailure {
+                    Log.i(TAG, "the streamed install failed: ${it.message}")
+                    log("[RED] the game could not be installed: ${it.message}")
+                }.getOrNull()
+            if (answer == null || !answer.contains("Success")) {
+                log("[RED] the game did not install: ${answer?.trim()?.lineSequence()?.lastOrNull() ?: "no answer"}")
+                return GameApkExport.Result(ok = false, failure = "install_failed", detail = answer?.takeLast(300),
+                    packageName = packageName, size = built.size)
+            }
 
-        // 3. the data into the game's own directory
-        val moved = moveData(game, packageName, onProgress, log)
-        if (!moved) {
-            // the game is on the phone: only the data is missing, and moving it again is one tap
-            return GameApkExport.Result(ok = false, failure = "move_failed",
-                apk = apk.absolutePath, packageName = packageName, size = built.size, installed = true)
+            // 3. the data into the game's own directory
+            val moved = moveData(game, packageName, onProgress, log)
+            if (!moved) {
+                // the game is on the phone: only the data is missing, and moving it again is one tap
+                return GameApkExport.Result(ok = false, failure = "move_failed",
+                    packageName = packageName, size = built.size, installed = true)
+            }
+            onProgress(GameApkExport.Progress(GameApkExport.Stage.DONE, 1f))
+            return GameApkExport.Result(ok = true, packageName = packageName,
+                size = built.size, installed = true, moved = true)
+        } finally {
+            apk.delete()   // the game is installed; the installer's file has done its job
         }
-        onProgress(GameApkExport.Progress(GameApkExport.Stage.DONE, 1f))
-        return GameApkExport.Result(ok = true, apk = apk.absolutePath, packageName = packageName,
-            size = built.size, installed = true, moved = true)
     }
 
-    /** Whether the App's key is paired with this phone's adbd (a harmless command answers). */
-    override fun paired(): Boolean = AdbChannels.paired(context)
+    /** The channel's state: ready / wireless debugging off / never paired. */
+    override fun channel(): ChannelState = AdbChannels.state(context)
 
     override fun moveData(game: GameRef, packageName: String,
                  onProgress: (GameApkExport.Progress) -> Unit,
@@ -122,12 +134,12 @@ class GameApkExportServiceImpl @Inject constructor(
         val romfs = if (game.romfsAt.isNotEmpty()) File(game.romfsAt) else File(game.pack, PortablePack.ROMFS)
         if (!romfs.isDirectory) return false
 
-        // the room (the game may have grown since the check in export)
-        val dataBytes = dataBytes(game, romfs)
-        if (freeBytes(File(gameDir)) < dataBytes) { log("[RED] the game's own directory has no room for the data"); return false }
+        // no space check here: a retry overwrites the last attempt's files in place, so counting the leftover
+        // bytes against the transfer would refuse a fit (export() checked the room before anything ran)
 
         // the game's own env and manifest: the rows that pointed inside the pack follow the game's own
-        // directory, the shared font travels with the data (the game cannot read the App's private folder)
+        // directory, the shared font travels with the data (the game cannot read the App's private folder),
+        // and the identity the player filled in (package, author, email, description) rides in the manifest
         val env = File(game.pack, PortablePack.ENV).takeIf { it.isFile }?.readText().orEmpty()
         val font = if (GameApkExport.envValue(env, "DM_SHARED_FONT") == null ||
             File(game.pack, GameApkExport.STANDARD_FONT).isFile) null
@@ -135,63 +147,87 @@ class GameApkExportServiceImpl @Inject constructor(
         if (GameApkExport.envValue(env, "DM_SHARED_FONT") != null && font == null) {
             log("[RED] the shared font is missing (the tool tree has no shared_cjk.ttf): the game's Chinese text draws as \"?\"")
         }
-        val manifestText = PortablePack.manifestForExport(manifest).toString(2)
+        val manifestJson = PortablePack.manifestForExport(manifest)
+        manifestJson.put("package", packageName)
+        apkMeta.read(game.titleId)?.let { m ->
+            if (m.author.isNotBlank()) manifestJson.put("author", m.author)
+            if (m.email.isNotBlank()) manifestJson.put("email", m.email)
+            if (m.description.isNotBlank()) manifestJson.put("description", m.description)
+        }
+        val manifestText = manifestJson.toString(2)
         val envText = GameApkExport.envForGameDir(env, gameDir)
 
         // the tar as it is read: the data crosses without a copy of its own on the way
-        val total = dataBytes + (font?.length() ?: 0L)
-        var copied = 0L
-        fun tick(n: Long) {
-            copied += n
-            onProgress(GameApkExport.Progress(GameApkExport.Stage.MOVE,
-                if (total > 0) (copied.toFloat() / total).coerceIn(0f, 1f) else 0f))
-        }
+        val total = dataBytes(game, romfs) + (font?.length() ?: 0L)
 
         // the unpack: mkdir first (the game's directory exists once the game is installed, but the player
         // may be moving the data before that), tar off stdin, then the chmod — the files arrive owned by the
-        // shell, and the game (another uid) could not read them without it
+        // shell, and the game (another uid) could not read them without it.
+        // The channel flaps (MIUI drops the wireless listener while USB is plugged): a failed attempt is not
+        // a verdict — the completeness check runs either way (the manifest goes as the LAST entry of the
+        // stream, so its presence says every byte before it landed), and one automatic retry covers the flap.
+        // Beyond that the player taps 搬数据 again. The space check lives in export(): a retry overwrites in
+        // place, so counting the leftover bytes against the transfer would refuse a fit.
         val command = "mkdir -p '$gameDir' && tar -x -f - -C '$gameDir' && chmod -R a+rX '$gameDir'"
-        val pipeIn = PipedInputStream(PIPE_BUFFER)
-        val pipeOut = PipedOutputStream(pipeIn)
-        val producer = thread(name = "nx2a-export-tar") {
-            try {
-                TarWriter(pipeOut).use { w ->
-                    // the pack's files, the save backups and the management files excepted (they go below,
-                    // rewritten for the game's own directory); a RomFS in the build workspace joins them
-                    copyTree(game.pack, romfs, w, ::tick)
-                    w.putBytes(PortablePack.MANIFEST, manifestText.toByteArray(Charsets.UTF_8))
-                    w.putBytes(PortablePack.ENV, envText.toByteArray(Charsets.UTF_8))
-                    font?.let { w.putFile(GameApkExport.STANDARD_FONT, it, onBytes = ::tick) }
-                }
-            } catch (t: Throwable) {
-                // the reader is gone (the channel dropped): the short stream is what the shell sees
-                Log.i(TAG, "the tar stopped early: ${t.message}")
+        var attempts = 0
+        var lastFail = ""
+        while (true) {
+            attempts++
+            var copied = 0L   // 每次尝试归零：进度跟着这一次的字节走（上次尝试的残余不算数）
+            fun tick(n: Long) {
+                copied += n
+                onProgress(GameApkExport.Progress(GameApkExport.Stage.MOVE,
+                    if (total > 0) (copied.toFloat() / total).coerceIn(0f, 1f) else 0f))
             }
-            runCatching { pipeOut.close() }
+            val pipeIn = PipedInputStream(PIPE_BUFFER)
+            val pipeOut = PipedOutputStream(pipeIn)
+            val producer = thread(name = "nx2a-export-tar") {
+                try {
+                    TarWriter(pipeOut).use { w ->
+                        // the pack's files, the save backups and the management files excepted (they go below,
+                        // rewritten for the game's own directory); a RomFS in the build workspace joins them
+                        copyTree(game.pack, romfs, w, ::tick)
+                        w.putBytes(PortablePack.ENV, envText.toByteArray(Charsets.UTF_8))
+                        font?.let { w.putFile(GameApkExport.STANDARD_FONT, it, onBytes = ::tick) }
+                        // the manifest goes LAST: it is the completeness marker, so its presence says
+                        // everything before it (env, font, all the game files) landed too
+                        w.putBytes(PortablePack.MANIFEST, manifestText.toByteArray(Charsets.UTF_8))
+                    }
+                } catch (t: Throwable) {
+                    // the reader is gone (the channel dropped): the short stream is what the shell sees
+                    Log.i(TAG, "the tar stopped early: ${t.message}")
+                }
+                runCatching { pipeOut.close() }
+            }
+            val answer = runCatching {
+                AdbChannels.exec(context, command, pipeIn, {}, WIRE_IDLE_TIMEOUT_MS)
+            }.onFailure {
+                lastFail = it.message ?: it.javaClass.simpleName
+                Log.i(TAG, "the data's transfer failed (attempt $attempts): $lastFail")
+            }.getOrNull()
+            // the reader may have stopped before the tar began: wake the producer out of its wait
+            producer.interrupt()
+            producer.join(10_000)
+            // the verdict is the manifest, not the transfer's own answer — it is the last entry of the
+            // stream, so its presence says the tar finished (an earlier attempt may have finished it)
+            val dataThere = runCatching {
+                AdbChannels.exec(context,
+                    "if [ -f '$gameDir/${PortablePack.MANIFEST}' ]; then echo DATA_OK; else echo DATA_MISSING; fi",
+                    timeoutMs = 30_000)
+            }.getOrNull().orEmpty().contains("DATA_OK")
+            if (dataThere) {
+                log(if (answer == null) "the data is in the game's own directory (an earlier attempt finished it)"
+                    else "the data is in the game's own directory")
+                return true
+            }
+            if (lastFail.isBlank()) lastFail = "its manifest is not there"
+            if (attempts >= 3) {
+                log("[RED] the data did not land in the game's own directory ($lastFail)")
+                return false
+            }
+            log("the channel dropped mid-transfer: waiting 15s and trying again ($attempts/3)")
+            Thread.sleep(15_000)
         }
-        val answer = runCatching {
-            AdbChannels.exec(context, command, pipeIn, {}, WIRE_IDLE_TIMEOUT_MS)
-        }.onFailure {
-            Log.i(TAG, "the data's transfer failed: ${it.message}")
-            log("[RED] the data could not be moved into the game's own directory: ${it.message}")
-        }.getOrNull()
-        // the reader may have stopped before the tar began: wake the producer out of its wait
-        producer.interrupt()
-        producer.join(10_000)
-        if (answer == null) return false
-        // the tar's own silence means nothing (a warning about a mtime it cannot set is not a failure): the
-        // manifest being there is the check
-        val check = runCatching {
-            AdbChannels.exec(context,
-                "if [ -f '$gameDir/${PortablePack.MANIFEST}' ]; then echo DATA_OK; else echo DATA_MISSING; fi",
-                timeoutMs = 30_000)
-        }.getOrNull().orEmpty()
-        if (!check.contains("DATA_OK")) {
-            log("[RED] the data did not land in the game's own directory (its manifest is not there)")
-            return false
-        }
-        log("the data is in the game's own directory")
-        return true
     }
 
     /** The pack's tree, into the tar: the save backups and the two management files excepted */

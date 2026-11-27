@@ -20,14 +20,10 @@ import org.json.JSONObject
  */
 object GameApkExport {
 
-    /** The APK's name: the game's name, cleaned, with the suffix. */
-    fun apkName(label: String): String = PortablePack.folderName(label) + ".apk"
-
     /** The exported game's own directory on the device: the one the system gives every app. */
     fun gameFilesDir(packageName: String): String = "/storage/emulated/0/Android/data/$packageName/files"
 
-    /** The APK's size limits, in bytes: without a driver, and with one. */
-    const val APK_LIMIT = 25L * 1024 * 1024
+    /** The APK's size limit, in bytes: with a driver at most (the driverless ones sit well below it). */
     const val APK_LIMIT_WITH_DRIVER = 35L * 1024 * 1024
 
     /** The stages of an export, in the order they happen. */
@@ -40,14 +36,12 @@ object GameApkExport {
      * The outcome of an export.
      *
      * [installed] says whether the game got onto the phone; [moved] whether the data reached the game's own
-     * directory. Either can fail on its own — the APK that is built stays in the folder it landed in, and
-     * [detail] carries the installer's (or the shell's) own words.
+     * directory. Either can fail on its own; [detail] carries the installer's (or the shell's) own words.
      */
     data class Result(
         val ok: Boolean,
         val failure: String? = null,
         val detail: String? = null,
-        val apk: String = "",
         val packageName: String = "",
         val size: Long = 0L,
         val installed: Boolean = false,

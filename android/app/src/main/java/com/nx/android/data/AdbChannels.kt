@@ -3,6 +3,7 @@ package com.nx.android.data
 import android.content.Context
 import android.os.Build
 import android.util.Log
+import com.nx.android.domain.ChannelState
 import org.conscrypt.Conscrypt
 import java.io.File
 import java.io.IOException
@@ -43,6 +44,11 @@ object AdbChannels {
      */
     fun connectPort(ctx: Context, timeoutMs: Long = 15_000): Int? {
         property(ctx, "service.adb.tls.port")?.toIntOrNull()?.takeIf { it in 1..65535 }?.let { return it }
+        return mdnsConnectPort(ctx, timeoutMs)
+    }
+
+    /** 只走 mDNS 的端口发现：属性里的值可能是残留旧值时用它。 */
+    private fun mdnsConnectPort(ctx: Context, timeoutMs: Long = 15_000): Int? {
         var port: Int? = null
         val mdns = AdbMdns(ctx, "_adb-tls-connect._tcp") { port = it }
         mdns.start()
@@ -80,10 +86,24 @@ object AdbChannels {
      *
      * Throws when the key is not paired (the wire says so) or when wireless debugging is off.
      */
-    fun exec(ctx: Context, command: String, timeoutMs: Long = 30_000): String {
+    private fun wire(ctx: Context) = AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}")
+
+    private fun run(ctx: Context, command: String, input: InputStream?,
+                    onSent: (Long) -> Unit, timeoutMs: Int): String {
         val port = connectPort(ctx) ?: throw IOException("adb's port is unknown (wireless debugging is off?)")
-        return AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}").exec(LOOPBACK, port, command, timeoutMs.toInt())
+        val wire = wire(ctx)
+        return try {
+            wire.exec(LOOPBACK, port, command, input, onSent, timeoutMs)
+        } catch (e: IOException) {
+            // 属性里的 TLS 端口可能是残留旧值（插着 USB 线/重启时监听会抖）：mDNS 找现役端口再试一次
+            val mdnsPort = mdnsConnectPort(ctx) ?: throw e
+            Log.i(TAG, "the property port ($port) refused; mDNS says $mdnsPort — retrying there")
+            wire.exec(LOOPBACK, mdnsPort, command, input, onSent, timeoutMs)
+        }
     }
+
+    fun exec(ctx: Context, command: String, timeoutMs: Long = 30_000): String =
+        run(ctx, command, null, {}, timeoutMs.toInt())
 
     /**
      * Runs a command as the shell user, feeding [input] to its stdin, and gives back what it printed.
@@ -93,16 +113,21 @@ object AdbChannels {
      * game's data takes minutes, and the player watches it move).
      */
     fun exec(ctx: Context, command: String, input: InputStream?,
-             onSent: (Long) -> Unit = {}, timeoutMs: Long = 30_000): String {
-        val port = connectPort(ctx) ?: throw IOException("adb's port is unknown (wireless debugging is off?)")
-        return AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}")
-            .exec(LOOPBACK, port, command, input, onSent, timeoutMs.toInt())
-    }
+             onSent: (Long) -> Unit = {}, timeoutMs: Long = 30_000): String =
+        run(ctx, command, input, onSent, timeoutMs.toInt())
 
-    /** Whether the App's key is paired with this phone's adbd (a harmless command answers). */
-    fun paired(ctx: Context): Boolean = runCatching { exec(ctx, "echo nx2a", 10_000) }
-        .onFailure { Log.i(TAG, "the shell channel is not ready: ${it.message}") }
-        .isSuccess
+    /** The channel's state: ready / wireless debugging off (no port) / the key never paired (AUTH asked). */
+    fun state(ctx: Context): ChannelState {
+        val port = connectPort(ctx) ?: return ChannelState.OFF
+        return try {
+            AdbWire(key(ctx), ConscryptTls, "nx2a@${Build.MODEL}").exec(LOOPBACK, port, "echo nx2a", 10_000)
+            ChannelState.READY
+        } catch (e: IOException) {
+            if (e.message?.contains("AUTH") == true) ChannelState.UNPAIRED else ChannelState.OFF
+        } catch (e: Exception) {
+            ChannelState.OFF
+        }
+    }
 
     /** A system property's value (the hidden API is not ours to call). */
     private fun property(ctx: Context, name: String): String? = runCatching {
