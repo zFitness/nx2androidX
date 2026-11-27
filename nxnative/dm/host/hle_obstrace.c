@@ -28,11 +28,10 @@ static void o6(const uint64_t *r) { log_one(6, r); }
 static void o7(const uint64_t *r) { log_one(7, r); }
 static void o8(const uint64_t *r) { log_one(8, r); }
 static void o9(const uint64_t *r) { log_one(9, r); }
-static void o10(const uint64_t *r) { log_one(10, r); }
 static void o11(const uint64_t *r) { log_one(11, r); }
 
 __attribute__((constructor)) static void obs_trace_install(void) {
     gate_obs_set(1, o1); gate_obs_set(2, o2); gate_obs_set(3, o3); gate_obs_set(4, o4);
     gate_obs_set(5, o5); gate_obs_set(6, o6); gate_obs_set(7, o7);
-    gate_obs_set(8, o8); gate_obs_set(9, o9); gate_obs_set(10, o10); gate_obs_set(11, o11);
+    gate_obs_set(8, o8); gate_obs_set(9, o9); gate_obs_set(11, o11);
 }
