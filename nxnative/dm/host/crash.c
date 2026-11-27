@@ -219,9 +219,9 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         fputc('\n', stderr);
     }
     dm_backtrace(DM_UC_SS(uc)->__fp);
-    // [probe] The nn heap allocation of the Mario vs DK linux boot crash walks these main-module globals: the GOT slot of the
-    // thread-lookup call that returned 0, the heap manager it fell back to, and the thread context whose field feeds the lookup
-    {   module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; }
+    // [probe] (linux diagnostics): the nn heap allocation chain of the boot crash, walked at crash time
+    {
+        module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; }
         if (mm) {
             uint64_t m0 = (uint64_t)mm->base, w = 0, p = 0; char b[192];
             if (stack_word(m0 + 0x1719020, &w) && w) { crash_addr_str(b, sizeof b, w); fprintf(stderr, "[dm] probe: GOT main+0x1719020 (thread-lookup callee) = %s\n", b); }
@@ -233,48 +233,27 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
                 uint64_t f104 = 0; crash_addr_str(b, sizeof b, w); stack_word(w + 104, &f104);
                 fprintf(stderr, "[dm] probe: threadctx = %s  ctx+104=%#llx\n", b, (unsigned long long)f104);
             }
-            // full chain: the sdk trampolines resolve the current thread as *(tls_base + *(sdk+0xddc010)), then [obj+0x1f8] = thread object, [obj+504] = its tls array
-            {   module_t *sm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sm = &g_mod[i]; break; }
-                uint64_t X = 0;
-                if (sm && stack_word((uint64_t)sm->base + 0xddc010, &X)) {
 #ifdef DM_TSD_LINUX
-                    uint64_t base = (uint64_t)dm_slots;
-                    fprintf(stderr, "[dm] probe: sdk tls-off *(0xddc010)=%#llx  &dm_slots=%#llx  cached-p=%#llx  dm[0]=%#llx dm[1]=%#llx dm[2]=%#llx dm[3]=%#llx dm[4]=%#llx\n",
-                        (unsigned long long)X, (unsigned long long)base, (unsigned long long)p,
-                        (unsigned long long)dm_slots[0], (unsigned long long)dm_slots[1], (unsigned long long)dm_slots[2], (unsigned long long)dm_slots[3], (unsigned long long)dm_slots[4]);
-                    if (X < 4096) {
-                        uint64_t rec = 0; stack_word(base + X, &rec);
-                        uint64_t obj = 0; if (rec) stack_word(rec + 0x1f8, &obj);
-                        uint64_t arr = 0; if (obj) stack_word(obj + 504, &arr);
-                        uint64_t obj144 = 0; if (obj) stack_word(obj + 144, &obj144);
-                        uint64_t e2 = 0; if (arr) stack_word(arr + 2 * 8 + 128, &e2);
-                        fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx obj+144=%#llx arr=%#llx arr+144=%#llx\n",
-                            (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)obj144, (unsigned long long)arr, (unsigned long long)e2);
-                        if (sm) {
-                            uint64_t trw = 0; stack_word((uint64_t)sm->base + 0xe016b8, &trw);   // the baked ADDI of the sdk tls trampoline
-                            uint64_t ct = 0; stack_word(base + 0x18, &ct);                    // *(tls replica +0x18) = the current ThreadType per the trampoline
-                            fprintf(stderr, "[dm] probe: trampoline word=%#llx (baked addi x8,x8,#72 = 0x91012108)  cur-thread *(base+0x18)=%#llx\n", (unsigned long long)trw, (unsigned long long)ct);
-                        }
-                        // classify each address against the module ranges and dump the array surroundings
-                        for (int round = 0; round < 3; round++) {
-                            uint64_t a = round == 0 ? rec : round == 1 ? obj : arr;
-                            const char *where = "host";
-                            for (int i = 0; i < g_nmod; i++) if (a >= (uint64_t)g_mod[i].base && a < (uint64_t)g_mod[i].base + g_mod[i].size) { where = g_mod[i].name; break; }
-                            fprintf(stderr, "[dm] probe: %s (%#llx) in %s\n", round == 0 ? "rec" : round == 1 ? "obj" : "arr", (unsigned long long)a, where);
-                        }
-                        if (obj) {
-                            uint64_t f[2]; fprintf(stderr, "[dm] probe: obj+496=");
-                            for (int i = 0; i < 2; i++) { stack_word(obj + 496 + 8 * i, &f[i]); fprintf(stderr, " %#llx", (unsigned long long)f[i]); }
-                            fprintf(stderr, "\n[dm] probe: arr+80..136=");
-                            for (int i = 0; i < 8; i++) { stack_word(arr + 80 + 8 * i, &f[0]); fprintf(stderr, " %#llx", (unsigned long long)f[0]); }
-                            fprintf(stderr, "\n[dm] probe: arr+136..192=");
-                            for (int i = 0; i < 8; i++) { stack_word(arr + 136 + 8 * i, &f[0]); fprintf(stderr, " %#llx", (unsigned long long)f[0]); }
-                            fputc('\n', stderr);
-                        }
-                    }
+            module_t *sm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sm = &g_mod[i]; break; }
+            uint64_t X = 0;
+            if (sm && stack_word((uint64_t)sm->base + 0xddc010, &X)) {
+                uint64_t base = (uint64_t)dm_slots;
+                fprintf(stderr, "[dm] probe: sdk tls-off *(0xddc010)=%#llx  &dm_slots=%#llx  cached-p=%#llx  dm[0]=%#llx dm[1]=%#llx dm[2]=%#llx dm[3]=%#llx dm[4]=%#llx\n",
+                    (unsigned long long)X, (unsigned long long)base, (unsigned long long)p,
+                    (unsigned long long)dm_slots[0], (unsigned long long)dm_slots[1], (unsigned long long)dm_slots[2], (unsigned long long)dm_slots[3], (unsigned long long)dm_slots[4]);
+                if (X < 4096) {
+                    uint64_t rec = 0; stack_word(base + X, &rec);
+                    uint64_t obj = 0; if (rec) stack_word(rec + 0x1f8, &obj);
+                    uint64_t arr = 0; if (obj) stack_word(obj + 504, &arr);
+                    uint64_t obj144 = 0; if (obj) stack_word(obj + 144, &obj144);
+                    fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx obj+144=%#llx arr=%#llx arr+144=%#llx\n",
+                        (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)obj144, (unsigned long long)arr, (unsigned long long)obj144);
+                    uint64_t trw = 0; stack_word((uint64_t)sm->base + 0xe016b8, &trw);
+                    uint64_t ct = 0; stack_word(base + 0x18, &ct);
+                    fprintf(stderr, "[dm] probe: trampoline word=%#llx (baked addi x8,x8,#72 = 0x91012108)  cur-thread *(base+0x18)=%#llx\n", (unsigned long long)trw, (unsigned long long)ct);
                 }
-#endif
             }
+#endif
         }
     }
     // Stack words are read with vm_read_overwrite too: a host function the guest called runs on a stack of its own, and Super Mario Bros. Wonder's crash in
