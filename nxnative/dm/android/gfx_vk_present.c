@@ -306,7 +306,7 @@ static int tc_resources_make(void) {
       uint32_t mt = ~0u; for (uint32_t i = 0; i < V.mem.memoryTypeCount; i++) if ((mr.memoryTypeBits >> i & 1) && (V.mem.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { mt = i; break; }
       if (mt == ~0u) { VKRED_ONCE(151, "test card: no host-visible memory for the staging buffer"); goto fail; }
       g_tc_coherent = (V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
-      VkMemoryAllocateInfo mi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, 0, mr.size, mt};
+      VkMemoryAllocateInfo mi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, mt};   // sType, pNext, allocationSize, memoryTypeIndex
       if (!mr.size || (vkAllocateMemory(V.dev, &mi, NULL, &g_tc_mem) || vkBindBufferMemory(V.dev, g_tc_buf, g_tc_mem, 0) || vkMapMemory(V.dev, g_tc_mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_tc_px))) goto fail;
       VKLOG("test card: staging memory type %u (%s), mapped at %p", mt, g_tc_coherent ? "host coherent" : "host visible, flushed by hand", (void *)g_tc_px); }
     g_tc_res = 1; g_tc_cap = need;
