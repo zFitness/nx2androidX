@@ -160,24 +160,24 @@ void vk_init(void) {
     // against 22-27 ms here on Qualcomm's driver. A driver that does not load, or offers no Vulkan 1.3 GPU, leaves the system's
     const char *drv = getenv("DM_VK_DRIVER"); void *lib = NULL;
 #ifdef DM_LINUX
-    // Linux: the loader picks the driver itself (ICDs in /usr/share/vulkan/icd.d; Mesa's freedreno on Adreno). DM_VK_DRIVER=<library> is loaded
-    // directly in its place, without adrenotools: a driver or loader of the player's own
-    if (drv && *drv) {
-        if ((lib = dlopen(drv, RTLD_NOW | RTLD_LOCAL))) p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
-        if (!lib || !p_vkGetInstanceProcAddr) { VKLOG("[RED] DM_VK_DRIVER %s: cannot be loaded (%s); the system's loader instead", drv, dlerror()); lib = NULL; }
-        else VKLOG("Vulkan driver %s, not the system's loader", drv);
-    }
-    if (!lib) {
+    // Linux: one loader for the window and for the backend. The front loaded it through SDL on the window's thread (SDL_Vulkan_LoadLibrary) and hands its
+    // vkGetInstanceProcAddr over -- the surface SDL makes and the instance, device and swapchain made here are the same loader's. Without a window (the
+    // front's headless fallback) the loader is opened directly. DM_VK_DRIVER (a driver of the APK's, through adrenotools) has no Linux path yet
+    void *dm_front_vk_gipa(void); int dm_front_vk_extensions(unsigned *n, const char *const **ext);
+    if (drv && *drv) VKLOG("[RED] DM_VK_DRIVER is not supported on Linux yet: the system loader's driver instead");
+    p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dm_front_vk_gipa();
+    if (p_vkGetInstanceProcAddr) VKLOG("Vulkan loader: the one SDL loaded, on the window's thread");
+    if (!p_vkGetInstanceProcAddr) {
         if (!(lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL)) && !(lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL))) die("[vk] libvulkan: %s", dlerror());
         p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
     }
     vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
-    // The window-system extensions are SDL3's: what its video driver (Wayland) needs for a surface on the window the front made. Without a window
-    // (no display: the front's headless fallback) there are none, and the instance gets the surface extension alone
-    Uint32 nsext = 0; const char *const *sext = SDL_Vulkan_GetInstanceExtensions(&nsext);
+    // The window-system extensions are the video driver's, as the front read them on the window's thread before anything asked for a surface;
+    // without a window there are none, and the instance gets the surface extension alone
     const char *iext[24] = {"VK_KHR_surface"}; unsigned nbase = 1;
-    for (Uint32 i = 0; i < nsext && nbase < 23; i++) { const char *e = sext[i]; unsigned k = 0; while (k < nbase && strcmp(iext[k], e)) k++; if (k == nbase) iext[nbase++] = e; }
-    if (!nsext) VKLOG("[RED] SDL names no window-system extensions (%s): an instance without a surface", SDL_GetError());
+    { unsigned n = 0; const char *const *e = NULL;
+      if (dm_front_vk_extensions(&n, &e)) for (unsigned i = 0; i < n && nbase < 23; i++) { unsigned k = 0; while (k < nbase && strcmp(iext[k], e[i])) k++; if (k == nbase) iext[nbase++] = e[i]; }
+      else VKLOG("no window: an instance for off-screen work alone"); }
 #else
     if (drv && *drv) {
         Dl_info di; char dir[512] = "", dirs[520] = "";   // the APK's extracted libraries (mkapk.py: extractNativeLibs), where adrenotools finds its hooks

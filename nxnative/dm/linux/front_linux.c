@@ -6,6 +6,15 @@
 // plain data the Mac's GameController path and the Android's front core produce. The window's
 // Vulkan surface goes to the Vulkan backend's swapchain through dm_front_window (M2/M3).
 //
+// The window is this thread's (Wayland's display is): everything that touches it stays here, and
+// the backend is handed plain values -- the loader's vkGetInstanceProcAddr, the instance
+// extensions the video driver needs, the size in pixels, and the surface it asks for (served by
+// dm_front_tick from the event loop; dm/android/gfx_vk_present.c has the other end).
+//
+// DM_VK_TESTCARD=<ms>: the present chain on its own, no guest started -- the window shows the
+// test card (vk_testcard_step) a frame every <ms>. DM_VK_TESTCARD_SCRIPT=1 with it: the window is
+// minimized, restored, resized and maximized on a timer, so those paths are checked without hands.
+//
 // Keyboard mapping (v1, no remapper yet): WASD = left stick, arrows = d-pad,
 // J=A K=B U=X I=Y, Q=ZL E=ZR, 1=L 2=R, Return=Plus, Backspace=Minus.
 // Real controllers: SDL3's gamepad API, standard layout → dm_pad_set_player.
@@ -13,6 +22,7 @@
 #include "dm_input.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,11 +31,19 @@
 // gfx_vk_present（DM_LINUX）把窗口当 opaque 的 ANativeWindow 用：同一 opaque 类型对接
 typedef struct SDL_Window ANativeWindow;
 ANativeWindow *dm_front_window(void);
-// The Vulkan backend's work on the window's thread: the surface (android/gfx_vk_present.c, DM_LINUX). Weak: the null-device build has none
+// The Vulkan backend's work on the window's thread (android/gfx_vk_present.c, DM_LINUX): the surface it asked for, and surfaces to destroy. Weak: the null-device build has none
 __attribute__((weak)) void dm_front_tick(void);
+__attribute__((weak)) int vk_testcard_step(uint64_t now_ns, int period_ms);
 
+// ---- what the backend is handed from this thread -------------------------------------------
 static SDL_Window *g_win;
 static volatile int g_quit;
+static PFN_vkGetInstanceProcAddr g_gipa;                  // SDL_Vulkan_GetVkGetInstanceProcAddr: the one loader, loaded here through SDL
+static const char *const *g_sext; static Uint32 g_nsext;   // SDL_Vulkan_GetInstanceExtensions: what the video driver needs for a surface
+static _Atomic uint64_t g_px;                              // SDL_GetWindowSizeInPixels, (width << 32) | height, re-read on every pass of the loop
+void *dm_front_vk_gipa(void) { return (void *)g_gipa; }
+int dm_front_vk_extensions(unsigned *n, const char *const **ext) { if (!g_sext) return 0; *n = g_nsext; *ext = g_sext; return 1; }
+uint64_t dm_front_vk_px(void) { return atomic_load(&g_px); }
 
 // ---- 键盘 → 玩家 1（dm_input_set）--------------------------------------------
 static uint64_t g_kbd_btn;
@@ -85,18 +103,15 @@ static void pad_publish(int i) {
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_RIGHT))        b |= DM_BTN_RIGHT;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_UP))           b |= DM_BTN_UP;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_DOWN))         b |= DM_BTN_DOWN;
-    float lx = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTX);
-    float ly = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTY);
-    float rx = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHTX);
-    float ry = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHTY);
-    float zl = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-    float zr = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-    if (zl > 0.05f) b |= DM_BTN_ZL;
-    if (zr > 0.05f) b |= DM_BTN_ZR;
-    // SDL3 reports a thumbstick with up negative (the convention Android's front negates too); the host reads a positive y as up
-    dm_pad_set_player(g_pad_player[i], b,
-                      (int32_t)(lx * DM_STICK_MAX), (int32_t)(-ly * DM_STICK_MAX),
-                      (int32_t)(rx * DM_STICK_MAX), (int32_t)(-ry * DM_STICK_MAX));
+    // SDL3 reports an axis as an integer -32768..32767 already (the host's range is DM_STICK_MAX = 32767: no scaling, only the one
+    // endpoint beyond it clamped) and a trigger as 0..32767. A thumbstick's up is negative there; the host reads a positive y as up
+    int32_t ax[4];
+    static const SDL_GamepadAxis A[4] = {SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY};
+    for (int k = 0; k < 4; k++) { int32_t v = SDL_GetGamepadAxis(p, A[k]); ax[k] = v < -DM_STICK_MAX ? -DM_STICK_MAX : v; }
+    int32_t zl = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), zr = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
+    if (zl > DM_STICK_MAX / 20) b |= DM_BTN_ZL;   // pressed past 5 % of its travel
+    if (zr > DM_STICK_MAX / 20) b |= DM_BTN_ZR;
+    dm_pad_set_player(g_pad_player[i], b, ax[0], -ax[1], ax[2], -ax[3]);
     dm_pad_players(g_pad_mask);
 }
 
@@ -126,23 +141,42 @@ void front_run(void (*guest)(void)) {
         guest();
         return;
     }
-    // The Vulkan loader SDL makes the surface with: the same libvulkan the backend's own pointers come from
-    if (!SDL_Vulkan_LoadLibrary(NULL)) fprintf(stderr, "[front] SDL_Vulkan_LoadLibrary failed: %s (the backend loads libvulkan itself)\n", SDL_GetError());
-    fprintf(stderr, "[front] window up (1280x720, %s)\n", SDL_GetCurrentVideoDriver());
+    // The loader SDL makes the surface with is the backend's too: its vkGetInstanceProcAddr is handed over (dm_front_vk_gipa), and the
+    // instance extensions are the video driver's -- both read here, on the thread that owns the window
+    if (!SDL_Vulkan_LoadLibrary(NULL)) fprintf(stderr, "[RED] [front] SDL_Vulkan_LoadLibrary failed: %s\n", SDL_GetError());
+    else g_gipa = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    g_sext = g_gipa ? SDL_Vulkan_GetInstanceExtensions(&g_nsext) : NULL;
+    if (!g_sext) g_nsext = 0;
+    int pw = 0, ph = 0; SDL_GetWindowSizeInPixels(g_win, &pw, &ph); atomic_store(&g_px, ((uint64_t)(uint32_t)pw << 32) | (uint32_t)ph);
+    fprintf(stderr, "[front] window up (1280x720, %s, %d x %d pixels, loader %s)\n", SDL_GetCurrentVideoDriver(), pw, ph, g_gipa ? "loaded through SDL" : "NOT LOADED");
+    for (Uint32 i = 0; i < g_nsext; i++) fprintf(stderr, "[front]   instance extension %s\n", g_sext[i]);
+    // DM_VK_TESTCARD=<ms>: the present chain on its own -- no guest, the window shows the test card from this loop
+    const char *tc = getenv("DM_VK_TESTCARD"); int tc_ms = tc ? atoi(tc) : 0;
+    const char *scr = getenv("DM_VK_TESTCARD_SCRIPT"); int script = tc && scr && atoi(scr) > 0;
+    if (tc && (!vk_testcard_step || tc_ms <= 0)) { fprintf(stderr, "[RED] [front] DM_VK_TESTCARD wants this build's Vulkan backend and a frame period in ms\n"); tc = NULL; }
+    uint64_t t0 = now_ns(); int script_i = 0;
+    static const struct { double at; const char *what; } script_steps[] = {{6, "minimize"}, {12, "restore"}, {18, "resize to 800x500"}, {24, "maximize"}};
 
     pthread_t th;
-    if (pthread_create(&th, NULL, guest_trampoline, &guest)) {
+    if (!tc && pthread_create(&th, NULL, guest_trampoline, &guest)) {
         fprintf(stderr, "[front] guest thread failed — headless fallback\n");
         guest();
         SDL_DestroyWindow(g_win); SDL_Quit();
         return;
     }
+    if (tc) fprintf(stderr, "[front] test card: a frame every %d ms, no guest%s\n", tc_ms, script ? ", the window scripted (minimize, restore, resize, maximize)" : "");
 
     for (;;) {
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
             case SDL_EVENT_QUIT: g_quit = 1; break;
+            case SDL_EVENT_WINDOW_CLOSE_REQUESTED: g_quit = 1; break;   // the title bar's close button
+            case SDL_EVENT_WINDOW_MINIMIZED: case SDL_EVENT_WINDOW_RESTORED: case SDL_EVENT_WINDOW_RESIZED: case SDL_EVENT_WINDOW_MAXIMIZED:
+                // a resize floods while the window is dragged: the multiples of 240 are enough in the log
+                if (ev.window.type != SDL_EVENT_WINDOW_RESIZED || !(ev.window.data1 % 240))
+                    fprintf(stderr, "[front] window event %u: %d x %d\n", (unsigned)(ev.window.type - SDL_EVENT_WINDOW_FIRST), (int)ev.window.data1, (int)ev.window.data2);
+                break;
             case SDL_EVENT_KEY_DOWN: key_apply(ev.key.key, 1); break;
             case SDL_EVENT_KEY_UP: key_apply(ev.key.key, 0); break;
             case SDL_EVENT_GAMEPAD_ADDED: {
@@ -172,8 +206,22 @@ void front_run(void (*guest)(void)) {
             if (g_quit) break;
         }
         if (g_quit) break;
-        if (dm_front_tick) dm_front_tick();   // the surface the Vulkan backend's present thread asked for
-        SDL_Delay(4);
+        { int pw = 0, ph = 0; SDL_GetWindowSizeInPixels(g_win, &pw, &ph); atomic_store(&g_px, ((uint64_t)(uint32_t)pw << 32) | (uint32_t)ph); }   // what the swapchain is sized to
+        if (dm_front_tick) dm_front_tick();   // the surface the Vulkan backend's present thread asked for, and the ones it is done with
+        if (script) {
+            double el = (double)(now_ns() - t0) / 1e9;
+            while (script_i < (int)(sizeof script_steps / sizeof *script_steps) && el >= script_steps[script_i].at) {
+                const char *what = script_steps[script_i].what;
+                if (!strcmp(what, "minimize")) SDL_MinimizeWindow(g_win);
+                else if (!strcmp(what, "restore")) SDL_RestoreWindow(g_win);
+                else if (!strcmp(what, "resize to 800x500")) SDL_SetWindowSize(g_win, 800, 500);
+                else SDL_MaximizeWindow(g_win);
+                fprintf(stderr, "[front] %.1f s: script %s\n", el, what);
+                script_i++;
+            }
+        }
+        if (tc) vk_testcard_step(now_ns(), tc_ms);
+        SDL_Delay(2);
     }
     fprintf(stderr, "[front] quit: exiting the process (guest thread included; v1 无优雅停机)\n");
     exit(0);

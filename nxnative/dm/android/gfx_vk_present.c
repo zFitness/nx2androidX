@@ -120,7 +120,11 @@ static void swap_destroy(void) {
     present_time_reset();
     if (g_swap) { vkDeviceWaitIdle(V.dev); ov_fb_drop(); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; rot_drop_image(); g_pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR; }
+#ifdef DM_LINUX
+    if (g_surf) { surface_retire(g_surf); g_surf = VK_NULL_HANDLE; }   // made on the window's thread: destroyed there too, a pass later
+#else
     if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
+#endif
 }
 // The objects of the rotated copy: the pipeline (once per swapchain format) and the image the frame is composed into (the window's size); 0 = not available
 static int rot_setup(void) {
@@ -181,41 +185,174 @@ static int rot_setup(void) {
     return 1;
 }
 #ifdef DM_LINUX
-// The surface belongs to the thread that owns the window (SDL3's Wayland display): the present thread asks here, under g_present_mu, and the
-// front thread makes it from its event loop (dm_front_tick, dm/linux/front_linux.c) -- the front thread never takes that mutex, so the asker's
-// waiting holds nothing the front needs. The asker gives up after a second, which only a front thread without a loop could cause
-static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; volatile int req, done; } g_sreq;
-void dm_front_tick(void) {
-    if (__atomic_load_n(&g_sreq.req, __ATOMIC_ACQUIRE)) {
-        g_sreq.r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sreq.w, g_sreq.inst, NULL, &g_sreq.surf) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
-        __atomic_store_n(&g_sreq.req, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&g_sreq.done, 1, __ATOMIC_RELEASE);
+uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, (width << 32) | height, as the SDL main thread last read it
+
+// The window belongs to the SDL main thread (Wayland's display is that thread's): everything that touches it is done there, and the present
+// thread only asks. One request at a time through a state word: IDLE -> REQ (the asker) -> ANS (the front thread, once the surface is made) ->
+// IDLE (the asker, having taken it). An asker that stops waiting turns REQ into CANCEL: a request cancelled before its answer is published has
+// the surface it was making destroyed as soon as it is made, one cancelled after has it destroyed the next time the front thread looks. So the
+// request is never reused while a surface of an earlier one may still turn up, and a late surface always dies on the window's thread
+enum { SR_IDLE, SR_REQ, SR_ANS, SR_CANCEL };
+static _Atomic int g_sr_state;
+static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; } g_sr;   // w / inst: the asker, before REQ. surf / r: the front thread, before ANS
+// Surfaces the present thread is done with, for the window's thread to destroy a pass later (the mutex is held to push or to take, never while waiting)
+#define SR_RETIRE 16
+static VkSurfaceKHR g_retire[SR_RETIRE]; static unsigned g_nretire; static pthread_mutex_t g_retire_mu = PTHREAD_MUTEX_INITIALIZER;
+static void surface_retire(VkSurfaceKHR s) {
+    if (!s) return;
+    pthread_mutex_lock(&g_retire_mu);
+    if (g_nretire < SR_RETIRE) g_retire[g_nretire++] = s;
+    else { vkDestroySurfaceKHR(V.inst, s, NULL); VKRED_ONCE(144, "the retired-surface list was full: one destroyed on the present thread"); }
+    pthread_mutex_unlock(&g_retire_mu);
+}
+void dm_front_tick(void) {   // the SDL main thread, every pass of its event loop (dm/linux/front_linux.c)
+    for (unsigned i = 0; i < 8; i++) {
+        int st = atomic_load(&g_sr_state);
+        if (st == SR_REQ) {
+            VkSurfaceKHR s = VK_NULL_HANDLE; VkResult r = VK_ERROR_SURFACE_LOST_KHR;
+            if (g_sr.w) r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sr.w, g_sr.inst, NULL, &s) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+            g_sr.surf = s; g_sr.r = r;
+            if (atomic_compare_exchange_strong(&g_sr_state, &st, SR_ANS)) break;   // published: it is the asker's to take
+            // cancelled while it was being made: nobody waits for it
+            if (s) surface_retire(s);
+            atomic_store(&g_sr_state, SR_IDLE);
+            continue;
+        }
+        if (st == SR_CANCEL) { if (g_sr.surf) surface_retire(g_sr.surf); g_sr.surf = VK_NULL_HANDLE; atomic_store(&g_sr_state, SR_IDLE); continue; }
+        break;   // IDLE: nothing is asked. ANS: the answer is the asker's, to take or to cancel
     }
+    VkSurfaceKHR done[SR_RETIRE]; unsigned n;
+    pthread_mutex_lock(&g_retire_mu); n = g_nretire; memcpy(done, g_retire, n * sizeof *done); g_nretire = 0; pthread_mutex_unlock(&g_retire_mu);
+    for (unsigned i = 0; i < n; i++) vkDestroySurfaceKHR(V.inst, done[i], NULL);
+}
+// The asker (the present thread, under g_present_mu -- which the front thread never takes, so waiting here holds nothing it needs)
+static int surface_take(int *state) {
+    if (*state != SR_ANS) return 0;
+    g_surf = g_sr.surf;
+    int ok = g_sr.r == VK_SUCCESS && g_surf != VK_NULL_HANDLE;
+    atomic_store(&g_sr_state, SR_IDLE);
+    if (!ok) { if (g_surf) surface_retire(g_surf); g_surf = VK_NULL_HANDLE; }
+    return ok;
 }
 static int surface_make(ANativeWindow *w) {
-    g_sreq.surf = VK_NULL_HANDLE; g_sreq.w = w; g_sreq.inst = V.inst;
-    __atomic_store_n(&g_sreq.done, 0, __ATOMIC_RELEASE);
-    __atomic_store_n(&g_sreq.req, 1, __ATOMIC_RELEASE);
-    for (int i = 0; i < 1000 && !__atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE); i++) usleep(1000);
-    if (!__atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE)) VKRED_ONCE(141, "the front thread made no surface in a second");
-    g_surf = g_sreq.surf;
-    return __atomic_load_n(&g_sreq.done, __ATOMIC_ACQUIRE) && g_sreq.r == VK_SUCCESS && g_surf != VK_NULL_HANDLE;
+    for (int i = 0; i < 1000 && atomic_load(&g_sr_state) != SR_IDLE; i++) usleep(1000);   // an earlier request closes first
+    if (atomic_load(&g_sr_state) != SR_IDLE) { VKRED_ONCE(142, "the front thread did not close the earlier surface request"); return 0; }
+    g_sr.w = w; g_sr.inst = V.inst; g_sr.surf = VK_NULL_HANDLE;
+    atomic_store(&g_sr_state, SR_REQ);
+    int st;
+    for (int i = 0; i < 1000; i++) {
+        st = atomic_load(&g_sr_state);
+        if (surface_take(&st)) return 1;
+        if (st != SR_REQ) break;
+        usleep(1000);
+    }
+    st = SR_REQ;
+    if (atomic_compare_exchange_strong(&g_sr_state, &st, SR_CANCEL)) { VKRED_ONCE(141, "the front thread made no surface in a second"); return 0; }
+    // the answer landed between the last look and this: taken like any other
+    if (surface_take(&st)) return 1;
+    if (st == SR_REQ) atomic_store(&g_sr_state, SR_CANCEL);
+    return 0;
+}
+
+// DM_VK_TESTCARD=<ms>: the present chain on its own, without the game. The window shows colour bars with a white stripe that grows by a pixel a
+// frame -- a still picture is told from a live one -- through the same surface request, swapchain, acquire and present the game's frames go
+// through. The SDL main thread drives it from its event loop (dm/linux/front_linux.c), so the window is touched on that thread only.
+// Returns 0 when there is no window to present to.
+static uint64_t g_tc_next; static uint32_t g_tc_n;
+static VkBuffer g_tc_buf; static VkDeviceMemory g_tc_mem; static uint8_t *g_tc_px; static VkDeviceSize g_tc_cap; static int g_tc_coherent;
+static VkCommandPool g_tc_pool; static VkCommandBuffer g_tc_cb; static VkSemaphore g_tc_sem; static VkFence g_tc_fence; static int g_tc_res;
+static void tc_resources_drop(void) {
+    if (!g_tc_res) return;
+    vkDeviceWaitIdle(V.dev);
+    vkDestroyFence(V.dev, g_tc_fence, NULL); vkDestroySemaphore(V.dev, g_tc_sem, NULL); vkDestroyCommandPool(V.dev, g_tc_pool, NULL);
+    vkDestroyBuffer(V.dev, g_tc_buf, NULL); vkFreeMemory(V.dev, g_tc_mem, NULL);
+    g_tc_res = 0; g_tc_buf = VK_NULL_HANDLE; g_tc_mem = VK_NULL_HANDLE; g_tc_px = NULL; g_tc_cap = 0;
+}
+static int tc_resources_make(void) {
+    VkDeviceSize need = (VkDeviceSize)g_sext.width * g_sext.height * 4;
+    if (g_tc_res && need <= g_tc_cap) return 1;
+    tc_resources_drop();
+    if (!g_tc_pool) {   // once: the command pool, its buffer, the semaphore and the fence (the pool is not reset with the swapchain: its buffer is)
+        VkCommandPoolCreateInfo pi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf};
+        VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_tc_pool = VK_NULL_HANDLE, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+        if (vkCreateCommandPool(V.dev, &pi, NULL, &g_tc_pool)) goto fail;
+        ai.commandPool = g_tc_pool;
+        if (vkAllocateCommandBuffers(V.dev, &ai, &g_tc_cb)) goto fail;
+        VkSemaphoreCreateInfo si = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0};
+        VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
+        if (vkCreateSemaphore(V.dev, &si, NULL, &g_tc_sem) || vkCreateFence(V.dev, &fi, NULL, &g_tc_fence)) goto fail;
+    }
+    { VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, need, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+      if (vkCreateBuffer(V.dev, &bi, NULL, &g_tc_buf)) goto fail;
+      VkMemoryRequirements mr; vkGetBufferMemoryRequirements(V.dev, g_tc_buf, &mr);
+      uint32_t mt = ~0u; for (uint32_t i = 0; i < V.mem.memoryTypeCount; i++) if ((mr.memoryTypeBits >> i & 1) && (V.mem.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { mt = i; break; }
+      if (mt == ~0u) { VKRED_ONCE(151, "test card: no host-visible memory for the staging buffer"); goto fail; }
+      g_tc_coherent = (V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+      VkMemoryAllocateInfo mi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, 0, mr.size, mt};
+      if (vkAllocateMemory(V.dev, &mi, NULL, &g_tc_mem) || vkBindBufferMemory(V.dev, g_tc_buf, g_tc_mem, 0) || vkMapMemory(V.dev, g_tc_mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_tc_px)) goto fail; }
+    g_tc_res = 1; g_tc_cap = need;
+    return 1;
+fail:
+    VKRED_ONCE(152, "test card: its staging buffer could not be made"); tc_resources_drop(); return 0;
+}
+int vk_testcard_step(uint64_t now_ns, int period_ms) {
+    if (now_ns < g_tc_next) return 1;
+    if (!V.inst) vk_init();   // the instance and the device, on this thread: the test card's own (nothing of the game is loaded)
+    if (!swap_make()) return dm_front_window() != NULL;   // the surface is asked for here and answered a pass later; minimized: nothing to present
+    if (!tc_resources_make()) return 1;
+    g_tc_next = now_ns + (uint64_t)(period_ms > 0 ? period_ms : 16) * 1000000ull;
+    uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_tc_sem, VK_NULL_HANDLE, &idx);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) { swap_destroy(); return 1; }
+    if (r < 0) { VKRED_ONCE(150, "test card: vkAcquireNextImageKHR %d", r); return 1; }
+    if (vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX) || vkResetFences(V.dev, 1, &g_tc_fence)) return 1;
+    // The picture: eight bars (white, yellow, cyan, green, magenta, red, blue, black) and, along the top, a white stripe one pixel longer each frame
+    static const uint8_t bars[8][3] = {{255, 255, 255}, {255, 255, 0}, {0, 255, 255}, {0, 255, 0}, {255, 0, 255}, {255, 0, 0}, {0, 0, 255}, {0, 0, 0}};
+    int bgra = g_sfmt == VK_FORMAT_B8G8R8A8_UNORM || g_sfmt == VK_FORMAT_B8G8R8A8_SRGB;
+    uint32_t grow = g_tc_n % g_sext.width;
+    for (uint32_t y = 0; y < g_sext.height; y++) {
+        uint8_t *row = g_tc_px + 4 * (size_t)y * g_sext.width;
+        for (uint32_t x = 0; x < g_sext.width; x++) {
+            const uint8_t *c = bars[x * 8 / g_sext.width]; int stripe = y < 16 && x < grow;
+            row[0] = stripe ? 255 : bgra ? c[2] : c[0]; row[1] = stripe ? 255 : c[1]; row[2] = stripe ? 255 : bgra ? c[0] : c[2]; row[3] = 255; row += 4;
+        }
+    }
+    if (!g_tc_coherent) { VkMappedMemoryRange rg = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, g_tc_mem, 0, VK_WHOLE_SIZE}; vkFlushMappedMemoryRanges(V.dev, 1, &rg); }
+    vkResetCommandBuffer(g_tc_cb, 0);
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (vkBeginCommandBuffer(g_tc_cb, &bi)) return 1;
+    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy cp = {0, g_sext.width, g_sext.height, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}};
+    vkCmdCopyBufferToImage(g_tc_cb, g_tc_buf, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    vkEndCommandBuffer(g_tc_cb);
+    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_tc_sem, &ws, 1, &g_tc_cb, 0, NULL};
+    extern pthread_mutex_t g_vk_queue_mu;
+    pthread_mutex_lock(&g_vk_queue_mu);
+    r = vkQueueSubmit(V.q, 1, &si, g_tc_fence);
+    if (!r) { vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX); r = vkQueuePresentKHR(V.q, &(VkPresentInfoKHR){VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 0, NULL, 1, &g_swap, &idx, NULL}); }
+    pthread_mutex_unlock(&g_vk_queue_mu);
+    g_tc_n++;
+    if (r) { VKRED_ONCE(153, "test card: submit or present %d (frame %u)", r, g_tc_n); if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy(); return 1; }
+    if (!(g_tc_n % 20)) VKLOG("test card: frame %u on the screen, swapchain %ux%u format %d", g_tc_n, g_sext.width, g_sext.height, g_sfmt);
+    return 1;
 }
 #endif
 static int swap_make(void) {
     ANativeWindow *w = dm_front_window();
     if (w != g_win) { swap_destroy(); g_win = w; }
     if (!w) return 0;
-    int ww, wh;
 #ifdef DM_LINUX
-    SDL_GetWindowSize((SDL_Window *)w, &ww, &wh);
+    int ww, wh; { uint64_t px = dm_front_vk_px(); ww = (int)(px >> 32); wh = (int)(px & 0xffffffffu); }   // SDL_GetWindowSizeInPixels, as the SDL main thread last read it
+    if (g_swap && (ww <= 0 || wh <= 0 || (uint32_t)ww != g_sext.width || (uint32_t)wh != g_sext.height)) swap_destroy();
+    if (ww <= 0 || wh <= 0) return 0;   // minimized, or not laid out yet: nothing is presented until the window is back
 #else
-    ww = ANativeWindow_getWidth(w); wh = ANativeWindow_getHeight(w);
-#endif
+    int ww = ANativeWindow_getWidth(w), wh = ANativeWindow_getHeight(w);
     if (g_swap && ww > 0 && wh > 0 && ((uint32_t)ww != g_sext.width || (uint32_t)wh != g_sext.height)) swap_destroy();
+#endif
     if (g_swap) return 1;
 #ifdef DM_LINUX
-    if (!surface_make(w)) return 0;   // SDL's surface, on the front thread: the window (and Wayland's display) is that thread's
+    if (!surface_make(w)) return 0;   // asked of the SDL main thread: the window (and Wayland's display) is that thread's
 #else
     VkAndroidSurfaceCreateInfoKHR si = {VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, NULL, 0, w};
     if (vkCreateAndroidSurfaceKHR(V.inst, &si, NULL, &g_surf)) return 0;
@@ -226,19 +363,35 @@ static int swap_make(void) {
     for (uint32_t i = 0; i < nf; i++) if (sf[i].format == g_want) g_sfmt = g_want;   // the window texture's sRGB-ness (g_want), so the blit copies its bytes as they are
     if (g_sfmt != g_want) VKRED_ONCE(95, "the surface offers no format %d for the window texture: its picture is %s", g_want, g_want == VK_FORMAT_R8G8B8A8_SRGB ? "darker" : "lighter");
 #ifdef DM_LINUX
-    SDL_GetWindowSize((SDL_Window *)w, &ww, &wh); g_sext = (VkExtent2D){(uint32_t)ww, (uint32_t)wh};   // the window as it is now
+    // The surface names its size where the window system does (Wayland: the window's size in pixels, and a swapchain of another size is out of
+    // date at once); elsewhere the window's, kept inside the surface's bounds
+    VkExtent2D e = caps.currentExtent;
+    if (e.width == ~0u || e.height == ~0u) {
+        e = (VkExtent2D){(uint32_t)ww, (uint32_t)wh};
+        if (e.width < caps.minImageExtent.width) e.width = caps.minImageExtent.width;
+        if (e.height < caps.minImageExtent.height) e.height = caps.minImageExtent.height;
+        if (caps.maxImageExtent.width && e.width > caps.maxImageExtent.width) e.width = caps.maxImageExtent.width;
+        if (caps.maxImageExtent.height && e.height > caps.maxImageExtent.height) e.height = caps.maxImageExtent.height;
+    }
+    if (!e.width || !e.height) { VKRED_ONCE(143, "a %ux%u swapchain is wanted (window %dx%d): nothing to present", e.width, e.height, ww, wh); return 0; }
+    g_sext = e;
 #else
     g_sext = (VkExtent2D){(uint32_t)ANativeWindow_getWidth(w), (uint32_t)ANativeWindow_getHeight(w)};   // the window as it is now; Android's compositor rotates (identity transform)
-#endif
     if (!g_sext.width || !g_sext.height) g_sext = caps.currentExtent;
+#endif
     uint32_t n = caps.minImageCount < 3 ? 3 : caps.minImageCount; if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
     int want = 1; { const char *e = getenv("DM_VK_PRETRANSFORM"); if (e && *e) want = atoi(e) != 0; }
     VkSurfaceTransformFlagBitsKHR turn = (VkSurfaceTransformFlagBitsKHR)(caps.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR));
     g_pre = want && turn && (caps.supportedTransforms & turn) && V.has_dynrender && rot_setup() ? turn : VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
     g_next = g_pre == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR ? g_sext : (VkExtent2D){g_sext.height, g_sext.width};
+#ifdef DM_LINUX
+    const VkCompositeAlphaFlagBitsKHR calpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;   // Wayland takes INHERIT as written: the image's alpha would be the window's, and a picture drawn with alpha 0 would vanish
+#else
+    const VkCompositeAlphaFlagBitsKHR calpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+#endif
     VkSwapchainCreateInfoKHR ci = {VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, NULL, 0, g_surf, n, g_sfmt, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR, g_next, 1,
         VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, g_pre,
-        (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) ? VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR : VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, VK_PRESENT_MODE_FIFO_KHR, 1, VK_NULL_HANDLE};
+        calpha, VK_PRESENT_MODE_FIFO_KHR, 1, VK_NULL_HANDLE};
     VkResult r = vkCreateSwapchainKHR(V.dev, &ci, NULL, &g_swap);
     if (r) { VKLOG("[RED] swapchain creation failed: %d", r); swap_destroy(); return 0; }
     g_nsimg = 8; vkGetSwapchainImagesKHR(V.dev, g_swap, &g_nsimg, g_simg);
