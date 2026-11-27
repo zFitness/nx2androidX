@@ -32,7 +32,7 @@ static int32_t g_kbd_lx, g_kbd_ly;
 static int k_up, k_down, k_left, k_right;
 static void stick_recompute(void) {
     g_kbd_lx = (k_right - k_left) * DM_STICK_MAX;
-    g_kbd_ly = (k_down - k_up) * DM_STICK_MAX;
+    g_kbd_ly = (k_up - k_down) * DM_STICK_MAX;   // the host reads a positive y as up (hle_hid.c: ly > thresh is LUp)
 }
 static void key_apply(SDL_Keycode k, int down) {
     uint64_t b = g_kbd_btn;
@@ -70,7 +70,7 @@ static uint32_t g_pad_mask;
 
 static void pad_publish(int i) {
     SDL_Gamepad *p = g_pad[i];
-    if (!p) { dm_pad_set_player(g_pad_player[i], 0, 0, 0, 0); dm_pad_players(g_pad_mask); return; }
+    if (!p) { dm_pad_set_player(g_pad_player[i], 0, 0, 0, 0, 0); dm_pad_players(g_pad_mask); return; }
     uint64_t b = 0;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_SOUTH))             b |= DM_BTN_A;
     if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_EAST))              b |= DM_BTN_B;
@@ -92,9 +92,10 @@ static void pad_publish(int i) {
     float zr = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     if (zl > 0.05f) b |= DM_BTN_ZL;
     if (zr > 0.05f) b |= DM_BTN_ZR;
+    // SDL3 reports a thumbstick with up negative (the convention Android's front negates too); the host reads a positive y as up
     dm_pad_set_player(g_pad_player[i], b,
-                      (int32_t)(lx * DM_STICK_MAX), (int32_t)(ly * DM_STICK_MAX),
-                      (int32_t)(rx * DM_STICK_MAX), (int32_t)(ry * DM_STICK_MAX));
+                      (int32_t)(lx * DM_STICK_MAX), (int32_t)(-ly * DM_STICK_MAX),
+                      (int32_t)(rx * DM_STICK_MAX), (int32_t)(-ry * DM_STICK_MAX));
     dm_pad_players(g_pad_mask);
 }
 
