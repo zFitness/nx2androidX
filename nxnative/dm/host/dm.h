@@ -96,8 +96,11 @@ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 // 直读 loader 的 IE-TLS 复刻块（loader.c 定义 dm_slots[512]：每线程的 Horizon TLS 布局复刻；key page 存 key*8，
 // SDK 经缓存基址的固定偏移访问与 key 槽都落在同一数组，永不触碰 glibc 自己的 TCB 字段）
 extern _Thread_local uint64_t dm_slots[512];
-#define dm_tsd_set(k, v) (dm_slots[k] = (uint64_t)(uintptr_t)(v))
-#define dm_tsd_get(k) (dm_slots[k])
+enum { DM_TSD_TRACE = 1 };   // DM_TRACETLS: area switches go through the traced setters in loader.c
+void dm_tsd_set_traced(int k, uint64_t v);
+uint64_t dm_tsd_get_traced(int k);
+#define dm_tsd_set(k, v) dm_tsd_set_traced((int)(k), (uint64_t)(uintptr_t)(v))
+#define dm_tsd_get(k) dm_tsd_get_traced((int)(k))
 #else
 void dm_tsd_set(pthread_key_t k, const void *v);
 void *dm_tsd_get(pthread_key_t k);

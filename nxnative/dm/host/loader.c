@@ -53,6 +53,18 @@ static void tsd_check(void) {
 // key*8 offsets — so both the key-mediated slots and the SDK's cached-base fixed-offset slots
 // (e.g. the current-thread record at +104) land in dm_slots, never in glibc's own TCB fields.
 __thread uint64_t dm_slots[512];
+// DM_TRACETLS: log the moment a thread's TLS area (KTLS) or thread-object (KTLR) changes -- the guest's
+// `msr tpidr_el0` rewrites land here, and an area switch the game makes on one platform but not the
+// other is exactly the kind of divergence the boot comparison hunts for
+static int g_tsd_trace = -1;
+void dm_tsd_set_traced(int k, uint64_t v) {
+    if (g_tsd_trace < 0) g_tsd_trace = !!getenv("DM_TRACETLS");
+    int hot = g_tsd_trace && (k == 2 || k == 3);
+    uint64_t oldv = dm_slots[k];
+    dm_slots[k] = v;
+    if (hot && oldv != v) { uint32_t thr_cur_handle(void); LOG("[tls] thr=%#x slot%d %#llx -> %#llx", thr_cur_handle(), k, (unsigned long long)oldv, (unsigned long long)v); }
+}
+uint64_t dm_tsd_get_traced(int k) { return dm_slots[k]; }
 static uint64_t **tp_now(void) { uint64_t **tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp)); return tp; }
 static unsigned long g_slot_off;
 static void create_keys(void) {
