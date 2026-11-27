@@ -18,10 +18,13 @@ already set in the environment wins), checks that the RomFS holds files, and def
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
 from launcher.library import Game, WRAPPER
+
+MODS = 'mods'   # where the porter's data pack keeps the rewritten modules (porter/datapack.py); the host loads them from its argv[1]
 
 
 class NoExecutable(Exception):
@@ -32,20 +35,35 @@ def script_path(game: Game) -> Path:
     return game.path / WRAPPER
 
 
+def modules_path(game: Game) -> Path:
+    """The folder the host loads the rewritten modules from: its argv[1].  DM_ROOT stays the pack's folder."""
+    return game.path / MODS
+
+
+def executable_in_pack(game: Game, exe: Path) -> str:
+    """The executable's path from the pack's root (the manifest's ``host/dmhost`` keeps its folder)."""
+    try:
+        return exe.relative_to(game.path).as_posix()
+    except ValueError:
+        raise NoExecutable(f'{game.name}: {exe} is not inside {game.path}') from None
+
+
 def write_script(game: Game) -> Path:
-    """The script that starts this game.  It knows the game's own executable by name."""
+    """The script that starts this game.  It knows the game's own executable by its path in the pack."""
     exe = game.exe_path
     if not exe:
         raise NoExecutable(f'{game.name}: no executable in {game.path}')
+    rel = executable_in_pack(game, exe)
     path = script_path(game)
     path.write_text(
         '#!/bin/sh\n'
         '# Written by the launcher: it starts this game with its data root.\n'
         'dir=$(cd "$(dirname "$0")" && pwd)\n'
-        f'exe="$dir/{exe.name}"\n'
+        f'exe="$dir"/{shlex.quote(rel)}\n'
         '[ -x "$exe" ] || { echo "this game has no executable" >&2; exit 1; }\n'
+        f'[ -d "$dir/{MODS}" ] || {{ echo "this game has no {MODS} folder" >&2; exit 1; }}\n'
         'cd "$dir" || exit 1\n'
-        'DM_ROOT="$dir" exec "$exe" "$dir"\n',
+        f'DM_ROOT="$dir" exec "$exe" "$dir/{MODS}"\n',   # the host's argv[1] is the folder with the rewritten modules
         encoding='utf-8',
     )
     path.chmod(0o755)
@@ -65,7 +83,7 @@ def start(game: Game) -> subprocess.Popen:
     if not exe:
         raise NoExecutable(f'{game.name}: no executable in {game.path}')
     return subprocess.Popen(
-        [str(exe), str(game.path)],   # main.c's argv[1] is the data root (the pack's folder)
+        [str(exe), str(modules_path(game))],   # the host's argv[1] is the folder with the rewritten modules; DM_ROOT (in the environment) is the pack
         cwd=str(game.path), env=environment(game),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,

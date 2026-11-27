@@ -65,6 +65,10 @@ static pthread_key_t g_race_keys[512];
 static unsigned g_race_n, g_race_want;
 static void *keyrace_thread(void *unused);
 #ifdef DM_LINUX
+// A default: a value that is already in the environment and not empty wins; an empty one counts as unset (the host reads an
+// empty DM_* as "not set" everywhere, and setenv with overwrite 0 would keep the empty string and quietly drop the default)
+static void set_default(const char *k, const char *v) { const char *e = getenv(k); if (!(e && *e)) setenv(k, v, 1); }
+static int is_set(const char *k) { const char *e = getenv(k); return e && *e; }
 // The linux line has no app to apply the data pack's env.txt (the Android app reads it before it loads the host): KEY=VALUE rows, '#' comments.
 // A variable that is already set in the environment wins, so a runner can still override a row.
 static void pack_env_apply(const char *dir) {
@@ -79,7 +83,7 @@ static void pack_env_apply(const char *dir) {
         char *eq = strchr(s, '=');
         if (!eq || eq == s) continue;
         *eq = 0;
-        if (!getenv(s)) { setenv(s, eq + 1, 0); n++; }
+        if (!is_set(s)) { setenv(s, eq + 1, 1); n++; }
         else if (strcmp(s, "DM_LANG")) LOG("env.txt %s: already set in the environment, the environment wins", s);
     }
     fclose(f);
@@ -96,22 +100,22 @@ static int dir_has_files(const char *d) {
 static void dirs_default(const char *root) {
     static char save[1024], temp[1024];
     snprintf(save, sizeof save, "%s/save", root); snprintf(temp, sizeof temp, "%s/temp", root);
-    const char *s = getenv("DM_SAVE"), *t = getenv("DM_TEMP");
-    if (!s || !*s || !t || !*t) { mkdir(save, 0755); mkdir(temp, 0755); }
-    if (!s || !*s) { setenv("DM_SAVE", save, 0); LOG("save: %s", save); }
-    if (!t || !*t) { setenv("DM_TEMP", temp, 0); LOG("temp: %s", temp); }
+    if (!is_set("DM_SAVE") || !is_set("DM_TEMP")) { mkdir(save, 0755); mkdir(temp, 0755); }
+    if (!is_set("DM_SAVE")) { set_default("DM_SAVE", save); LOG("save: %s", save); }
+    if (!is_set("DM_TEMP")) { set_default("DM_TEMP", temp); LOG("temp: %s", temp); }
 }
 // Where the game's files are, checked before anything reads them: DM_ROMFS as set (the environment, or the pack's env.txt row that points at the port's
 // extracted RomFS), else the pack's own RomFS/ or romfs/. A folder without files is a setup error the game cannot recover from -- it reads its
 // configuration from there (Mario vs. Donkey Kong sizes its heaps from /System/HeapSize and crashes in its first engine allocation without it)
 static void romfs_check(const char *dir) {
     const char *r = getenv("DM_ROMFS");
-    if (!r || !*r) {
+    if (!is_set("DM_ROMFS")) {
         static char buf[1024];
-        for (int k = 0; k < 2 && (!r || !*r); k++) {
+        for (int k = 0; k < 2 && !is_set("DM_ROMFS"); k++) {
             snprintf(buf, sizeof buf, "%s/%s", dir, k ? "romfs" : "RomFS");
-            if (dir_has_files(buf)) { setenv("DM_ROMFS", buf, 0); r = buf; }
+            if (dir_has_files(buf)) { set_default("DM_ROMFS", buf); r = buf; }
         }
+        r = getenv("DM_ROMFS");
     }
     if (r && *r) {
         if (!dir_has_files(r)) die("[RED] DM_ROMFS=%s: not a folder with files. The game reads its data from there: point it at the port's extracted RomFS (work/<title ID>_build/extract/<version>/RomFS)", r);
