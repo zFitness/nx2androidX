@@ -112,7 +112,10 @@ static void romfs_check(const char *dir) {
 static void host_preload(int argc, char **argv) {
     g_t0_ns = proc_start_mono_ns();
 #ifdef DM_LINUX
-    if (argc >= 2) { pack_env_apply(argv[1]); romfs_check(argv[1]); }
+    // argv[1] is the module folder; the data pack's root is DM_ROOT (the launcher sets it), and env.txt lives there
+    { const char *root = getenv("DM_ROOT");
+      if (root && *root) { pack_env_apply(root); romfs_check(root); }
+      else LOG("[RED] DM_ROOT is not set: the data pack's env.txt (DM_ROMFS, the shared fonts) is not applied"); }
 #endif
     flags_init();
     if (argc < 2) die("usage: dmhost <dir> [mod...] [-- game arguments...]");
