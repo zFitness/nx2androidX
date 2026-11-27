@@ -372,7 +372,7 @@ static void *heaptrace_run(void *arg) {
         if (!mm) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; } }
         uint64_t df = mm ? *(uint64_t *)(mm->base + 0x17584f8) : 0;
         uint64_t p = 0, ctx = 0;
-        if (mm && ht_word(mm->base + 0x1724738, &p) && p) ht_word(p, &ctx);   // the game's own current-thread global (readable from any host thread)
+        if (mm && ht_word((uint64_t)(mm->base + 0x1724738), &p) && p) ht_word(p, &ctx);   // the game's own current-thread global (readable from any host thread)
         uint64_t a88 = ctx ? *(uint64_t *)(ctx + 0x88) : 0;
         uint64_t e2 = ctx;
         if (df == last_df && a88 == last_a88 && e2 == last_e2) continue;
