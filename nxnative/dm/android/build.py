@@ -32,7 +32,8 @@ if not (a.exe or a.lib or a.play): a.exe = a.lib = True
 import platform as _pf, shutil as _sh, stat as _st0
 
 DM_LINUX = a.os == 'linux'   # DM_TARGET=apple（环境变量）：宿主 TLS 走 apple 模式（loader.c 的 DM_TSD_APPLE define）
-DM_TSD_APPLE = DM_LINUX and os.environ.get('DM_TARGET') == 'apple'   # the launcher's ELF: cross-built with this machine's clang and a Debian arm64 sysroot, no NDK anywhere
+DM_TSD_APPLE = DM_LINUX and os.environ.get('DM_TARGET') == 'apple'
+DM_TSD_LINUX = DM_LINUX and os.environ.get('DM_TARGET') == 'linux'   # the launcher's ELF: cross-built with this machine's clang and a Debian arm64 sysroot, no NDK anywhere
 
 def host_dir(base, tool):
     """The NDK's host folder for a tool under base. On arm64 Linux the NDK ships x86-64 host tools only, so a folder named linux-aarch64 with an arm64 build of the tool beside the NDK's sysroot
@@ -151,7 +152,7 @@ INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', '-I/usr/include/SDL3', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 CFLAGS = TARGET + [f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
-          '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', *(['-DDM_TSD_APPLE=1'] if DM_TSD_APPLE else []), '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
+          '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', *(['-DDM_TSD_APPLE=1'] if DM_TSD_APPLE else []), *(['-DDM_TSD_LINUX=1'] if DM_TSD_LINUX else []), '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
 VPX_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/libvpx/config"}', '-w']
 ZSTD_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-w']   # its API stays inside libdmhost.so
 
