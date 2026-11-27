@@ -14,7 +14,7 @@
 
 static const char *const k_name[] = { "", "pre-alloc", "post-alloc", "ctor-entry", "pre-ctor-call", "heap-ctx-entry",
     "create-block-entry", "post-create-block", "pre-ctx-virtual", "", "", "", "query-entry", "post-query",
-    "zero-path", "post-create-block-2", "post-first-call" };
+    "zero-path", "post-create-block-2", "post-first-call", "", "", "", "lookup-helper", "last-helper" };
 
 static int obs_on(void) { static int on = -1; if (on < 0) on = !!getenv("DM_OBSTRACE"); return on; }
 
@@ -53,9 +53,12 @@ static void o12(const uint64_t *r) { log_one(12, r); }
 static void o14(const uint64_t *r) { log_one(14, r); }
 static void o15(const uint64_t *r) { log_one(15, r); }
 static void o16(const uint64_t *r) { log_one(16, r); }
+static void o17(const uint64_t *r) { log_one(17, r); }
+static void o18(const uint64_t *r) { log_one(18, r); }
 
 __attribute__((constructor)) static void obs_trace_install(void) {
     gate_obs_set(1, o1); gate_obs_set(2, o2); gate_obs_set(3, o3); gate_obs_set(4, o4);
     gate_obs_set(5, o5); gate_obs_set(6, o6); gate_obs_set(7, o7); gate_obs_set(8, o8);
     gate_obs_set(12, o12); gate_obs_set(13, o13); gate_obs_set(14, o14); gate_obs_set(15, o15); gate_obs_set(16, o16);
+    gate_obs_set(17, o17); gate_obs_set(18, o18);
 }

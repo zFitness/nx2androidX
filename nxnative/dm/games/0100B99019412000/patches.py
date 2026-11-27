@@ -20,6 +20,8 @@ OBS = {
     (0xe837f8, 13, '3940c3e8', 'the query returned: [sp+0x28] = size, [sp+0x30] = flag byte (the caller reads both)'),
     (0xe8380c, 14, 'aa1f03e0', 'the direct zero path: the singleton was null, no query ran, size = 0'),
     (0xe83834, 15, 'f9016e73', 'this CreateBlock returned: x0 = the block or 0'),
+    (0x678c40, 17, 'a9be7bfd', 'the lookup helper the size query calls (oLR tells which of its call sites): x0, x1, x2 = the arguments'),
+    (0x678df4, 18, 'a9be7bfd', 'the last helper of the size query (oLR 0xd8e6d0 site): x0, x1, x2 = the arguments'),
     # gate 9 (0x444940, the context virtual's return) was dropped: that slot does not satisfy the
     # gate placement rules either. Its data is inferred: gate 8 shows the context, and if the block
     # then fails, the virtual returned < 0x121 (the fail threshold in the disassembly).
