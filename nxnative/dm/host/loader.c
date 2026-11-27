@@ -52,6 +52,7 @@ static void tsd_check(void) {
 // (install_tpbase bakes it into each site's ADDI imm12 at load), and the key page holds plain
 // key*8 offsets — so both the key-mediated slots and the SDK's cached-base fixed-offset slots
 // (e.g. the current-thread record at +104) land in dm_slots, never in glibc's own TCB fields.
+__thread uint64_t dm_slots[512];
 static uint64_t **tp_now(void) { uint64_t **tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp)); return tp; }
 static unsigned long g_slot_off;
 static void create_keys(void) {
