@@ -9,6 +9,11 @@ pack's folder as its working directory.
 The script in the pack's folder does that, and the desktop entry and the Steam entry
 both point at it: they behave the same way, and they keep working when the folder is
 moved.
+
+The runtime does the rest of what the Android app does before it loads the host: it
+applies the pack's ``env.txt`` (``DM_ROMFS``, the shared fonts, the rest; a variable
+already set in the environment wins), checks that the RomFS holds files, and defaults
+``DM_SAVE`` / ``DM_TEMP`` to ``save/`` and ``temp/`` in the pack's folder.
 """
 from __future__ import annotations
 

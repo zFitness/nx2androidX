@@ -14,7 +14,7 @@
 
 static const char *const k_name[] = { "", "pre-alloc", "post-alloc", "ctor-entry", "pre-ctor-call", "heap-ctx-entry",
     "create-block-entry", "post-create-block", "pre-ctx-virtual", "", "", "", "query-entry", "post-query",
-    "zero-path", "post-create-block-2", "post-first-call", "", "", "", "lookup-helper", "last-helper" };
+    "zero-path", "post-create-block-2", "post-first-call", "lookup-helper", "last-helper" };
 
 static int obs_on(void) { static int on = -1; if (on < 0) on = !!getenv("DM_OBSTRACE"); return on; }
 
