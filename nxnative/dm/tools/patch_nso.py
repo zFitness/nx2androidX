@@ -1187,7 +1187,7 @@ with open(P('fixups.tsv'), 'w') as f:
     if RENDER_SCALE: f.write('# RENDER_SCALE\t1\n')   # a render-scale stub reads state +0x10 (the loader ignores the key; dm/games/settings.py offers the setting by it)
     f.write(f'# TARGET\t{TARGET}\n')   # the slot access differs per OS: the host refuses an image rewritten for the other one
     if TARGET == 'linux':
-        f.write(f'# TPBASE_N\t{len(tpbase)}\n')
+        f.write(f'# TPBASE_N\t{len(tpbase):#x}\n')   # hex: the loader's header parser reads every value as %lx
         for off in tpbase: f.write(f'# TPBASE_OFF\t{off:#x}\n')
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # the host identifies the build by it: features with hard-coded addresses only run on the build they belong to
 with open(P('gates.tsv'), 'w') as f:
