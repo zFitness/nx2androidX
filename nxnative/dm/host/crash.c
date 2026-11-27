@@ -233,6 +233,24 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
                 uint64_t f104 = 0; crash_addr_str(b, sizeof b, w); stack_word(w + 104, &f104);
                 fprintf(stderr, "[dm] probe: threadctx = %s  ctx+104=%#llx\n", b, (unsigned long long)f104);
             }
+            // full chain: the sdk trampolines resolve the current thread as *(tls_base + *(sdk+0xddc010)), then [obj+0x1f8] = thread object, [obj+504] = its tls array
+            {   module_t *sm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sm = &g_mod[i]; break; }
+                uint64_t X = 0;
+                if (sm && stack_word((uint64_t)sm->base + 0xddc010, &X)) {
+                    uint64_t base = (uint64_t)dm_slots;
+                    fprintf(stderr, "[dm] probe: sdk tls-off *(0xddc010)=%#llx  &dm_slots=%#llx  cached-p=%#llx  dm[0]=%#llx dm[1]=%#llx dm[2]=%#llx dm[3]=%#llx dm[4]=%#llx\n",
+                        (unsigned long long)X, (unsigned long long)base, (unsigned long long)p,
+                        (unsigned long long)dm_slots[0], (unsigned long long)dm_slots[1], (unsigned long long)dm_slots[2], (unsigned long long)dm_slots[3], (unsigned long long)dm_slots[4]);
+                    if (X < 4096) {
+                        uint64_t rec = 0; stack_word(base + X, &rec);
+                        uint64_t obj = 0; if (rec) stack_word(rec + 0x1f8, &obj);
+                        uint64_t arr = 0; if (obj) stack_word(obj + 504, &arr);
+                        uint64_t e2 = 0; if (arr) stack_word(arr + 2 * 8 + 128, &e2);
+                        fprintf(stderr, "[dm] probe: rec=%#llx obj=%#llx arr=%#llx entry[2]=%#llx\n",
+                            (unsigned long long)rec, (unsigned long long)obj, (unsigned long long)arr, (unsigned long long)e2);
+                    }
+                }
+            }
         }
     }
     // Stack words are read with vm_read_overwrite too: a host function the guest called runs on a stack of its own, and Super Mario Bros. Wonder's crash in
