@@ -370,8 +370,8 @@ static void *heaptrace_run(void *arg) {
         usleep(50000);
         if (!mm) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; } }
         uint64_t df = mm ? *(uint64_t *)(mm->base + 0x17584f8) : 0;
-        void *tlr = dm_tsd_get(g_keytlr);
-        uint64_t obj = tlr ? *(uint64_t *)((uint8_t *)tlr + 0x1f8) : 0;
+        uint64_t tlr = (uint64_t)(uintptr_t)dm_tsd_get(g_keytlr);
+        uint64_t obj = tlr ? *(uint64_t *)(tlr + 0x1f8) : 0;
         uint64_t e2 = obj ? *(uint64_t *)((uint8_t *)obj + 144) : 0;
         uint64_t a88 = e2 ? *(uint64_t *)((uint8_t *)e2 + 0x88) : 0;
         if (df == last_df && a88 == last_a88 && e2 == last_e2) continue;
