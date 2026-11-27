@@ -64,6 +64,7 @@ static double present_time_get(uint64_t ticket) {
 }
 #ifdef DM_LINUX
 static void surface_retire(VkSurfaceKHR s);   // a surface for the window's thread to destroy (the handshake block below swap_destroy)
+static int swap_make(void);              // the test card, ahead of its definition, presents through it
 #endif
 static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
 // The swapchain's format follows the window texture's sRGB-ness: a blit from an sRGB image into a UNORM one decodes to linear and stores that unencoded, which darkened the whole
