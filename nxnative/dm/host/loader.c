@@ -77,7 +77,8 @@ static void create_keys(void) {
 // while the text is still writable: after it, xt = dm_slots[2] = the current TLS area (the same value
 // android's `ldr xt, [tp, #16]` loads), and the site's original Horizon offsets index the area's layout
 static void install_tpbase(module_t *m) {
-    unsigned imm = (unsigned)(g_slot_off + 2 * 8) & 0xFFF;
+    if ((g_slot_off + 2 * 8) & 7) die("tls slot offset %lu is not 8-aligned", g_slot_off);
+    unsigned imm = (unsigned)((g_slot_off + 2 * 8) / 8) & 0xFFF;   // the ldr x-form's imm12 counts by 8 bytes
     for (unsigned i = 0; i < m->ntpbase; i++) {
         uint32_t *w = (uint32_t *)(m->base + m->tpbase[i]);
         if ((*w >> 22) != 0x3E5 || ((*w >> 10) & 0xFFF)) die("%s: tp base site %u is not a zero-imm ldr", m->name, i);
