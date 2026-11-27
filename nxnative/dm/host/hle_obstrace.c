@@ -14,10 +14,12 @@ static void log_one(int id, const uint64_t *regs) {
     if (on < 0) on = !!getenv("DM_OBSTRACE");
     if (!on) return;
     uint32_t thr_cur_handle(void);
-    char b[192]; crash_addr_str(b, sizeof b, regs[30]);
-    LOG("[obs] %s thr=%#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx lr=%s", k_name[id], thr_cur_handle(),
+    char b[192]; crash_addr_str(b, sizeof b, regs[30]);           // regs[30] = the gate block's return point
+    char olr[192]; crash_addr_str(olr, sizeof olr, regs[101]);    // _dm_gate's frame keeps the trampoline's stp pair at regs+800/+808: regs[100] = the guest's x29, regs[101] = the game's original caller LR, regs[96] = the NZCV at the gate
+    char ofp[32]; snprintf(ofp, sizeof ofp, "%#llx", (unsigned long long)regs[100]);
+    LOG("[obs] %s thr=%#x x0=%#llx x1=%#llx x2=%#llx x3=%#llx x4=%#llx lr=%s oLR=%s oFP=%s nzcv=%#llx", k_name[id], thr_cur_handle(),
         (unsigned long long)regs[0], (unsigned long long)regs[1], (unsigned long long)regs[2],
-        (unsigned long long)regs[3], (unsigned long long)regs[4], b);
+        (unsigned long long)regs[3], (unsigned long long)regs[4], b, olr, ofp, (unsigned long long)regs[96]);
 }
 static void o1(const uint64_t *r) { log_one(1, r); }
 static void o2(const uint64_t *r) { log_one(2, r); }
