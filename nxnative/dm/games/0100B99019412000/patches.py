@@ -10,7 +10,7 @@ OBS = {
     (0x3159e4, 1, '52804600', 'the engine alloc: x0 = 560 (size), x1 = the manager\'s block, x2 = 8 (alignment)'),
     (0x3159f0, 2, 'aa0003f6', 'the engine alloc returned: x0 = the new object (null on the linux host as of 2026-11-27)'),
     (0xecf300, 3, 'a9be7bfd', 'the object constructor: x0 = this, x1 = the manager\'s block'),
-    (0xecf310, 4, '97de2b5b', 'before the constructor\'s first call: x0 = this'),
+    (0xecf318, 4, '9101c260', 'after the constructor\'s first call: x0 = this+0x70, x19 = this'),
     (0x449428, 5, 'a9be7bfd', 'the heap-context lookup: x0 = the default context, returns the per-thread heap'),
     (0x4448c0, 6, '120000a5', 'CreateBlock: the arguments as the caller passed them'),
     (0xe851e4, 7, 'f9000260', 'CreateBlock returned: x0 = the block (stored at [x19] = the manager\'s block field)'),
