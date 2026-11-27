@@ -119,7 +119,10 @@ TARGET = os.environ.get('DM_TARGET', 'apple'); assert TARGET in ('apple', 'andro
 def emit_tp(t):
     if TARGET == 'android': emit(MRS_TPIDR(t)); emit(LDRX(t, t, 2))
     elif TARGET == 'linux':
-        emit(MRS_TPIDR(t)); tpbase.append(here()); emit(ADDI(t, t, 0))   # the loader bakes the IE-TLS slot offset into the imm12 at load: base = tpidr_el0 + slot_off = &dm_slots[0]
+        # same shape as android: load the current TLS area out of the replica (dm_slots[2], the slot the
+        # host's guest_thread_init fills and the guest's own `msr tpidr_el0` switches), so the original
+        # Horizon offsets index the area's own layout. The loader bakes slot_off + 16 into the imm12.
+        emit(MRS_TPIDR(t)); tpbase.append(here()); emit(LDRX(t, t, 0))
     else: emit(MRS_TPIDRRO(t))
 
 def emit_key_addr(reg, kind):
