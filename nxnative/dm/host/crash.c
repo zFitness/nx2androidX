@@ -237,6 +237,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
             {   module_t *sm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) { sm = &g_mod[i]; break; }
                 uint64_t X = 0;
                 if (sm && stack_word((uint64_t)sm->base + 0xddc010, &X)) {
+#ifdef DM_TSD_LINUX
                     uint64_t base = (uint64_t)dm_slots;
                     fprintf(stderr, "[dm] probe: sdk tls-off *(0xddc010)=%#llx  &dm_slots=%#llx  cached-p=%#llx  dm[0]=%#llx dm[1]=%#llx dm[2]=%#llx dm[3]=%#llx dm[4]=%#llx\n",
                         (unsigned long long)X, (unsigned long long)base, (unsigned long long)p,
@@ -253,6 +254,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
                             uint64_t trw = 0; stack_word((uint64_t)sm->base + 0xe016b8, &trw);   // the baked ADDI of the sdk tls trampoline
                             uint64_t ct = 0; stack_word(base + 0x18, &ct);                    // *(tls replica +0x18) = the current ThreadType per the trampoline
                             fprintf(stderr, "[dm] probe: trampoline word=%#llx (baked addi x8,x8,#72 = 0x91012108)  cur-thread *(base+0x18)=%#llx\n", (unsigned long long)trw, (unsigned long long)ct);
+#endif
                         }
                         // classify each address against the module ranges and dump the array surroundings
                         for (int round = 0; round < 3; round++) {
