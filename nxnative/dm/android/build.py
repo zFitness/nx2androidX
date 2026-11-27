@@ -139,6 +139,7 @@ def port_files():
                 if p.name not in ('audiotoolbox_aaudio.c', 'audioconverter_mediacodec.c')]
         out += [DM / 'android/dm_settings.c', DM / 'android/gfx_common.c']
         if a.gfx == 'null': out.append(DM / 'android/gfx_null.c')
+        else: out += srcs('android/gfx_vk*.c')   # --gfx vk: the Vulkan backend the Android app runs (the NVN HLE's mtl_* interface), on SDL3's Wayland window
         return out
     out = []
     for p in srcs('android/compat/*.c', 'android/*.c'):
