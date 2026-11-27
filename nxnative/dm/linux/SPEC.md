@@ -271,10 +271,52 @@ block 字段注册被跳过/失败的分支条件（注意：这与「默认堆�
 返回 0，全部是**空 romfs 的下游症状**，不是宿主语义问题。查询 0xd8e614 的
 内部各步（0x678c40/0x678df4）语义未再深究——配置文件到位后它直接成功。
 
-**遗留**：共享字体 `[RED] cannot open the standard shared font`（linux 运行
-环境需提供 DM_SHARED_FONT / DM_FONT_DIR，与崩溃无关）；linux 线的运行器
-（launcher → 运行入口）必须像 app 一样显式传 `DM_ROMFS`，不能依赖库目录的
-`romfs/`（M2 收尾项）。
+**运行流程修复**（3b7e6742 / b4cafd45 / 7feb67c0）：linux 线没有 app 替宿主应用
+数据包的 `env.txt`（android 由 Java 层在加载宿主前设置），launcher 只设
+`DM_ROOT`，所以包里写好的 `DM_ROMFS=…/extract/v65536/RomFS` 和字体路径从未
+生效。现在由宿主在 linux 构建的启动最前面（`host_preload`，`flags_init` 与
+`load_modules` 之前）完成，android 路径不变：
+1. `pack_env_apply(DM_ROOT)`：读 `$DM_ROOT/env.txt`，KEY=VALUE 逐行
+   `setenv(…, 0)`——环境里已设置的变量优先（运行器可覆盖）。
+2. `romfs_check(DM_ROOT)`：`DM_ROMFS` 未设时依次取包内 `RomFS/`、`romfs/`；
+   指向的目录没有文件即 `die` 并给出修复提示；都没有则打 `[RED]` 后继续
+   （没有自带 RomFS 的游戏仍可运行）。
+3. `dirs_default(DM_ROOT)`：`DM_SAVE`/`DM_TEMP` 未设时默认到包内 `save/`、
+   `temp/`（app 线由 Java 层设置，linux 线此前无人提供，游戏会死在
+   `DM_SAVE is not set`）。
+注意 `argv[1]` 是模块目录，数据包根是 `DM_ROOT`（首版误用了 argv[1]）。
+
+**只切换 DM_ROMFS 的对照**（同一宿主、同一模块、同一组其余环境变量，均不
+手动传 DM_ROMFS / DM_SAVE / DM_TEMP）：
+
+| | A：env.txt 行 → 完整 RomFS | B：`DM_ROMFS` → 只含一个无关文件的目录 |
+|---|---|---|
+| 退出码 | **124（跑满 30 s，SIGTERM 优雅退出）** | **139（原崩溃 main+0x65a084）** |
+| post-query | size=0x180000, flag=1 | size=0, flag=0 |
+| post-create-block-2 | 0x73e4635248 | 0x7464633248 |
+| **post-alloc（引擎 560B 分配）** | **0x73e4790580** | **0** |
+| ctor-entry | this / block 均非零 | 0 / 0 → 崩溃 |
+| path-not-found | 2（`save:/option_data.sav` 首次打开，随后被创建） | 6 |
+| `[RED]` 行 | 0 | — |
+| 指向真正的空目录 | 启动前检查拒绝：`FATAL [RED] DM_ROMFS=…: not a folder with files…` | |
+
+A 的其余观察：引擎线程池全部创建（Resource Control / Resource Memory /
+ARes Loading / DecompThread / ZstdDecompThread / GeneralFormatAsync…，与
+android 同）；存档事务挂载并写出 `save/option_data.sav`；共享字体
+`shared_cjk.ttf`（3163172 字节）加载，无字体 `[RED]`；NVN 记录到
+`init 0: 171 functions 23324 calls`、`frame 1: … QueueSubmitCommands=1
+QueuePresentTexture=1`。
+
+**当前结论的准确表述**：linux 宿主**越过原启动崩溃并运行 30 秒**。尚未验证：
+- 画面：构建为 `--gfx null`（无窗口，呈现缝未做），只能看到命令流在提交帧，
+  看不到图像；需 SDL3 surface 缝（§4）之后才能核对画面是否正确。
+- 输入：无窗口前端没有输入路径，无法验证。
+- 字体：加载成功，但中文字形是否正确显示同样要等有画面。
+在这些验证完成之前不扩大结论。
+
+**M2 收尾项**：launcher 的包布局把包根目录作为 argv[1]，而 loader 直接读
+`<argv[1]>/<name>.patched.bin`——launcher 自建库的模块位置需与其一致（未在
+本次范围内核对）。
 
 ### 3.4 已否决的路线（记录，防重蹈）
 
