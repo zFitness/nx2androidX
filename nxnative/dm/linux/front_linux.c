@@ -12,6 +12,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,7 +103,7 @@ static void pad_publish(int i) {
 // ---- front.h 契约 --------------------------------------------------------------
 static void *guest_trampoline(void *guest) { void (**fn)(void) = guest; (*fn)(); return NULL; }
 
-void *dm_front_window(void) { return g_win; }
+ANativeWindow *dm_front_window(void) { return g_win; }
 void *front_metal_layer(void) { return NULL; }   // Vulkan 线不用 Metal 层
 int front_screen_max_fps(void) { return 60; }
 void front_screen_match(int fps) { (void)fps; }
