@@ -185,7 +185,9 @@ static int rot_setup(void) {
     return 1;
 }
 #ifdef DM_LINUX
-uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, (width << 32) | height, as the SDL main thread last read it
+uint64_t dm_front_vk_px(void);
+static void surface_retire(VkSurfaceKHR s);
+static int swap_make(void);   // front_linux.c: the window's size in pixels, (width << 32) | height, as the SDL main thread last read it
 
 // The window belongs to the SDL main thread (Wayland's display is that thread's): everything that touches it is done there, and the present
 // thread only asks. One request at a time through a state word: IDLE -> REQ (the asker) -> ANS (the front thread, once the surface is made) ->
@@ -193,8 +195,8 @@ uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, 
 // the surface it was making destroyed as soon as it is made, one cancelled after has it destroyed the next time the front thread looks. So the
 // request is never reused while a surface of an earlier one may still turn up, and a late surface always dies on the window's thread
 enum { SR_IDLE, SR_REQ, SR_ANS, SR_CANCEL };
-static _Atomic int g_sr_state;
-static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; } g_sr;   // w / inst: the asker, before REQ. surf / r: the front thread, before ANS
+static _Atomic int g_sreq_state;
+static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; } g_sreq;   // w / inst: the asker, before REQ. surf / r: the front thread, before ANS
 // Surfaces the present thread is done with, for the window's thread to destroy a pass later (the mutex is held to push or to take, never while waiting)
 #define SR_RETIRE 16
 static VkSurfaceKHR g_retire[SR_RETIRE]; static unsigned g_nretire; static pthread_mutex_t g_retire_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -207,18 +209,18 @@ static void surface_retire(VkSurfaceKHR s) {
 }
 void dm_front_tick(void) {   // the SDL main thread, every pass of its event loop (dm/linux/front_linux.c)
     for (unsigned i = 0; i < 8; i++) {
-        int st = atomic_load(&g_sr_state);
+        int st = atomic_load(&g_sreq_state);
         if (st == SR_REQ) {
             VkSurfaceKHR s = VK_NULL_HANDLE; VkResult r = VK_ERROR_SURFACE_LOST_KHR;
-            if (g_sr.w) r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sr.w, g_sr.inst, NULL, &s) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
-            g_sr.surf = s; g_sr.r = r;
-            if (atomic_compare_exchange_strong(&g_sr_state, &st, SR_ANS)) break;   // published: it is the asker's to take
+            if (g_sreq.w) r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sreq.w, g_sreq.inst, NULL, &s) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+            g_sreq.surf = s; g_sreq.r = r;
+            if (atomic_compare_exchange_strong(&g_sreq_state, &st, SR_ANS)) break;   // published: it is the asker's to take
             // cancelled while it was being made: nobody waits for it
             if (s) surface_retire(s);
-            atomic_store(&g_sr_state, SR_IDLE);
+            atomic_store(&g_sreq_state, SR_IDLE);
             continue;
         }
-        if (st == SR_CANCEL) { if (g_sr.surf) surface_retire(g_sr.surf); g_sr.surf = VK_NULL_HANDLE; atomic_store(&g_sr_state, SR_IDLE); continue; }
+        if (st == SR_CANCEL) { if (g_sreq.surf) surface_retire(g_sreq.surf); g_sreq.surf = VK_NULL_HANDLE; atomic_store(&g_sreq_state, SR_IDLE); continue; }
         break;   // IDLE: nothing is asked. ANS: the answer is the asker's, to take or to cancel
     }
     VkSurfaceKHR done[SR_RETIRE]; unsigned n;
@@ -228,29 +230,29 @@ void dm_front_tick(void) {   // the SDL main thread, every pass of its event loo
 // The asker (the present thread, under g_present_mu -- which the front thread never takes, so waiting here holds nothing it needs)
 static int surface_take(int *state) {
     if (*state != SR_ANS) return 0;
-    g_surf = g_sr.surf;
-    int ok = g_sr.r == VK_SUCCESS && g_surf != VK_NULL_HANDLE;
-    atomic_store(&g_sr_state, SR_IDLE);
+    g_surf = g_sreq.surf;
+    int ok = g_sreq.r == VK_SUCCESS && g_surf != VK_NULL_HANDLE;
+    atomic_store(&g_sreq_state, SR_IDLE);
     if (!ok) { if (g_surf) surface_retire(g_surf); g_surf = VK_NULL_HANDLE; }
     return ok;
 }
 static int surface_make(ANativeWindow *w) {
-    for (int i = 0; i < 1000 && atomic_load(&g_sr_state) != SR_IDLE; i++) usleep(1000);   // an earlier request closes first
-    if (atomic_load(&g_sr_state) != SR_IDLE) { VKRED_ONCE(142, "the front thread did not close the earlier surface request"); return 0; }
-    g_sr.w = w; g_sr.inst = V.inst; g_sr.surf = VK_NULL_HANDLE;
-    atomic_store(&g_sr_state, SR_REQ);
+    for (int i = 0; i < 1000 && atomic_load(&g_sreq_state) != SR_IDLE; i++) usleep(1000);   // an earlier request closes first
+    if (atomic_load(&g_sreq_state) != SR_IDLE) { VKRED_ONCE(142, "the front thread did not close the earlier surface request"); return 0; }
+    g_sreq.w = w; g_sreq.inst = V.inst; g_sreq.surf = VK_NULL_HANDLE;
+    atomic_store(&g_sreq_state, SR_REQ);
     int st;
     for (int i = 0; i < 1000; i++) {
-        st = atomic_load(&g_sr_state);
+        st = atomic_load(&g_sreq_state);
         if (surface_take(&st)) return 1;
         if (st != SR_REQ) break;
         usleep(1000);
     }
     st = SR_REQ;
-    if (atomic_compare_exchange_strong(&g_sr_state, &st, SR_CANCEL)) { VKRED_ONCE(141, "the front thread made no surface in a second"); return 0; }
+    if (atomic_compare_exchange_strong(&g_sreq_state, &st, SR_CANCEL)) { VKRED_ONCE(141, "the front thread made no surface in a second"); return 0; }
     // the answer landed between the last look and this: taken like any other
     if (surface_take(&st)) return 1;
-    if (st == SR_REQ) atomic_store(&g_sr_state, SR_CANCEL);
+    if (st == SR_REQ) atomic_store(&g_sreq_state, SR_CANCEL);
     return 0;
 }
 
@@ -295,6 +297,7 @@ static int tc_resources_make(void) {
 fail:
     VKRED_ONCE(152, "test card: its staging buffer could not be made"); tc_resources_drop(); return 0;
 }
+static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to);
 int vk_testcard_step(uint64_t now_ns, int period_ms) {
     if (now_ns < g_tc_next) return 1;
     if (!V.inst) vk_init();   // the instance and the device, on this thread: the test card's own (nothing of the game is loaded)

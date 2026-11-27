@@ -21,8 +21,13 @@
 #include "front.h"
 #include "dm_input.h"
 #include <SDL3/SDL.h>
+// The Vulkan types the front names (VkInstance, VkSurfaceKHR, PFN_vkGetInstanceProcAddr): the system <vulkan/vulkan.h>, without a platform and
+// without prototypes -- the loader's entry points come to the backend by pointer (dm_front_vk_gipa), nothing here calls Vulkan itself
+#define VK_NO_PROTOTYPES
+#include <vulkan/vulkan.h>
 #include <SDL3/SDL_vulkan.h>
 #include <stdatomic.h>
+uint64_t now_ns(void);
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
