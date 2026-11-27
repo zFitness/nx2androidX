@@ -359,6 +359,30 @@ static void watch_install(void) {
 
 #endif
 
+// DM_HEAPTRACE: every 50 ms, log the boot's two decisive heap fields while they change: the game's
+// default-heap block pointer (main+0x17584f8) and the current thread's heap context (TLS slot 2, its
+// [0x88] allocator field). The linux host's first engine allocation fails when both are still 0.
+static void *heaptrace_run(void *arg) {
+    (void)arg;
+    uint64_t now_ns(void); extern uint64_t g_t0_ns;
+    module_t *mm = NULL; uint64_t last_df = 0, last_a88 = 0, last_e2 = 0;
+    for (int n = 0; n < 60; n++) {
+        usleep(50000);
+        if (!mm) { for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; } }
+        uint64_t df = mm ? *(uint64_t *)(mm->base + 0x17584f8) : 0;
+        void *tlr = dm_tsd_get(g_keytlr);
+        uint64_t obj = tlr ? *(uint64_t *)((uint8_t *)tlr + 0x1f8) : 0;
+        uint64_t e2 = obj ? *(uint64_t *)((uint8_t *)obj + 144) : 0;
+        uint64_t a88 = e2 ? *(uint64_t *)((uint8_t *)e2 + 0x88) : 0;
+        if (df == last_df && a88 == last_a88 && e2 == last_e2) continue;
+        LOG("HEAPTRACE %.2fs default-block=%#llx tls2=%#llx ctx[0x88]=%#llx", (now_ns() - g_t0_ns) / 1e9,
+            (unsigned long long)df, (unsigned long long)e2, (unsigned long long)a88);
+        last_df = df; last_a88 = a88; last_e2 = e2;
+        if (df && a88) break;
+    }
+    return NULL;
+}
+
 void probe_install(void) {
 #if !TARGET_OS_IPHONE
     crash_set_trap_hook(probe_hit);
@@ -396,5 +420,6 @@ void probe_install(void) {
     }
     if (g_slots && !g_slots_sealed) { mprotect(g_slots, 0x4000, PROT_READ | PROT_EXEC); sys_icache_invalidate(g_slots, 0x4000); g_slots_sealed = 1; }
     watch_install();
+    if (getenv("DM_HEAPTRACE")) { pthread_t t; pthread_create(&t, NULL, heaptrace_run, NULL); pthread_detach(t); }
 #endif
 }
