@@ -200,35 +200,39 @@ CreateThread(0x1006)] 窗口内的代码。崩溃锚点：pc main+0x65a084 ← 0
 block 字段注册被跳过/失败的分支条件（注意：这与「默认堆未注册」是同一
 观察的两面，谁因谁果由 A 裁定）。
 
-### 3.3.4 A 阶段首轮（2026-11-27）：tp 基址形状错误（真根因）+ 现状
+### 3.3.4 A 阶段记录（2026-11-27，经外部评审修正后重写）
 
-**真根因确认**：v2 的 linux `emit_tp`（`mrs; addi #slot_off`）形状错了——android 的
-`emit_tp`（`mrs; ldr t,[t,#16]`）加载的是 **KTLS 槽里的 TLS 区指针**（dm_slots[2]，
-宿主 guest_thread_init 填、guest `msr tpidr_el0` 切换），后续 Horizon 固定偏移索引
-**区的内部布局**；v2 却停在 `&dm_slots[0]`，偏移全落在复刻数组上——SDK 经缓存
-基址的 TLS 访问（如 [区+0x18] 的当前 ThreadType）读到错误对象。这就是引擎分配
-拿到 null 的原因（读链整体错位）。**修复**（4590fa71 + c3d8f9d1）：linux
-`emit_tp` = `mrs; ldr t,[t,#0]`，loader `install_tpbase` 烘焙 imm12 =
-`(slot_off+16)/8`（ldr x-form 按 8 字节缩放）——与 android 完全同形。
+**已撤回的结论**：本轮曾提出「v2 emit_tp 形状错误（应加载 dm_slots[2]）」并实施
+4590fa71 + c3d8f9d1——**该结论错误，两次修改为回归，已回退**（c9ba888c）。层级
+混淆：bionic 的 `tpidr_el0[2]`（TLS_SLOT_APP）= 宿主槽位表地址 b，不是宿主表中
+的 KTLS 值；android 的 `emit_tp`（`mrs; ldr [tp,#16]`）加载的正是 b，key page
+偏移（key*8）索引 b 本身。linux v2 的 `addi #slot_off`（base = &dm_slots[0]）
+与之完全同构：dm_slots[] 就是 b 的复刻（[2]=KTLS 区、[3]=TLR，镜像 Horizon
+tpidr_el0 槽位布局），sdk+0xe02e6c 跳板的 [base+0x18]→[tlr+0x1f8] 链在 android
+上本就是设计语义。回归曾使崩溃变为 `pc=0 lr=sdk+0xe02e90`（blr 0），回退后原
+崩溃如期复现（反向确认）。**不要给游戏 TLS 额外填 dm_gate 等宿主字段。**
 
-**修复后的新状态**（崩溃前移但性质改变）：旧崩溃（strb [null+8]）消失；游戏
-**创建出引擎自己的线程池**（新崩溃线程 = 引擎新建线程），新崩溃 = 引擎线程
-入口桩 `sdk+0xe02e6c`（`mrs→区→[区+*(0xddc018)]=当前 ThreadType→blr`）读到 0
-→ blr 0。⇒ 新线程的 TLS 区里「当前 ThreadType」字段无人填写——android 上
-同一桩能工作，说明 android 上该字段在入口前被填好（填写路径 = guest 经
-改写站点的存储，或引擎预填）。**下一步仪器修正**（外部评审 2026-11-27 的
-三条批评全部成立，记录在案）：
-1. `site_tpidr_write` 是内联 STR 直写槽位，不经 dm_tsd_set_traced →
-   DM_TRACETLS 看不到 guest 的区切换；android 侧也无对应仪器。→ 改造
-   site_tpidr_write 发 `bl` 到宿主被追踪的 setter（双平台等价），恢复可见性。
-2. DM_TRACESVC 的「一致」判据仅 (num, site)：GetInfo 返回值已单独比对一致，
-   但 CreateThread 的 w4/w5（现 trace 已扩到 x0-x5）、QueryMemory 应答结构
-   （现 trace 已转储）在首轮对照中未覆盖。
-3. SVC trace 不覆盖直接 HLE 调用，「无 SVC ≠ 纯 guest」。
-已上线的取证工具：游戏 patches.py 的 OBS 观察门（分配调用入参/结果、构造
-函数入口、heap-ctx 查找、CreateBlock 入口/返回，7 个门）+ 宿主
-hle_obstrace.c（DM_OBSTRACE，双平台寄存器日志）——同链双平台逐行差分。
+**寻址契约（三方一致，已指令级验证）**：站点 `[tp+slot_off+key*8]`（key page）≡
+宿主 `dm_tsd_set/get` = `dm_slots[k]` ≡ tsd_check 的 `[tp+slot_off+key*8]`。
+install_tpbase 现打印 site[0] 烘焙字（0x91012063 = addi x3,x3,#72 ✓）。
 
+**OBS 双平台取证结果**（patches.py 7 门 + hle_obstrace.c/DM_OBSTRACE；两平台
+各跑一次，同链寄存器日志）：前 8 条 CreateBlock 同构（同尺寸、同堆基址）；
+**第 9 条起堆内偏移漂移**（linux 0x1ef0 vs android 0x2870）——布局决策在很早
+处已分叉。linux 尾部：`CreateBlock(0=自适应, …, heap+0x2628000)` 的
+post-create-block x0=0；随后的引擎 560B 分配 x1（管理器 block）=0 → new 返回
+null → 崩溃。android 同窗：`CreateBlock(0x180000)/CreateBlock(0x46000)/
+CreateBlock(0x51400000≈1.29GB)` 逐个成功，引擎分配 x1 = 0x74a4790460（管理器
+block 非零）→ 成功。
+
+**注意（评审修正，未定案）**：0xe851e4（`str x0,[x19]`）存在**绕过 0xe851e0
+CreateBlock 调用的前驱**（0xe851bc/0xe851c4 的 `mov x0,xzr; b 0xe851e4`：候选
+块表查无合适项时直接写 0）——post x0=0 不能区分「调用后失败」与「未调用直接
+写 0」。「GetFreeSize 返回不足 0x121」为**假设**（0x44493c 虚调用的返回值无
+直接记录）。已加 4 个 OBS 门（main build 43ae51ee…）：8=0x44493c（虚调用前：
+接收对象 x0、实参 w1、目标 x8）、9=0x444940（虚调用返回 x0）、10=0x851e0
+（CreateBlock 前驱，区分两路径）、11=0x85190（候选块表逐项 x25）。
+数据配对按（线程, 调用位置），不按日志顺序。
 ### 3.4 已否决的路线（记录，防重蹈）
 
 | 路线 | 否决原因 |

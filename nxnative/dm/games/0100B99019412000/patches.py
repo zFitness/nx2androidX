@@ -14,5 +14,9 @@ OBS = {
     (0x449428, 5, 'a9be7bfd', 'the heap-context lookup: x0 = the default context, returns the per-thread heap'),
     (0x4448c0, 6, '120000a5', 'CreateBlock: the arguments as the caller passed them'),
     (0xe851e4, 7, 'f9000260', 'CreateBlock returned: x0 = the block (stored at [x19] = the manager\'s block field)'),
+    (0xe851e0, 10, '97d6fdb8', 'just before the CreateBlock call: fires only when the call happens (distinguishes call-failure from the direct zero write)'),
+    (0x44493c, 8, 'd63f0100', 'before the context virtual: x0 = receiver, x1 = argument, x8 = the resolved target'),
+    (0x444940, 9, '927df018', 'the context virtual returned: x0 = the raw size answer'),
+    (0xe85190, 11, 'f8695919', 'the block-candidate loop: x25 = this candidate from the registry table'),
   ],
 }
