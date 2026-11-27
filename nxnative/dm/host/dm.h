@@ -91,6 +91,11 @@ extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 #if defined(__APPLE__) || defined(DM_TSD_APPLE)
 #define dm_tsd_set(k, v) pthread_setspecific((k), (v))
 #define dm_tsd_get(k) pthread_getspecific(k)
+#elif defined(DM_TSD_LINUX)
+// 直读 loader 的 IE-TLS 数组（loader.c 定义 dm_slots；key page 存 tp 相对偏移）
+extern _Thread_local uint64_t dm_slots[8];
+#define dm_tsd_set(k, v) (dm_slots[k] = (uint64_t)(uintptr_t)(v))
+#define dm_tsd_get(k) (dm_slots[k])
 #else
 void dm_tsd_set(pthread_key_t k, const void *v);
 void *dm_tsd_get(pthread_key_t k);

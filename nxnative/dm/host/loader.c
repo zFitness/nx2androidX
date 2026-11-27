@@ -44,6 +44,27 @@ static void tsd_check(void) {
     if (((uint64_t *)(base & ~7ull))[off / 8] != 0x1234) die("TSD layout mismatch");
     pthread_setspecific(g_key18, 0);
 }
+#elif defined(DM_TSD_LINUX)
+// Linux (glibc): the loader owns an initial-exec TLS array (__thread → in the static TLS
+// block, reachable at tp + a fixed per-process offset). create_keys computes that offset
+// from the real thread pointer, install_key_page bakes it into the module's key page, and
+// the rewritten code reads [tpidr_el0 + entry] = dm_slots[key] — no bionic, no Darwin.
+__thread uint64_t dm_slots[8];
+static uint64_t **tp_now(void) { uint64_t **tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp)); return tp; }
+static unsigned long g_slot_off;
+static void create_keys(void) {
+    uint64_t tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
+    g_slot_off = (unsigned long)((uint8_t *)dm_slots - (uint8_t *)tp);
+    g_key18 = 1; g_keytls = 2; g_keytlr = 3; g_keygate = 4;
+    LOG("guest thread slots in the loader's IE-TLS array: slot_off=%lu K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu", g_slot_off, g_key18, g_keytls, g_keytlr, g_keygate);
+}
+// K slot check: the slot the rewritten code reads (tpidr_el0 + the key page entry) is the one dm_tsd_set wrote
+static void tsd_check(void) {
+    dm_tsd_set(g_key18, (void *)0x1234);
+    uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
+    if (*(uint64_t *)((uint8_t *)tp_now() + off) != 0x1234) die("guest thread slot layout mismatch");
+    dm_tsd_set(g_key18, 0);
+}
 #else
 // Android: bionic owns tpidr_el0 (its TLS) and 64-bit tasks read 0 from tpidrro_el0. Each thread that runs guest code gets a block of slots whose address
 // sits in bionic's TLS_SLOT_APP (tpidr_el0[2], reserved for app use); the "keys" are indices 1..4 into it (0 stays unused: the loader takes a 0 key page
@@ -240,6 +261,8 @@ static void read_layout(module_t *m, const char *dir) {
     fclose(f);
 #if defined(__APPLE__) || defined(DM_TSD_APPLE)
     static const char *const want = "apple";
+#elif defined(DM_TSD_LINUX)
+    static const char *const want = "linux";
 #else
     static const char *const want = "android";
 #endif
@@ -278,7 +301,11 @@ static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: key page out of range", m->name);
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
     memset(page, 0, m->key_page_size);
+#ifdef DM_TSD_LINUX
+    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = g_slot_off + (uint64_t)key_value(i) * 8;   // tp 相对偏移：tp+entry = dm_slots[key]
+#else
     for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
+#endif
     for (int k = 0; k < KEY_N; k++) if (!page[m->key_idx[k]]) die("%s: key page entry %d is 0 (host key not created) -- the game would read TSD slot 0", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s key page mprotect", m->name);
     if (m->fps_state_off) install_fps_state(m);
@@ -649,7 +676,7 @@ static uint8_t *slurp(const char *path, size_t *n) {
 // Awakening's main reads a byte of table[0xFFFF] (88-byte records, an index of -1 for "none") from its camera's constructor at the first frame, 4.2 MB past the end
 // of the image. Where that lands is whatever the allocator put there: inside a big heap block it read garbage and went on, in a gap it faulted (SIGSEGV at main+0x1c180,
 // about half of the launches, as the addresses are random). The slack holds the read to zeros. It is address space only (zero pages cost nothing until touched)
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(DM_TSD_LINUX)
 #define MODULE_SLACK (16ull << 20)
 static void module_slack(module_t *m) { if (mprotect(m->base + m->size, MODULE_SLACK, PROT_READ)) die("%s mprotect slack", m->name); }
 #else
