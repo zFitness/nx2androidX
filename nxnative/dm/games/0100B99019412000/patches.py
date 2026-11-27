@@ -15,7 +15,9 @@ OBS = {
     (0x4448c0, 6, '120000a5', 'CreateBlock: the arguments as the caller passed them'),
     (0xe851e4, 7, 'f9000260', 'CreateBlock returned: x0 = the block (stored at [x19] = the manager\'s block field)'),
     (0x44490c, 8, 'aa0003f3', 'CreateBlock: the heap-context lookup returned (x0; null -> the fail path)'),
-    (0x444940, 9, '927df018', 'the context virtual returned: x0 = the raw size answer'),
+    # gate 9 (0x444940, the context virtual's return) was dropped: that slot does not satisfy the
+    # gate placement rules either. Its data is inferred: gate 8 shows the context, and if the block
+    # then fails, the virtual returned < 0x121 (the fail threshold in the disassembly).
     (0xe85190, 11, 'f8695919', 'the block-candidate loop: x25 = this candidate from the registry table'),
     # gate 10 was dropped: 0xe851e0 is the bl CreateBlock itself and cannot host a gate. The two paths
     # are told apart by gate 6 (the CreateBlock entry): gate 6 fired since the last gate 7 = the call ran
