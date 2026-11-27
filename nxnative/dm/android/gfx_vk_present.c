@@ -198,6 +198,13 @@ uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, 
 // request is never reused while a surface of an earlier one may still turn up, and a late surface always dies on the window's thread
 enum { SR_IDLE, SR_REQ, SR_ANS, SR_CANCEL };
 static _Atomic int g_sreq_state;
+static pthread_t g_front_tid; static int g_front_tid_known;   // the window's thread, learned on its first pass (dm_front_tick)
+// The one place a surface is made: on the window's thread, which is whoever calls this
+static VkSurfaceKHR surface_create(ANativeWindow *w, VkResult *r) {
+    VkSurfaceKHR s = VK_NULL_HANDLE;
+    *r = w && SDL_Vulkan_CreateSurface((SDL_Window *)w, V.inst, NULL, &s) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+    return s;
+}
 static struct { ANativeWindow *w; VkInstance inst; VkSurfaceKHR surf; VkResult r; } g_sreq;   // w / inst: the asker, before REQ. surf / r: the front thread, before ANS
 // Surfaces the present thread is done with, for the window's thread to destroy a pass later (the mutex is held to push or to take, never while waiting)
 #define SR_RETIRE 16
@@ -210,11 +217,11 @@ static void surface_retire(VkSurfaceKHR s) {
     pthread_mutex_unlock(&g_retire_mu);
 }
 void dm_front_tick(void) {   // the SDL main thread, every pass of its event loop (dm/linux/front_linux.c)
+    if (!g_front_tid_known) { g_front_tid = pthread_self(); g_front_tid_known = 1; }
     for (unsigned i = 0; i < 8; i++) {
         int st = atomic_load(&g_sreq_state);
         if (st == SR_REQ) {
-            VkSurfaceKHR s = VK_NULL_HANDLE; VkResult r = VK_ERROR_SURFACE_LOST_KHR;
-            if (g_sreq.w) r = SDL_Vulkan_CreateSurface((SDL_Window *)g_sreq.w, g_sreq.inst, NULL, &s) ? VK_SUCCESS : VK_ERROR_SURFACE_LOST_KHR;
+            VkResult r; VkSurfaceKHR s = surface_create(g_sreq.w, &r);
             g_sreq.surf = s; g_sreq.r = r;
             if (atomic_compare_exchange_strong(&g_sreq_state, &st, SR_ANS)) break;   // published: it is the asker's to take
             // cancelled while it was being made: nobody waits for it
@@ -239,6 +246,12 @@ static int surface_take(int *state) {
     return ok;
 }
 static int surface_make(ANativeWindow *w) {
+    // The window's thread asking for itself (the test card runs on it): made on the spot -- the handshake would wait for itself
+    if (g_front_tid_known && pthread_equal(pthread_self(), g_front_tid)) {
+        VkResult r; g_surf = surface_create(w, &r);
+        if (r != VK_SUCCESS || g_surf == VK_NULL_HANDLE) { VKRED_ONCE(145, "the window's surface could not be made: %d", r); g_surf = VK_NULL_HANDLE; return 0; }
+        return 1;
+    }
     for (int i = 0; i < 1000 && atomic_load(&g_sreq_state) != SR_IDLE; i++) usleep(1000);   // an earlier request closes first
     if (atomic_load(&g_sreq_state) != SR_IDLE) { VKRED_ONCE(142, "the front thread did not close the earlier surface request"); return 0; }
     g_sreq.w = w; g_sreq.inst = V.inst; g_sreq.surf = VK_NULL_HANDLE;
