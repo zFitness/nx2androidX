@@ -73,16 +73,21 @@ static void create_keys(void) {
     g_key18 = 1; g_keytls = 2; g_keytlr = 3; g_keygate = 4;
     LOG("guest TLS replica in the loader's IE-TLS array: slot_off=%lu (512 slots), K18=1 KTLS=2 KTLR=3 KGATE=4", g_slot_off);
 }
-// Bake the TLS area slot's byte offset into every site's tp base ("mrs xt, tpidr_el0; ldr xt, [xt]"),
-// while the text is still writable: after it, xt = dm_slots[2] = the current TLS area (the same value
-// android's `ldr xt, [tp, #16]` loads), and the site's original Horizon offsets index the area's layout
+// Bake the IE-TLS slot offset into every site's tp base ("mrs xt, tpidr_el0; addi xt, xt, #0"), while
+// the text is still writable: after it, xt = &dm_slots[0] = the replica array, the linux equivalent of
+// android's TLS_SLOT_APP block pointer. The addressing contract the three sides share: a site reaches
+// dm_slots[key] as [tp + slot_off + key*8] (key page), the host's dm_tsd_set/get as dm_slots[key], and
+// tsd_check verifies the same arithmetic through tp.
 static void install_tpbase(module_t *m) {
-    if ((g_slot_off + 2 * 8) & 7) die("tls slot offset %lu is not 8-aligned", g_slot_off);
-    unsigned imm = (unsigned)((g_slot_off + 2 * 8) / 8) & 0xFFF;   // the ldr x-form's imm12 counts by 8 bytes
     for (unsigned i = 0; i < m->ntpbase; i++) {
         uint32_t *w = (uint32_t *)(m->base + m->tpbase[i]);
-        if ((*w >> 22) != 0x3E5 || ((*w >> 10) & 0xFFF)) die("%s: tp base site %u is not a zero-imm ldr", m->name, i);
-        *w = (*w & ~0x3FFC00u) | (imm << 10);
+        if ((*w >> 22) != 0x244 || ((*w >> 10) & 0xFFF)) die("%s: tp base site %u is not a zero-imm addi", m->name, i);
+        *w = (*w & ~0x3FFC00u) | ((unsigned)(g_slot_off & 0xFFF) << 10);
+    }
+    if (m->ntpbase) {
+        uint32_t w = *(uint32_t *)(m->base + m->tpbase[0]);
+        LOG("%s: tp base baked into %u sites (slot_off=%lu); site[0] = %#llx = addi x%d, x%d, #%llu",
+            m->name, m->ntpbase, g_slot_off, (unsigned long long)w, (w >> 0) & 31, (w >> 5) & 31, (unsigned long long)((w >> 10) & 0xFFF));
     }
     if (m->ntpbase) __builtin___clear_cache((char *)(m->base + m->tpbase[0]), (char *)(m->base + m->tpbase[m->ntpbase - 1] + 4));
     LOG("%s: tp base baked into %u sites (slot_off=%lu)", m->name, m->ntpbase, g_slot_off);
