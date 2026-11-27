@@ -137,9 +137,42 @@ TPBASE 未烘焙（全烤）、TLR/ThreadType 链断裂（全通）、msr 切换
 （dm_slots[2] 全程 = 宿主初值，但游戏自己的「当前 TLS 区」全局
 main+0x1724738 指向堆上新分配的区域——两条「当前线程」链不一致是**最强线索**：
 游戏全局链（堆对象，[+104]=2）vs TLR 链（SDK 静态 ThreadType，其值数组从未被写）。
-下一步：找 android 上写 entry[2] 的执行路径（对 main:0x1724738 的写入者、
-或 SDK 的 SetThreadLocalPtr 调用者），以及为何 linux 上那条路径没跑
-（疑似更早的宿主 HLE 分叉，BOOT 日志止于 "hid supported controller styles" 之后）。
+**已排除**（2026-11-27 深挖）：TLS 管道无罪——SDK 在 0.329s 成功写 entry[2]
+（DM_PROBE_WATCH 实证，pc=sdk+0x12c784，值为 ctx 指针）；崩溃时 ctx[0x88]
+= ctx+0x30 也非零。分配路径实际返回的是 **第二上下文**（heap+0x220002F0，
+= 第一上下文 +0xB0）的 [+0x88]，它 **=0** → 兜底「默认堆块 main+0x17584f8」
+也 =0 → new 返回 0 → 构造函数把第二参数（管理器 block，=0）当目标指针
+strb [0+8] 崩。
+
+**android 独立基线已建立**（2026-11-27）：用 app 的 on-device NDK
+（com.nx.android files/tool/toolchain/ndk，113MB，x86_64 host 工具 +
+aarch64 sysroot；glslc 与 libshaderc.so.1 从 app toolchain bin/lib 补）
+在容器里构建独立 android dmhost（--exe，/system/bin/linker64），平板上
+裸跑 app 的 android 改写模块 + app 的 RomFS——**游戏健康运行 12-25s**
+（开场电影解码、audren 音频、NVN 60fps p50 16.69ms、SIGTERM 优雅退出）。
+构建命令：`build.py --game <tid> --ndk <app-ndk> --os android --gfx null
+--release --exe`（arm64 主机分支：payload clang + NDK sysroot +
+`-rtlib=compiler-rt`）。
+
+**DM_HEAPTRACE 双平台时间线**（probe.c 新仪器，50ms 采样、变化才打印）：
+
+| 时刻 | linux | android |
+|---|---|---|
+| ~0.29/0.33s | default-block=0, second[0x88]=0 | default-block=0, second[0x88]=0 |
+| ~0.35s（引擎首个 560B 分配） | **仍全 0 → 崩** | 分配**成功**（default-block 在 0.34-1.33 间被写） |
+| ~1.3s | （已死） | default-block=0x704714af38 |
+| ~2.1s | — | second[0x88] = 0x704714af38（引擎分配器采纳了默认块）|
+
+SetHeapSize 两平台应答形状一致（0xc9400000 → 32MB 对齐基址）→ 不是宿主
+应答差异。**剩余问题唯一且明确：android 上游戏在 ~0.35s 写
+default-block（main+0x17584f8）的执行路径，在 linux 上没跑或写失败**。
+该字段的写入者不走直接指令偏移（全量反汇编无 #0x4f8/#0x4f0 str/stp 命中
+= 经计算指针/成员方法写）。下一步三选一：(a) 从 nn::mem init 的
+「默认上下文注册」方法反向 RE（静态构造器路径）；(b) 给宿主加逐 HLE
+调用日志，diff 两平台 0.28-0.36s 窗口；(c) 检查游戏按内存布局分支的
+输入（nn::oe/GetSystemInfo 类）在两平台的返回差异。仪器已就位：
+DM_HEAPTRACE（双平台）、DM_PROBE_WATCH（注意页粒度一次性盲区）、
+崩溃探针（crash.c，linux-only 块已守卫）。
 
 ### 3.4 已否决的路线（记录，防重蹈）
 
