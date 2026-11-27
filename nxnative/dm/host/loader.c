@@ -29,7 +29,7 @@ static pthread_key_t key_value(unsigned i) {
     default: return g_keygate;
     }
 }
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(DM_TSD_APPLE)
 static void create_keys(void) {
     if (pthread_key_create(&g_key18, NULL) || pthread_key_create(&g_keytls, NULL) ||
         pthread_key_create(&g_keytlr, NULL) || pthread_key_create(&g_keygate, NULL)) die("cannot create the host key");
@@ -238,7 +238,7 @@ static void read_layout(module_t *m, const char *dir) {
         }
     }
     fclose(f);
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(DM_TSD_APPLE)
     static const char *const want = "apple";
 #else
     static const char *const want = "android";
