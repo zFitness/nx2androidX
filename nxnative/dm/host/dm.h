@@ -86,8 +86,9 @@ static inline const char *dm_main_build(void) { for (int i = 0; i < g_nmod; i++)
 // Four thread-local slots: K18 = the Switch's x18, KTLS = tpidr_el0, KTLR = tpidrro_el0 (ThreadLocalRegion), KGATE = host gate entry; the actual key numbers are written into the key page by the loader
 extern pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
 // The guest thread slots the rewritten code reads (patch_nso.py emit_tp): Darwin TSD keys on Apple; on Android the keys are indices into a per-thread
-// block whose address bionic's TLS_SLOT_APP holds (tpidr_el0[2]), see loader.c
-#if defined(__APPLE__)
+// block whose address bionic's TLS_SLOT_APP holds (tpidr_el0[2]), see loader.c. DM_TSD_APPLE (the linux build, DM_TARGET=apple): pthread keys work on
+// glibc too — the rewritten module's tp-relative reads are the part that needs its own mode (patch_nso.py), not this side.
+#if defined(__APPLE__) || defined(DM_TSD_APPLE)
 #define dm_tsd_set(k, v) pthread_setspecific((k), (v))
 #define dm_tsd_get(k) pthread_getspecific(k)
 #else
