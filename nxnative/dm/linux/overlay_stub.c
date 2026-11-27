@@ -5,6 +5,7 @@
 #include "dm.h"
 #include "overlay_layout.h"
 #include "pixel_font.h"
+#include "pixel_font_latin1.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
