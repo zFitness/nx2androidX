@@ -147,7 +147,7 @@ def port_files():
     return out
 
 INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include', str(DM / 'android/dm_settings.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
-       f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
+       f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', '-I/usr/include/SDL3', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 CFLAGS = TARGET + [f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
           '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
@@ -206,7 +206,7 @@ print(f'compiled {len(FILES) + len(PLAYS) + len(VPX) + len(ZSTD)} sources, {len(
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
-LIBS = (['-lz', '-lm', '-ldl', '-lpthread'] + (['-lvulkan'] if a.gfx == 'vk' else []) if DM_LINUX else
+LIBS = (['-lz', '-lm', '-ldl', '-lpthread'] + (['-lvulkan'] if a.gfx == 'vk' else []) + (['-lSDL3'] if DM_LINUX else []) if DM_LINUX else
         ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmediandk', '-lz', '-lm', '-ldl'])   # -lz: the gamepad theme's PNGs (overlay_theme.c)
 LDFLAGS = TARGET + ['-Wl,-z,max-page-size=16384', '-Wl,--build-id']
 if not DM_LINUX: LDFLAGS += ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,nostart-stop-gc']
