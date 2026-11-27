@@ -18,7 +18,9 @@ OBS = {
     # gate 9 (0x444940, the context virtual's return) was dropped: that slot does not satisfy the
     # gate placement rules either. Its data is inferred: gate 8 shows the context, and if the block
     # then fails, the virtual returned < 0x121 (the fail threshold in the disassembly).
-    (0xe85190, 11, 'f8695919', 'the block-candidate loop: x25 = this candidate from the registry table'),
+    # gate 11 (0xe85190, the candidate loop) was dropped: that slot fails the placement rules too.
+    # The candidate-table state is inferred from the gate 6/7/8 pairing (was CreateBlock called, did
+    # its context lookup return null, what came back) plus the existing HEAPTRACE timelines.
     # gate 10 was dropped: 0xe851e0 is the bl CreateBlock itself and cannot host a gate. The two paths
     # are told apart by gate 6 (the CreateBlock entry): gate 6 fired since the last gate 7 = the call ran
     # and its result is x0 at gate 7; gate 7 with x0=0 and no gate 6 since = the direct zero write (the
