@@ -169,8 +169,8 @@ class TheImport(unittest.TestCase):
 
 
 class TheSystemPython(unittest.TestCase):
-    """The interface is GTK, so the package runs on the machine's own Python with
-    PyGObject: the package carries the code, not the toolkit."""
+    """The interface is Qt (PySide6), so the package runs on the machine's own Python
+    with the system's PySide6: the package carries the code, not the toolkit."""
 
     APPRUN = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
 
@@ -187,7 +187,55 @@ class TheSystemPython(unittest.TestCase):
 
     def test_a_machine_without_the_bindings_is_told_what_to_install(self):
         entry = (REPO / 'launcher/__main__.py').read_text(encoding='utf-8')
-        self.assertIn('python3-gi', entry)
+        self.assertIn('python3-pyside6', entry)
+
+
+class TheWindowFrame(unittest.TestCase):
+    """The frame follows the machine: inside a gamescope container the container
+    itself draws the only title bar, on an ordinary desktop the window keeps its
+    own."""
+
+    ENV = appimage.ENV_GAMESCOPE
+
+    def setUp(self):
+        self.had = os.environ.get(self.ENV)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self.had is None:
+            os.environ.pop(self.ENV, None)
+        else:
+            os.environ[self.ENV] = self.had
+
+    def test_inside_gamescope_the_container_frames_the_window(self):
+        os.environ[self.ENV] = 'wayland-1'
+        self.assertFalse(appimage.wants_frame())
+
+    def test_on_a_desktop_the_window_frames_itself(self):
+        os.environ.pop(self.ENV, None)
+        self.assertTrue(appimage.wants_frame())
+
+    def test_an_empty_variable_is_no_gamescope(self):
+        os.environ[self.ENV] = ''
+        self.assertTrue(appimage.wants_frame())
+
+
+class ThePlainEntry(unittest.TestCase):
+    """The entry script stays an entry script: the package runs where it is
+    clicked, the way every other AppImage on the machine does -- no self-install,
+    no menu writing, no copy to the player's home."""
+
+    APPRUN = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
+
+    def test_no_install_or_menu_logic_is_in_it(self):
+        self.assertNotIn('selfinstall', self.APPRUN)
+        self.assertNotIn('.local/share/applications', self.APPRUN)
+        self.assertNotIn('nx2a/app', self.APPRUN)
+
+    def test_the_exports_and_the_exec_stay(self):
+        self.assertIn('NX2A_TOOLCHAIN="$HERE/usr/toolchain"', self.APPRUN)
+        self.assertIn('LD_LIBRARY_PATH="$HERE/usr/pylibs', self.APPRUN)
+        self.assertIn('exec "$PYTHON" -m launcher', self.APPRUN)
 
 
 class TheFonts(unittest.TestCase):
@@ -239,6 +287,70 @@ class TheFonts(unittest.TestCase):
     def test_apprun_keeps_the_fonts_of_the_machine_when_there_are_some(self):
         apprun = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
         self.assertIn('/etc/fonts/fonts.conf', apprun)
+
+
+class TheToolchainBundle(unittest.TestCase):
+    """--with-toolchain: the phone payload's clang and glslc, the .NET runtime with the
+    prebuilt C# tools, the porter's Python modules, and a Debian glibc prefix -- staged
+    into usr/, so a machine with no compiler builds anyway."""
+
+    ASSETS = REPO / 'packaging/android-apk/.cache/assets'
+    DEBS = REPO / 'packaging/arm-linux/.cache/debs'
+
+    def setUp(self):
+        if not self.ASSETS.is_dir():
+            self.skipTest('no android-apk payload cache on this machine')
+
+    def test_staging_is_complete(self):
+        with tempfile.TemporaryDirectory() as root:
+            appdir = Path(root)
+            debs = self.DEBS if self.DEBS.is_dir() else self.ASSETS.parent / 'debs'
+            if not debs.is_dir():
+                self.skipTest('no fetched glibc debs on this machine')
+            build.stage_toolchain(appdir, self.ASSETS, debs)
+            usr = appdir / 'usr'
+            for want in (usr / 'toolchain/clang/bin/clang', usr / 'toolchain/bin/glslc',
+                         usr / 'toolchain/lib/libshaderc.so.1',
+                         usr / 'toolchain/glibc/usr/include/stdio.h',
+                         usr / 'toolchain/glibc/usr/lib/llvm-18/lib/clang/18/include/stdarg.h',
+                         usr / 'dotnet/dotnet',
+                         usr / 'cs-tools/nx_extract/nx_extract',
+                         usr / 'cs-tools/dmsh_xlate/dmsh_xlate.dll'):
+                self.assertTrue(want.is_file(), f'{want} missing')
+            self.assertFalse((usr / 'toolchain/ndk').exists(), 'the bionic NDK does not travel')
+
+    def test_pylibs_carry_the_target_abi(self):
+        """lz4 and friends must exist in the tablet's own CPython ABI (cpython-314): the
+        payload's copies are cpython-313 and a python ignores those."""
+        with tempfile.TemporaryDirectory() as root:
+            appdir = Path(root)
+            build.stage_pylibs(appdir, self.ASSETS, Path(root))
+            pylibs = appdir / 'usr' / 'pylibs'
+            exts = list(pylibs.rglob('*.so'))
+            self.assertTrue(any('cpython-314' in f.name for f in exts),
+                            'no cpython-314 extension module in the staged pylibs')
+            self.assertTrue((pylibs / 'lz4').is_dir())
+            self.assertTrue((pylibs / 'capstone').is_dir())
+            self.assertTrue(list(pylibs.glob('libcapstone.so.*')), 'libcapstone is not staged')
+
+    def test_staging_rejects_an_incomplete_payload(self):
+        with tempfile.TemporaryDirectory() as root:
+            empty = Path(root) / 'assets'
+            (empty / 'toolchain').mkdir(parents=True)
+            with self.assertRaises(SystemExit):
+                build.stage_toolchain(appdir=Path(root), src=empty, debs=empty)
+
+    def test_apprun_exports_the_toolchain(self):
+        apprun = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
+        for line in ('NX2A_TOOLCHAIN="$HERE/usr/toolchain"', 'DOTNET_ROOT="$HERE/usr/dotnet"',
+                     'NX2A_NX_EXTRACT="$HERE/usr/cs-tools/nx_extract"',
+                     'NX2A_DMSH_XLATE="$HERE/usr/cs-tools/dmsh_xlate"',
+                     'PYTHONPATH="$HERE/usr/pylibs:$HERE/usr'):
+            self.assertIn(line, apprun)
+
+    def test_apprun_puts_the_toolchain_on_the_path(self):
+        apprun = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
+        self.assertIn('PATH="$HERE/usr/toolchain/clang/bin:$HERE/usr/toolchain/bin:$HERE/usr/dotnet:$PATH"', apprun)
 
 
 if __name__ == '__main__':

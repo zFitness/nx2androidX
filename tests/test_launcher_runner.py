@@ -1,4 +1,4 @@
-"""The runner: the porter's stream of events, and where the porter is."""
+"""The runner: the porter's stream of events, where the porter is, and how it is asked."""
 import json
 import os
 import sys
@@ -6,11 +6,45 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from launcher import runner   # noqa: E402
+
+
+class TheChildren(unittest.TestCase):
+    """Every porter child runs as the launcher's line: a Linux host, the machine its own device."""
+
+    def test_the_environment_names_the_linux_line(self):
+        env = runner.porter_env()
+        self.assertEqual(env['NX2A_HOST_OS'], 'linux')
+        self.assertEqual(env['NX2A_ON_DEVICE'], '1')   # the game's own decoder and compiler run here
+        self.assertEqual(env['PYTHONIOENCODING'], 'utf-8')
+
+
+class TheLibrary(unittest.TestCase):
+    """The pack goes straight into the library: the porter is told where that is
+    (NX2A_PACK_DIR) and writes there itself — the launcher moves nothing."""
+
+    def test_the_library_is_named_in_the_environment(self):
+        env = runner.porter_env('/data/library')
+        self.assertEqual(env['NX2A_PACK_DIR'], '/data/library')
+
+    def test_the_library_can_come_as_a_path(self):
+        env = runner.porter_env(Path('/data/library'))
+        self.assertEqual(env['NX2A_PACK_DIR'], '/data/library')
+
+    def test_without_a_library_the_porter_keeps_its_own_default(self):
+        self.assertNotIn('NX2A_PACK_DIR', runner.porter_env())
+
+    def test_the_porter_child_is_told_where_the_pack_goes(self):
+        porter = runner.Porter(Path('/nowhere'), '/data/library')
+        with mock.patch.object(runner.subprocess, 'Popen', side_effect=OSError('not started')) as popen:
+            with self.assertRaises(OSError):
+                porter.start([])
+        self.assertEqual(popen.call_args.kwargs['env']['NX2A_PACK_DIR'], '/data/library')
 
 
 class Events(unittest.TestCase):
@@ -58,6 +92,46 @@ class OneDocument(unittest.TestCase):
         document, code, error = runner.run_json(REPO, ['--help'])
         self.assertIsNone(document)
         self.assertTrue(error)
+
+
+class OffTheInterface(unittest.TestCase):
+    """The interface's commands run on a thread of their own; the answer arrives on the
+    idle loop, the only place the interface may be touched.  The idle hop is faked out:
+    what the tests watch is that the work happens away from the caller and is delivered
+    whole."""
+
+    def delivery(self):
+        seen = []
+        original = runner._idle
+        runner._idle = lambda callback, *args: seen.append(args)
+        self.addCleanup(setattr, runner, '_idle', original)
+        return seen
+
+    def wait(self, seen):
+        deadline = time.monotonic() + 30
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return seen
+
+    def test_a_json_answer_is_delivered_whole(self):
+        seen = self.delivery()
+        runner.run_json_async(REPO, ['nosuchcommand'], lambda *args: None)
+        self.wait(seen)
+        self.assertEqual(len(seen), 1)
+        document, code, error = seen[0]
+        self.assertIsNone(document)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(error)
+
+    def test_a_text_answer_is_delivered_whole(self):
+        seen = self.delivery()
+        runner.run_text_async(REPO, ['nosuchcommand'], lambda *args: None)
+        self.wait(seen)
+        self.assertEqual(len(seen), 1)
+        code, out, err = seen[0]
+        self.assertNotEqual(code, 0)
+        self.assertFalse(out)
+        self.assertTrue(err)
 
 
 class Cancel(unittest.TestCase):

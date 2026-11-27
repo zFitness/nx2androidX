@@ -40,7 +40,7 @@ def write_script(game: Game) -> Path:
         f'exe="$dir/{exe.name}"\n'
         '[ -x "$exe" ] || { echo "this game has no executable" >&2; exit 1; }\n'
         'cd "$dir" || exit 1\n'
-        'DM_ROOT="$dir" exec "$exe" "$@"\n',
+        'DM_ROOT="$dir" exec "$exe" "$dir"\n',
         encoding='utf-8',
     )
     path.chmod(0o755)
@@ -60,7 +60,7 @@ def start(game: Game) -> subprocess.Popen:
     if not exe:
         raise NoExecutable(f'{game.name}: no executable in {game.path}')
     return subprocess.Popen(
-        [str(exe)],
+        [str(exe), str(game.path)],   # main.c's argv[1] is the data root (the pack's folder)
         cwd=str(game.path), env=environment(game),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,

@@ -1,139 +1,145 @@
 """The library page: the ported games, in a grid of cards.
 
 The grid's width decides how many cards fit; on a phone-sized screen it never shows
-more than two.  The cards show the game's icon, its name and its version, and the two
-things a player does with a game: run it, or put it in Steam's library.
+more than two.  The cards show the game's icon, its name and its version, and the
+things a player does with a game: run it, or put it in Steam's library and the
+system's app menu.
 """
 from __future__ import annotations
 
-import gi
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+                               QScrollArea, QVBoxLayout, QWidget)
 
-gi.require_version('Gtk', '3.0')
-from gi.repository import GdkPixbuf, GLib, Gtk   # noqa: E402
-
-from launcher import launch, library, scale, settings, steam   # noqa: E402
-from launcher.ui import dialogs   # noqa: E402
+from launcher import launch, library, scale, settings, steam
+from launcher.ui import clear_layout, dialogs
 
 ICON_SIZE = 96
 
 
-class LibraryPage(Gtk.Box):
+class LibraryPage(QWidget):
     """The games in the data directory."""
 
     def __init__(self, app):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        super().__init__()
         self.app = app
         self.words = app.words
+        self.cards: list[QWidget] = []
 
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_vexpand(True)
-        self.add(scroller)
-
-        self.inner = Gtk.FlowBox()
-        self.inner.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.inner.set_row_spacing(12)
-        self.inner.set_column_spacing(12)
-        self.inner.set_margin_start(16)
-        self.inner.set_margin_end(16)
-        self.inner.set_margin_top(16)
-        self.inner.set_margin_bottom(16)
-        scroller.add(self.inner)
-        # The width decides how many cards fit; a phone-sized screen never gets more
-        # than two (the rule the FlowBox would otherwise break on a wide window).
-        self.inner.connect('size-allocate', self._on_size)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.scroller = QScrollArea()
+        self.scroller.setWidgetResizable(True)
+        self.scroller.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(self.scroller)
+        self.inner = QWidget()
+        self.scroller.setWidget(self.inner)
+        self.grid = QGridLayout(self.inner)
+        self.grid.setContentsMargins(16, 16, 16, 16)
+        self.grid.setHorizontalSpacing(12)
+        self.grid.setVerticalSpacing(12)
 
         self.refresh()
 
-    def _on_size(self, _flowbox, allocation) -> None:
-        limit = self.columns(allocation.width)
-        if self.inner.get_max_children_per_line() != limit:
-            self.inner.set_max_children_per_line(limit)
+    def resizeEvent(self, event) -> None:
+        """The width decides how many cards fit; a phone-sized screen never gets more
+        than two (the rule a free-flowing grid would break on a wide window)."""
+        super().resizeEvent(event)
+        self.reflow(self.scroller.viewport().width())
 
     # ---- the layout ------------------------------------------------------------------
 
     def rebuild(self) -> None:
         """The page is built again (the settings changed)."""
+        self.words = self.app.words   # the language may have changed with the settings
         self.refresh()
 
     def refresh(self) -> None:
         """Read the library again and show what is in it."""
-        for child in self.inner.get_children():
-            self.inner.remove(child)
+        clear_layout(self.grid)
+        self.cards = []
         games = library.scan(settings.library_dir(self.app.settings))
         if not games:
-            label = Gtk.Label(label=self.words['library_empty'])
-            label.set_line_wrap(True)
-            label.set_max_width_chars(60)
-            label.set_halign(Gtk.Align.CENTER)
-            self.inner.add(label)
+            label = QLabel(self.words['library_empty'])
+            label.setWordWrap(True)
+            self.grid.addWidget(label, 0, 0, 1, 1, Qt.AlignTop | Qt.AlignHCenter)
             return
         for game in games:
-            self.inner.add(self.card(game))
+            self.cards.append(self.card(game))
+        self.reflow(self.scroller.viewport().width())
 
     def columns(self, width: int) -> int:
         """How many cards fit in this width."""
         return scale.columns(width, 1.0, self.app.small)
 
-    def card(self, game: library.Game) -> Gtk.Box:
+    def reflow(self, width: int) -> None:
+        """The cards again, in the columns that fit now (the cards themselves are
+        kept: only their places in the grid change)."""
+        count = self.columns(width)
+        while self.grid.count():
+            self.grid.takeAt(0)
+        for index, card in enumerate(self.cards):
+            self.grid.addWidget(card, index // count, index % count)
+
+    def card(self, game: library.Game) -> QWidget:
         """One game: its icon, its name, and what a player can do with it."""
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        box.set_size_request(220, -1)
+        box = QWidget()
+        box.setMinimumWidth(220)
+        layout = QVBoxLayout(box)
+        layout.setSpacing(6)
 
-        image = self.make_icon(game)
-        image.set_halign(Gtk.Align.START)
-        box.pack_start(image, False, False, 0)
+        layout.addWidget(self.make_icon(game), 0, Qt.AlignLeft | Qt.AlignTop)
 
-        title = Gtk.Label(label=game.name)
-        title.set_xalign(0)
-        title.set_line_wrap(True)
-        title.set_max_width_chars(20)
-        title.get_style_context().add_class('heading')
-        box.pack_start(title, False, False, 0)
+        title = QLabel(game.name)
+        title.setWordWrap(True)
+        title_font = title.font()
+        title_font.setBold(True)
+        title.setFont(title_font)
+        layout.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
 
         if game.version:
-            version = Gtk.Label(label=game.version)
-            version.set_xalign(0)
-            version.get_style_context().add_class('dim-label')
-            box.pack_start(version, False, False, 0)
+            version = QLabel(game.version)
+            version.setStyleSheet('color: #757575')
+            layout.addWidget(version, 0, Qt.AlignLeft | Qt.AlignTop)
 
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        run = Gtk.Button(label=self.words['run'])
-        run.connect('clicked', lambda _b, g=game: self.run_game(g))
-        buttons.pack_start(run, False, False, 0)
-
-        in_steam = self.in_steam(game)
-        steam_button = Gtk.Button(label=self.words['remove_steam'] if in_steam
-                                  else self.words['add_steam'])
-        steam_button.connect('clicked', lambda _b, g=game: self.toggle_steam(g))
-        buttons.pack_start(steam_button, False, False, 0)
-
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        run = QPushButton(self.words['run'])
+        run.clicked.connect(lambda _checked=False, g=game: self.run_game(g))
+        buttons.addWidget(run)
+        steam_button = QPushButton(self.words['remove_steam'] if self.in_steam(game)
+                                   else self.words['add_steam'])
+        steam_button.clicked.connect(lambda _checked=False, g=game: self.toggle_steam(g))
+        buttons.addWidget(steam_button)
         has_desktop = steam.desktop_entry_path(game.title_id).is_file()
-        desktop_button = Gtk.Button(label=self.words['remove_desktop'] if has_desktop
-                                    else self.words['add_desktop'])
-        desktop_button.connect('clicked', lambda _b, g=game: self.toggle_desktop(g))
-        buttons.pack_start(desktop_button, False, False, 0)
-        box.pack_start(buttons, False, False, 0)
+        desktop_button = QPushButton(self.words['remove_desktop'] if has_desktop
+                                     else self.words['add_desktop'])
+        desktop_button.clicked.connect(lambda _checked=False, g=game: self.toggle_desktop(g))
+        buttons.addWidget(desktop_button)
+        layout.addLayout(buttons)
+        layout.addStretch(1)
         return box
 
-    def make_icon(self, game: library.Game) -> Gtk.Widget:
+    def make_icon(self, game: library.Game) -> QWidget:
         """The game's icon, or its first letter when the icon cannot be read."""
-        if game.icon_path.is_file():
-            try:
-                # new_from_file() on a Gtk.Image only warns about a broken file and
-                # shows nothing; loading the pixbuf ourselves is what can fail.
-                pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(game.icon_path))
-                scaled = pixbuf.scale_simple(ICON_SIZE, ICON_SIZE,
-                                             GdkPixbuf.InterpType.BILINEAR)
-                image = Gtk.Image.new_from_pixbuf(scaled or pixbuf)
-                return image
-            except GLib.Error:
-                pass
-        frame = Gtk.Frame()
-        frame.set_size_request(ICON_SIZE, ICON_SIZE)
-        label = Gtk.Label(label=(game.name[:1] or '?').upper())
-        label.get_style_context().add_class('title-1')
-        frame.add(label)
+        image = QPixmap(str(game.icon_path)) if game.icon_path.is_file() else QPixmap()
+        if not image.isNull():
+            icon = QLabel()
+            icon.setPixmap(image.scaled(ICON_SIZE, ICON_SIZE, Qt.KeepAspectRatio,
+                                        Qt.SmoothTransformation))
+            icon.setFixedSize(QSize(ICON_SIZE, ICON_SIZE))
+            return icon
+        frame = QFrame()
+        frame.setFixedSize(QSize(ICON_SIZE, ICON_SIZE))
+        letter = QLabel((game.name[:1] or '?').upper())
+        letter_font = letter.font()
+        if letter_font.pointSize() > 0:
+            letter_font.setPointSize(letter_font.pointSize() * 2)
+            letter.setFont(letter_font)
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.addWidget(letter, 0, Qt.AlignCenter)
         return frame
 
     # ---- what a player does -----------------------------------------------------------
@@ -176,7 +182,7 @@ class LibraryPage(Gtk.Box):
         try:
             script = launch.write_script(game)
             entry = steam.shortcut_entry(game.name, str(script), str(game.path),
-                                        icon=str(game.icon_path) if game.icon_path.is_file() else '')
+                                         icon=str(game.icon_path) if game.icon_path.is_file() else '')
             steam.add_shortcut(entry)
         except launch.NoExecutable:
             dialogs.message(self, words['app_title'], words['no_executable'])

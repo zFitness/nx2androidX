@@ -16,6 +16,7 @@ is written while Steam is running: the player is asked to close it first.
 from __future__ import annotations
 
 import os
+import shlex
 import struct
 import subprocess
 import sys
@@ -244,7 +245,10 @@ def add_shortcut(entry: dict, path: Path | None = None) -> int:
     for key, old in list(shortcuts.items()):
         if isinstance(old, dict) and old.get('AppName') == name:
             del shortcuts[key]
-    shortcuts[str(len(shortcuts))] = entry
+    # the next free index: len() would reuse an index that a deletion left occupied,
+    # and the entry written there would silently replace another game's shortcut
+    next_key = max([int(k) for k in shortcuts if str(k).isdigit()] + [-1]) + 1
+    shortcuts[str(next_key)] = entry
     data['shortcuts'] = shortcuts
     write_shortcuts(path, data)
     return int(entry.get('appid') or 0)
@@ -283,7 +287,7 @@ def write_desktop_entry(title_id: str, name: str, script: Path, icon: Path | Non
         '[Desktop Entry]',
         'Type=Application',
         f'Name={name}',
-        f'Exec={script}',
+        f'Exec={shlex.quote(str(script))}',   # a library path with spaces stays one argument
         'Terminal=false',
         'Categories=Game;',
     ]

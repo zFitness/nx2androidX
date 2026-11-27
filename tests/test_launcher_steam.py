@@ -1,5 +1,6 @@
 """The Steam library: the file's format, and what a player adds to it."""
 import os
+import shlex
 import sys
 import tempfile
 import unittest
@@ -90,20 +91,37 @@ class Library(unittest.TestCase):
 
 
 class DesktopEntry(unittest.TestCase):
+    def entry_text(self, root, script):
+        """A written desktop entry's text, with the applications folder pointed at root."""
+        original = steam.APPLICATIONS_DIR
+        steam.APPLICATIONS_DIR = Path(root) / 'applications'
+        try:
+            path = steam.write_desktop_entry('0100000000010000', 'Mario', script)
+            return path.read_text(encoding='utf-8')
+        finally:
+            steam.APPLICATIONS_DIR = original
+
     def test_the_entry_names_the_game_and_its_script(self):
         with tempfile.TemporaryDirectory() as root:
             script = Path(root) / 'run.sh'
             script.write_text('#!/bin/sh\n', encoding='utf-8')
-            original = steam.APPLICATIONS_DIR
-            steam.APPLICATIONS_DIR = Path(root) / 'applications'
-            try:
-                path = steam.write_desktop_entry('0100000000010000', 'Mario', script)
-                text = path.read_text(encoding='utf-8')
-                self.assertIn('Name=Mario', text)
-                self.assertIn(f'Exec={script}', text)
-                self.assertIn('Type=Application', text)
-            finally:
-                steam.APPLICATIONS_DIR = original
+            text = self.entry_text(root, script)
+            self.assertIn('Name=Mario', text)
+            self.assertIn(f'Exec={script}', text)
+            self.assertIn('Type=Application', text)
+
+    def test_a_library_path_with_spaces_makes_a_working_exec(self):
+        """The Exec line is parsed as a shell command line: an unquoted path with spaces
+        would start something else (or nothing)."""
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root) / 'my games'
+            folder.mkdir()
+            script = folder / 'run.sh'
+            script.write_text('#!/bin/sh\n', encoding='utf-8')
+            text = self.entry_text(root, script)
+            exec_value = next(line for line in text.splitlines()
+                              if line.startswith('Exec=')).partition('=')[2]
+            self.assertEqual(shlex.split(exec_value), [str(script)])
 
     def test_the_entry_can_be_taken_away(self):
         with tempfile.TemporaryDirectory() as root:

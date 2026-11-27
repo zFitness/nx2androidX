@@ -33,6 +33,7 @@ class Script(unittest.TestCase):
             self.assertIn('Mario', text)
             self.assertIn('DM_ROOT="$dir"', text)
             self.assertIn('cd "$dir"', text)
+            self.assertIn('exec "$exe" "$dir"', text)   # main.c's argv[1] is the data root
             self.assertTrue(os.access(script, os.X_OK))
 
     def test_a_game_without_an_executable_has_no_script(self):

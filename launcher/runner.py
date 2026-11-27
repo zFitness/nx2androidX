@@ -35,6 +35,28 @@ def porter_root(setting: str = '') -> Path | None:
     return None
 
 
+def porter_env(pack_dir: Path | str | None = None) -> dict:
+    """The environment the porter's children run with. The launcher's line is a Linux host:
+    the host builds as a Linux ELF (NX2A_HOST_OS), and the machine is its own device — the
+    game's own decoder and compiler run here, the way the phone app's porter is its device
+    (NX2A_ON_DEVICE, on_android()'s override).  NX2A_PACK_DIR is where the finished pack
+    goes: the porter writes it there itself (an atomic rename that replaces an older pack
+    of the same game), so the launcher never moves a pack around.  LD_PRELOAD is dropped:
+    the desktop session's exec hook (DroidDeck's libddnatv-hook) redirects ELF executions
+    into its own cache and breaks the pipeline's prebuilt tools."""
+    env = dict(os.environ)
+    env['NX2A_HOST_OS'] = 'linux'
+    env['NX2A_ON_DEVICE'] = '1'
+    env['PYTHONIOENCODING'] = 'utf-8'
+    if pack_dir:
+        env['NX2A_PACK_DIR'] = str(pack_dir)
+        # the build work dir goes on the exec-capable disk too: the pipeline runs its
+        # prebuilt tools from here, and the game storage is mounted noexec (a run from
+        # there gets copied into DroidDeck's exec cache without its companion files)
+        env['NX2A_WORK'] = str(Path(pack_dir).with_name('work'))
+    return env
+
+
 def _event(line: str) -> dict:
     """One line of the stream: a JSON event, or a message."""
     text = line.strip()
@@ -51,8 +73,9 @@ class Porter:
     """One porter command.  The events come out of `events`, a queue the interface
     drains; the command ends with a `done` event carrying the exit code."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, pack_dir: Path | str | None = None):
         self.root = Path(root)
+        self.pack_dir = pack_dir
         self.events: queue.Queue = queue.Queue()
         self.process: subprocess.Popen | None = None
 
@@ -61,8 +84,7 @@ class Porter:
         return self.process is not None and self.process.poll() is None
 
     def start(self, args: list[str]) -> None:
-        env = dict(os.environ)
-        env['PYTHONIOENCODING'] = 'utf-8'
+        env = porter_env(self.pack_dir)
         env['PYTHONUNBUFFERED'] = '1'
         self.process = subprocess.Popen(
             [sys.executable, '-m', 'porter.phone_cli', *args],
@@ -95,13 +117,13 @@ class Porter:
             self.process.terminate()
 
 
-def run_text(root: Path, args: list[str], timeout: float | None = None) -> tuple[int, str, str]:
+def run_text(root: Path, args: list[str], timeout: float | None = None,
+             pack_dir: Path | str | None = None) -> tuple[int, str, str]:
     """One porter command whose output is plain text (the profile import says one line).
 
     Returns the exit code, what it printed and what it complained about.
     """
-    env = dict(os.environ)
-    env['PYTHONIOENCODING'] = 'utf-8'
+    env = porter_env(pack_dir)
     try:
         done = subprocess.run(
             [sys.executable, '-m', 'porter.phone_cli', *args],
@@ -115,12 +137,13 @@ def run_text(root: Path, args: list[str], timeout: float | None = None) -> tuple
     return done.returncode, done.stdout.strip(), done.stderr.strip()
 
 
-def run_json(root: Path, args: list[str], timeout: float | None = None) -> tuple[dict | None, int, str]:
+def run_json(root: Path, args: list[str], timeout: float | None = None,
+             pack_dir: Path | str | None = None) -> tuple[dict | None, int, str]:
     """One porter command that prints one JSON document (the game's card).
 
     Returns the document, the exit code and a message when there is no document to read.
     """
-    env = dict(os.environ)
+    env = porter_env(pack_dir)
     env['PYTHONIOENCODING'] = 'utf-8'
     try:
         done = subprocess.run(
@@ -142,3 +165,26 @@ def run_json(root: Path, args: list[str], timeout: float | None = None) -> tuple
     except ValueError:
         return None, done.returncode, 'the porter answered with something that is not JSON'
     return (document if isinstance(document, dict) else None), done.returncode, ''
+
+
+def _idle(callback, *args) -> None:
+    """Hand a result to the main loop: the interface may only be touched there."""
+    from gi.repository import GLib
+    GLib.idle_add(callback, *args)
+
+
+def run_json_async(root: Path, args: list[str], callback, timeout: float = 60,
+                   pack_dir: Path | str | None = None) -> None:
+    """One JSON command on a thread of its own, so it cannot freeze the interface:
+    (document, code, error) arrives on the idle loop."""
+    def work():
+        _idle(callback, *run_json(root, args, timeout=timeout, pack_dir=pack_dir))
+    threading.Thread(target=work, daemon=True).start()
+
+
+def run_text_async(root: Path, args: list[str], callback, timeout: float = 60,
+                   pack_dir: Path | str | None = None) -> None:
+    """The same for a plain-text command: (code, out, err) arrives on the idle loop."""
+    def work():
+        _idle(callback, *run_text(root, args, timeout=timeout, pack_dir=pack_dir))
+    threading.Thread(target=work, daemon=True).start()

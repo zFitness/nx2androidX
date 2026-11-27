@@ -5,22 +5,27 @@ holds, the options, the stages with their times, the log.  What differs is what 
 does not need (installing an APK, a device, the SD card, the package) and what a Linux
 machine does not need (a Vulkan driver in the pack: the driver comes from the system).
 
-The game file is looked at first, the port runs with its stages and its progress, and the
-pack it makes goes into the data directory — only when it ends well.
+The game file is looked at first, the port runs with its stages and its progress, and
+the pack it makes lands in the data directory — the porter writes it there itself
+(NX2A_PACK_DIR, an atomic rename), and only a port that ends well leaves a pack.
 """
 from __future__ import annotations
 
+import html
 import queue
 import time
 from pathlib import Path
 
-import gi
+from PySide6.QtCore import Qt, QUrl, QTimer
+from PySide6.QtGui import QDesktopServices, QFontDatabase
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
+                               QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
+                               QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+                               QWidget)
 
-gi.require_version('Gtk', '3.0')
-from gi.repository import GLib, Gtk   # noqa: E402
-
-from launcher import library, runner, settings   # noqa: E402
-from launcher.ui import dialogs, text            # noqa: E402
+from launcher import runner, settings
+from launcher.ui import clear_layout, dialogs
+from porter import config as porter_config
 
 GAME_LANGUAGES = [
     ('', 'English (default)'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'),
@@ -30,6 +35,8 @@ GAME_LANGUAGES = [
 ]
 STATUS_COLOUR = {'playable': '#2e7d32', 'wip': '#ef6c00', 'boots': '#ef6c00',
                  'experimental': '#ef6c00', 'not ported': '#757575'}
+CARD_COLOUR = {'name': '#202124', 'dim': '#757575', 'ok': '#2e7d32',
+               'warn': '#ef6c00', 'bad': '#c62828'}
 
 
 def hms(seconds) -> str:
@@ -41,31 +48,25 @@ def hms(seconds) -> str:
 
 def open_folder(path: Path) -> None:
     """Show a folder in the system's file manager."""
-    import subprocess
-    for command in (['xdg-open', str(path)], ['open', str(path)]):
-        try:
-            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return
-        except OSError:
-            continue
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
-class BuildPage(Gtk.Box):
+class BuildPage(QWidget):
     """The build page: the game file, the options, the stages and the log."""
 
     def __init__(self, app):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        super().__init__()
         self.app = app
         self.words = app.words
         self.porter: runner.Porter | None = None
         self.result: dict | None = None
         self.info: dict | None = None
-        self.staging: Path | None = None
         self.cancelled = False
         self.stages: dict = {}
         self.inspected = ''
+        self.inspecting = False
         self.started_at = 0.0
-        self.tick = 0
+        QVBoxLayout(self)   # the page's own column; build() fills it (again)
         self.build()
 
     # ---- the layout ------------------------------------------------------------------
@@ -73,178 +74,171 @@ class BuildPage(Gtk.Box):
     def build(self) -> None:
         words = self.words
 
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_vexpand(True)
-        self.add(scroller)
-
-        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        inner.set_margin_start(16)
-        inner.set_margin_end(16)
-        inner.set_margin_top(16)
-        inner.set_margin_bottom(16)
-        scroller.add(inner)
+        clear_layout(self.layout())   # a rebuild starts from an empty page
+        outer = self.layout()
+        scroller = QScrollArea()
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QScrollArea.NoFrame)
+        outer.addWidget(scroller)
+        inner = QWidget()
+        scroller.setWidget(inner)
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
         # The game file.
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        row.pack_start(Gtk.Label(label=words['build_game_file']), False, False, 0)
-        self.folder = Gtk.Entry()
-        self.folder.set_hexpand(True)
-        self.folder.connect('activate', lambda _entry: self.inspect())
-        self.folder.connect('focus-out-event', lambda _entry, _event: self.inspect_if_changed())
-        row.pack_start(self.folder, True, True, 0)
-        browse = Gtk.Button(label=words['browse'])
-        browse.connect('clicked', lambda _b: self.pick_folder())
-        row.pack_start(browse, False, False, 0)
-        inspect = Gtk.Button(label=words['build_inspect'])
-        inspect.connect('clicked', lambda _b: self.inspect())
-        row.pack_start(inspect, False, False, 0)
-        inner.pack_start(row, False, False, 0)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(QLabel(words['build_game_file']))
+        self.folder = QLineEdit()
+        self.folder.returnPressed.connect(self.inspect)
+        self.folder.editingFinished.connect(self.inspect_if_changed)
+        row.addWidget(self.folder, 1)
+        browse = QPushButton(words['browse'])
+        browse.clicked.connect(self.pick_folder)
+        row.addWidget(browse)
+        inspect = QPushButton(words['build_inspect'])
+        inspect.clicked.connect(self.inspect)
+        row.addWidget(inspect)
+        self.inspect_button = inspect
+        layout.addLayout(row)
 
-        hint = Gtk.Label(label=words['build_game_file_hint'])
-        hint.set_xalign(0)
-        hint.get_style_context().add_class('dim-label')
-        inner.pack_start(hint, False, False, 0)
+        hint = QLabel(words['build_game_file_hint'])
+        hint.setStyleSheet('color: #757575')
+        layout.addWidget(hint)
 
         # The card: what the game is.
-        self.card = Gtk.Label()
-        self.card.set_xalign(0)
-        self.card.set_line_wrap(True)
-        self.card.set_max_width_chars(70)
-        self.card.set_selectable(True)
-        inner.pack_start(self.card, False, False, 0)
+        self.card = QLabel()
+        self.card.setWordWrap(True)
+        self.card.setTextFormat(Qt.RichText)
+        self.card.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.card)
 
         # The options.
-        frame = Gtk.Frame(label=words['build_options'])
-        inner.pack_start(frame, False, False, 0)
-        grid = Gtk.Grid(column_spacing=10, row_spacing=4)
-        grid.set_margin_start(10)
-        grid.set_margin_end(10)
-        grid.set_margin_top(6)
-        grid.set_margin_bottom(6)
-        frame.add(grid)
+        options = QGroupBox(words['build_options'])
+        layout.addWidget(options)
+        grid = QGridLayout(options)
+        grid.setContentsMargins(10, 6, 10, 6)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(4)
 
-        self.name_label = Gtk.Label(label=words['opt_name'])
-        self.name_label.set_xalign(0)
-        self.name = Gtk.Entry()
-        self.name.set_hexpand(True)
-        self.language = Gtk.ComboBoxText()
-        for _, name in GAME_LANGUAGES:
-            self.language.append_text(name)
-        self.language.set_active(0)
-        self.headroom = Gtk.Entry()
-        self.headroom.set_hexpand(True)
-        self.headroom.set_placeholder_text(words['headroom_auto'])
-        self.font = Gtk.Entry()
-        self.font.set_hexpand(True)
-        self.fps60 = Gtk.CheckButton(label=words['opt_fps60'])
-        self.touch = Gtk.CheckButton(label=words['opt_touch'])
-        self.no_menu = Gtk.CheckButton(label=words['opt_no_menu'])
-        self.mt_replay = Gtk.CheckButton(label=words['opt_mt_replay'])
-        self.debug = Gtk.CheckButton(label=words['opt_debug'])
-        self.experimental = Gtk.CheckButton(label=words['opt_experimental'])
-
+        self.name_label = QLabel(words['opt_name'])
+        self.name = QLineEdit()
+        self.language = QComboBox()
+        for _code, language_name in GAME_LANGUAGES:
+            self.language.addItem(language_name)
+        self.language.setCurrentIndex(0)
+        self.headroom = QLineEdit()
+        self.headroom.setPlaceholderText(words['headroom_auto'])
+        self.font = QLineEdit()
         for index, (label, widget) in enumerate((
-                (self.name_label, self.name), (Gtk.Label(label=words['opt_language']), self.language),
-                (Gtk.Label(label=words['opt_headroom']), self.headroom),
-                (Gtk.Label(label=words['opt_font']), self.font))):
-            if isinstance(label, Gtk.Label):
-                label.set_xalign(0)
-            grid.attach(label, 0, index, 1, 1)
-            grid.attach(widget, 1, index, 1, 1)
-        font_browse = Gtk.Button(label=words['browse'])
-        font_browse.connect('clicked', lambda _b: self.pick_file(self.font))
-        grid.attach(font_browse, 2, 3, 1, 1)
+                (self.name_label, self.name), (QLabel(words['opt_language']), self.language),
+                (QLabel(words['opt_headroom']), self.headroom),
+                (QLabel(words['opt_font']), self.font))):
+            grid.addWidget(label, index, 0)
+            grid.addWidget(widget, index, 1)
+        font_browse = QPushButton(words['browse'])
+        font_browse.clicked.connect(self.pick_font)
+        grid.addWidget(font_browse, 3, 2)
+        self.fps60 = QCheckBox(words['opt_fps60'])
+        self.touch = QCheckBox(words['opt_touch'])
+        self.no_menu = QCheckBox(words['opt_no_menu'])
+        self.mt_replay = QCheckBox(words['opt_mt_replay'])
+        self.debug = QCheckBox(words['opt_debug'])
+        self.experimental = QCheckBox(words['opt_experimental'])
+        self.experimental.toggled.connect(lambda _on: self.update_port_button())
         for index, check in enumerate((self.fps60, self.touch, self.no_menu, self.mt_replay,
                                        self.debug, self.experimental), start=4):
-            grid.attach(check, 1, index, 1, 1)
-        headroom_hint = Gtk.Label(label=words['opt_headroom_hint'])
-        headroom_hint.set_xalign(0)
-        headroom_hint.set_line_wrap(True)
-        headroom_hint.set_max_width_chars(60)
-        grid.attach(headroom_hint, 1, 10, 2, 1)
+            grid.addWidget(check, index, 1)
+        headroom_hint = QLabel(words['opt_headroom_hint'])
+        headroom_hint.setWordWrap(True)
+        grid.addWidget(headroom_hint, 10, 1, 1, 2)
 
         # The buttons and the progress.
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.start_button = Gtk.Button(label=words['build_start'])
-        self.start_button.set_sensitive(False)
-        self.start_button.connect('clicked', lambda _b: self.start_build())
-        buttons.pack_start(self.start_button, False, False, 0)
-        self.cancel_button = Gtk.Button(label=words['build_cancel'])
-        self.cancel_button.set_sensitive(False)
-        self.cancel_button.connect('clicked', lambda _b: self.cancel())
-        buttons.pack_start(self.cancel_button, False, False, 0)
-        self.open_button = Gtk.Button(label=words['build_open'])
-        self.open_button.set_sensitive(False)
-        self.open_button.connect('clicked', lambda _b: self.open_out())
-        buttons.pack_end(self.open_button, False, False, 0)
-        inner.pack_start(buttons, False, False, 0)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.start_button = QPushButton(words['build_start'])
+        self.start_button.setEnabled(False)
+        self.start_button.clicked.connect(self.start_build)
+        buttons.addWidget(self.start_button)
+        self.cancel_button = QPushButton(words['build_cancel'])
+        self.cancel_button.setEnabled(False)
+        self.cancel_button.clicked.connect(self.cancel)
+        buttons.addWidget(self.cancel_button)
+        buttons.addStretch(1)
+        self.open_button = QPushButton(words['build_open'])
+        self.open_button.setEnabled(False)
+        self.open_button.clicked.connect(self.open_out)
+        buttons.addWidget(self.open_button)
+        layout.addLayout(buttons)
 
-        self.step = Gtk.Label(label='')
-        self.step.set_xalign(0)
-        inner.pack_start(self.step, False, False, 0)
-        self.progress = Gtk.ProgressBar()
-        inner.pack_start(self.progress, False, False, 0)
+        self.step = QLabel('')
+        layout.addWidget(self.step)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        layout.addWidget(self.progress)
 
         # The stages and the log.
-        paned = Gtk.Paned(orientation=Gtk.Orientation.VERTICAL)
-        paned.set_vexpand(True)
-        inner.pack_start(paned, True, True, 0)
-
-        stages = Gtk.Frame(label=words['build_stages'])
-        self.stage_store = Gtk.ListStore(str, str, str, str)
-        self.stage_view = Gtk.TreeView(model=self.stage_store)
-        for index, heading in enumerate(('', words['build_stages'], words['build_result'],
-                                         words['build_time'])):
-            column = Gtk.TreeViewColumn(heading, Gtk.CellRendererText(), text=index)
-            column.set_resizable(True)
-            self.stage_view.append_column(column)
-        stage_scroller = Gtk.ScrolledWindow()
-        stage_scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        stage_scroller.add(self.stage_view)
-        stages.add(stage_scroller)
-        paned.pack1(stages, True, False)
-
-        log = Gtk.Frame(label=words['build_log'])
-        self.log = Gtk.TextView()
-        self.log.set_editable(False)
-        self.log.set_monospace(True)
-        log_scroller = Gtk.ScrolledWindow()
-        log_scroller.add(self.log)
-        log.add(log_scroller)
-        paned.pack2(log, True, False)
+        paned = QSplitter(Qt.Vertical)
+        stages = QGroupBox(words['build_stages'])
+        stages_layout = QVBoxLayout(stages)
+        stages_layout.setContentsMargins(4, 4, 4, 4)
+        self.stage_view = QTreeWidget()
+        self.stage_view.setColumnCount(4)
+        self.stage_view.setHeaderLabels(['', words['build_stages'], words['build_result'],
+                                         words['build_time']])
+        self.stage_view.setRootIsDecorated(False)
+        stages_layout.addWidget(self.stage_view)
+        paned.addWidget(stages)
+        log = QGroupBox(words['build_log'])
+        log_layout = QVBoxLayout(log)
+        log_layout.setContentsMargins(4, 4, 4, 4)
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
+        self.log.setMaximumBlockCount(20000)
+        log_layout.addWidget(self.log)
+        paned.addWidget(log)
+        layout.addWidget(paned, 1)
 
         self.set_card([[(words['build_game_file_hint'], 'dim')]])
-        self.tick = GLib.timeout_add(1000, self.on_tick)
+        # The porter's events come in on a queue the interface drains; the tick keeps
+        # the running stage's time (both run only while their work is on).
+        self.poll_timer = QTimer(self)
+        self.poll_timer.setInterval(100)
+        self.poll_timer.timeout.connect(self.poll)
+        self.tick = QTimer(self)
+        self.tick.setInterval(1000)
+        self.tick.timeout.connect(self.on_tick)
+        self.tick.start()
 
     def rebuild(self) -> None:
         """The page is built again (the settings changed)."""
+        self.words = self.app.words   # the language may have changed with the settings
         self.stop_porter()
-        if self.tick:
-            GLib.source_remove(self.tick)
-            self.tick = 0
-        for child in self.get_children():
-            self.remove(child)
+        for timer in (self.poll_timer, self.tick):
+            timer.stop()
+            timer.deleteLater()
         self.result = None
         self.info = None
-        self.staging = None
         self.stages.clear()
+        self.inspected = ''
+        self.inspecting = False
         self.build()
 
     # ---- the card ---------------------------------------------------------------------
 
     def set_card(self, lines: list[list[tuple[str, str]]]) -> None:
-        """The card: what the game is."""
-        colours = {'name': '#202124', 'dim': '#757575', 'ok': '#2e7d32',
-                   'warn': '#ef6c00', 'bad': '#c62828'}
+        """The card: what the game is.  Rich text on a label; the tags are the same
+        ones the desktop tool colours with."""
         markup = []
         for parts in lines:
             for content, tag in parts:
-                colour = colours.get(tag, '#202124')
-                weight = ' bold' if tag == 'name' else ''
-                markup.append(f'<span color="{colour}"{weight}>{GLib.markup_escape_text(content)}</span>')
-            markup.append('\n')     # Pango's markup breaks a line with a newline, not <br>
-        self.card.set_markup(''.join(markup))
+                colour = CARD_COLOUR.get(tag, '#202124')
+                weight = ' font-weight: bold;' if tag == 'name' else ''
+                markup.append(f'<span style="color:{colour};{weight}">{html.escape(content)}</span>')
+            markup.append('<br>')
+        self.card.setText(''.join(markup))
 
     # ---- what a player picks ----------------------------------------------------------
 
@@ -253,14 +247,14 @@ class BuildPage(Gtk.Box):
                                      [('Switch games', '*.nsp *.xci *.nsz *.xcz'),
                                       ('All files', '*.*')])
         if chosen:
-            self.folder.set_text(chosen)
+            self.folder.setText(chosen)
             self.inspect()
 
-    def pick_file(self, entry: Gtk.Entry) -> None:
+    def pick_font(self) -> None:
         chosen = dialogs.choose_file(self, self.words['opt_font'], self.words,
                                      [('TrueType font', '*.ttf'), ('All files', '*.*')])
         if chosen:
-            entry.set_text(chosen)
+            self.font.setText(chosen)
 
     def porter_root(self) -> Path | None:
         return runner.porter_root(str(self.app.settings.get('porter_dir') or ''))
@@ -269,13 +263,13 @@ class BuildPage(Gtk.Box):
 
     def inspect_if_changed(self) -> None:
         """The path was edited: read the game again when it is a different one."""
-        folder = self.folder.get_text().strip()
+        folder = self.folder.text().strip()
         if folder != self.inspected:
             self.inspect()
 
     def inspect(self) -> None:
         words = self.words
-        folder = self.folder.get_text().strip()
+        folder = self.folder.text().strip()
         self.info = None
         self.inspected = folder
         self.update_port_button()
@@ -284,15 +278,34 @@ class BuildPage(Gtk.Box):
         if not Path(folder).exists():
             self.set_card([[(words['card_not_found'].format(path=folder), 'bad')]])
             return
-        self.set_card([[(words['card_reading'], 'dim')]])
         root = self.porter_root()
         if not root:
             self.set_card([[(words['build_no_porter'].format(path=folder), 'bad')]])
             return
-        document, code, error = runner.run_json(root, ['inspect', folder, '--json'])
+        if self.inspecting:
+            return   # one look at a time; a stale answer re-reads what the entry shows
+        self.set_card([[(words['card_reading'], 'dim')]])
+        self.inspecting = True
+        self.inspect_button.setEnabled(False)
+        runner.run_json_async(root, ['inspect', folder, '--json'],
+                              lambda document, code, error: self.inspect_done(folder, document, code, error))
+
+    def inspect_done(self, folder: str, document: dict | None, code: int, error: str) -> None:
+        """The inspect came back (on the interface's loop).  A stale one — the entry
+        shows a different path by now — is thrown away and the shown path is read
+        instead."""
+        self.inspecting = False
+        self.inspect_button.setEnabled(True)
+        if folder != self.folder.text().strip():
+            QTimer.singleShot(0, self.inspect_if_changed)
+            return
+        words = self.words
         if document is None:
             message = error or words['card_no_game']
             self.set_card([[(words['card_error'].format(message=message), 'bad')]])
+            return
+        if document.get('error'):   # the porter answers errors as JSON on stdout, exit 2
+            self.set_card([[(words['card_error'].format(message=str(document['error'])), 'bad')]])
             return
         self.info = document
         self.set_card(self.card_lines(document))
@@ -302,8 +315,8 @@ class BuildPage(Gtk.Box):
     def set_name_label(self, game_name: str) -> None:
         """The name row says which name the game carries by itself."""
         words = self.words
-        self.name_label.set_text(words['opt_name_with'].format(name=game_name) if game_name
-                                 else words['opt_name'])
+        self.name_label.setText(words['opt_name_with'].format(name=game_name) if game_name
+                                else words['opt_name'])
 
     def card_lines(self, info: dict) -> list[list[tuple[str, str]]]:
         """The card's lines, the way the desktop tool writes them."""
@@ -332,76 +345,87 @@ class BuildPage(Gtk.Box):
         return lines
 
     def update_port_button(self) -> None:
-        """The port button: a game that can be ported, or one the player wants to try."""
+        """The port button: a game that can be ported, or one the player wants to try.
+        Never lit while a build is running (a second porter would orphan the first)."""
         info = self.info or {}
         ready = bool(info.get('supported')
-                     or (info.get('experimental') and self.experimental.get_active()))
-        self.start_button.set_sensitive(ready and bool(self.porter_root()))
+                     or (info.get('experimental') and self.experimental.isChecked()))
+        running = self.porter is not None and self.porter.running
+        self.start_button.setEnabled(ready and bool(self.porter_root()) and not running)
 
     # ---- the build --------------------------------------------------------------------
 
     def start_build(self) -> None:
         words = self.words
-        folder = self.folder.get_text().strip()
+        if self.porter is not None and self.porter.running:
+            return   # a build is running; editing the game path must not orphan it
+        folder = self.folder.text().strip()
         if not folder:
             dialogs.message(self, words['app_title'], words['build_need_file'])
             return
         if not settings.library_set(self.app.settings):
             dialogs.message(self, words['app_title'], words['build_need_data_dir'])
             return
+        # The keys are the porter's own setting (shared with the desktop tool and the
+        # CLI); without them the port would fail deep inside the pipeline.
+        if not porter_config.load().get('keys'):
+            dialogs.message(self, words['app_title'], words['build_need_keys'])
+            self.app.goto_settings()
+            return
         root = self.porter_root()
         if not root:
             dialogs.message(self, words['app_title'], words['build_no_porter'].format(path=folder),
                             'error')
             return
-        # The pack is built in a staging folder; only a build that ends well moves into
-        # the data directory, so a failed one leaves nothing behind.
+        # --app: the app's mode — the pack is the only artifact (no APK), it carries the
+        # host, the icon and the gamepad's theme.  The porter writes it straight into the
+        # library (NX2A_PACK_DIR): an atomic rename that replaces an older pack of the
+        # same game, so a failed or cancelled build leaves nothing half-made behind.
         library_dir = settings.library_dir(self.app.settings)
-        title_id = str((self.info or {}).get('title_id') or '').strip().upper()
-        self.staging = library.staging_dir(library_dir, title_id or Path(folder).stem)
-        library.discard(self.staging)
-        args = ['port', folder, '--progress', 'json', '-o', str(self.staging)]
-        name = self.name.get_text().strip()
+        args = ['port', folder, '--progress', 'json', '--app']
+        name = self.name.text().strip()
         if name:
             args += ['--app-name', name]
-        language = GAME_LANGUAGES[self.language.get_active()][0] if self.language.get_active() >= 0 else ''
+        index = self.language.currentIndex()
+        language = GAME_LANGUAGES[index][0] if index >= 0 else ''
         if language:
             args += ['--language', language]
         headroom = self.headroom_value()
         if headroom is not None:
             args += ['--alias-headroom', str(headroom)]
-        if self.font.get_text().strip():
-            args += ['--shared-font', self.font.get_text().strip()]
-        if self.fps60.get_active():
+        if self.font.text().strip():
+            args += ['--shared-font', self.font.text().strip()]
+        if self.fps60.isChecked():
             args.append('--fps60')
-        if self.touch.get_active():
+        if self.touch.isChecked():
             args.append('--touch')
-        if self.no_menu.get_active():
+        if self.no_menu.isChecked():
             args.append('--no-menu-button')
-        if self.mt_replay.get_active():
+        if self.mt_replay.isChecked():
             args.append('--mt-replay')
-        if self.debug.get_active():
+        if self.debug.isChecked():
             args.append('--debug')
-        if self.experimental.get_active() and not (self.info or {}).get('supported'):
+        if self.experimental.isChecked() and not (self.info or {}).get('supported'):
             args.append('--experimental')
         self.result = None
         self.cancelled = False
         self.started_at = time.time()
         self.clear_stages()
-        self.log.get_buffer().set_text('')
-        self.progress.set_fraction(0)
-        self.progress.set_show_text(False)
-        self.step.set_text(words['build_running'])
-        self.start_button.set_sensitive(False)
-        self.cancel_button.set_sensitive(True)
-        self.open_button.set_sensitive(False)
-        self.porter = runner.Porter(root)
+        self.log.clear()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.step.setText(words['build_running'])
+        self.start_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.open_button.setEnabled(False)
+        self.porter = runner.Porter(root, library_dir)
         self.porter.start(args)
-        self.poll()
+        self.poll_timer.start()
 
     def headroom_value(self) -> int | None:
         """The extra address space in GB; None when it is left on automatic."""
-        raw = self.headroom.get_text().strip()
+        raw = self.headroom.text().strip()
         if not raw or raw == str(self.words['headroom_auto']):
             return None
         try:
@@ -416,6 +440,7 @@ class BuildPage(Gtk.Box):
             self.porter.cancel()
 
     def stop_porter(self) -> None:
+        self.poll_timer.stop()
         if self.porter:
             self.porter.cancel()
             self.porter = None
@@ -424,31 +449,35 @@ class BuildPage(Gtk.Box):
         if self.result and self.result.get('data'):
             open_folder(Path(str(self.result['data'])))
 
-    def poll(self) -> bool:
-        """Take the events that came in and show them."""
+    def poll(self) -> None:
+        """Take the events that came in and show them.
+
+        A timer drives this while a porter runs (it stops when the porter is gone):
+        each pass drains the queue until it is empty, and a `done` event ends the
+        build."""
         if self.porter is None:
-            return False
+            return
         while True:
             try:
                 event = self.porter.events.get_nowait()
             except queue.Empty:
-                break
+                return
             self.handle(event)
             if event.get('ev') == runner.DONE:
                 self.finish(int(event.get('code') or 0))
-                return False
-        return GLib.timeout_add(80, self.poll)
+                return
 
     # ---- the stages -------------------------------------------------------------------
 
     def clear_stages(self) -> None:
         self.stages.clear()
-        self.stage_store.clear()
+        self.stage_view.clear()
 
     def stage_item(self, key, name: str):
         item = self.stages.get(key)
         if item is None:
-            item = self.stage_store.append(('▶', name, '', ''))
+            item = QTreeWidgetItem(['▶', name, '', ''])
+            self.stage_view.addTopLevelItem(item)
             self.stages[key] = item
         return item
 
@@ -456,13 +485,13 @@ class BuildPage(Gtk.Box):
         kind = event.get('ev')
         if kind == 'stage':
             item = self.stage_item(event.get('k'), str(event.get('name') or ''))
-            self.stage_store.set_value(item, 0, '▶')
-            self.step.set_text(f"[{event.get('k')}/{event.get('n')}] {event.get('name')}"
-                               + (f" · {event['step']}" if event.get('step') else ''))
-            self.progress.set_pulse()
+            item.setText(0, '▶')
+            self.step.setText(f"[{event.get('k')}/{event.get('n')}] {event.get('name')}"
+                              + (f" · {event['step']}" if event.get('step') else ''))
+            self.progress.setRange(0, 0)   # no number yet: the busy indicator
         elif kind == 'step':
-            self.step.set_text(f"{event.get('name')}"
-                               + (f" · {event.get('step')}" if event.get('step') else ''))
+            self.step.setText(f"{event.get('name')}"
+                              + (f" · {event.get('step')}" if event.get('step') else ''))
         elif kind == 'progress':
             done, total = event.get('done'), event.get('total')
             count = ''
@@ -470,71 +499,59 @@ class BuildPage(Gtk.Box):
                 count = f'{done:,}' + (f' / {total:,}' if total else '')
                 if event.get('unit'):
                     count += f' {event["unit"]}'
-            self.step.set_text(f"{event.get('name')}"
-                               + (f" · {event.get('step')}" if event.get('step') else '')
-                               + (f' · {count}' if count else ''))
+            self.step.setText(f"{event.get('name')}"
+                              + (f" · {event.get('step')}" if event.get('step') else '')
+                              + (f' · {count}' if count else ''))
             if event.get('frac') is not None:
-                self.progress.set_fraction(max(0.0, min(1.0, float(event['frac']))))
-                self.progress.set_show_text(True)
+                self.progress.setRange(0, 100)
+                self.progress.setValue(round(max(0.0, min(1.0, float(event['frac']))) * 100))
+                self.progress.setTextVisible(True)
+            else:
+                self.progress.setRange(0, 0)
         elif kind == 'stage_end':
             item = self.stage_item(event.get('k'), str(event.get('name') or ''))
             ok = event.get('ok', True)
-            self.stage_store.set_value(item, 0, '✓' if ok else '✗')
-            self.stage_store.set_value(item, 2, str(event.get('summary') or ''))
-            self.stage_store.set_value(item, 3, hms(event.get('elapsed')))
-            self.progress.set_fraction(1.0 if ok else 0.0)
-            self.progress.set_show_text(True)
+            item.setText(0, '✓' if ok else '✗')
+            item.setText(2, str(event.get('summary') or ''))
+            item.setText(3, hms(event.get('elapsed')))
+            self.progress.setRange(0, 100)
+            self.progress.setValue(100 if ok else 0)
+            self.progress.setTextVisible(True)
         elif kind == 'say':
             self.append(str(event.get('msg') or ''))
         elif kind == 'result':
             self.result = event
 
     def append(self, message: str) -> None:
-        buffer = self.log.get_buffer()
-        buffer.insert(buffer.get_end_iter(), message + '\n')
-        self.log.scroll_mark_onscreen(buffer.get_end_iter())
+        self.log.appendPlainText(message)
+        bar = self.log.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
-    def on_tick(self) -> bool:
+    def on_tick(self) -> None:
         """The running stage's time."""
-        for item in self.stage_store:
-            if item[0] == '▶':
-                item[3] = hms(time.time() - self.started_at)
-                break
-        return True
-
-    def discard_staging(self) -> None:
-        """A build that did not end well leaves nothing behind."""
-        if self.staging:
-            library.discard(self.staging)
-            self.staging = None
+        for index in range(self.stage_view.topLevelItemCount()):
+            item = self.stage_view.topLevelItem(index)
+            if item.text(0) == '▶':
+                item.setText(3, hms(time.time() - self.started_at))
+                return
 
     # ---- the end ----------------------------------------------------------------------
 
     def finish(self, code: int) -> None:
         words = self.words
         self.porter = None
-        self.start_button.set_sensitive(True)
-        self.cancel_button.set_sensitive(False)
+        self.poll_timer.stop()
+        self.start_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
         if self.cancelled or code == 130:
-            self.step.set_text(words['build_cancelled'])
-            self.discard_staging()
+            self.step.setText(words['build_cancelled'])
             return
         if code != 0:
-            self.step.set_text(words['build_failed'])
-            self.discard_staging()
+            self.step.setText(words['build_failed'])
             return
-        data = (self.result or {}).get('data')
-        if not data:
-            self.step.set_text(words['build_failed'])
-            self.discard_staging()
+        if not (self.result or {}).get('data'):
+            self.step.setText(words['build_failed'])
             return
-        try:
-            library.install(Path(str(data)), settings.library_dir(self.app.settings))
-        except (OSError, ValueError) as error:
-            self.step.set_text(words['build_failed'])
-            self.append(f'[RED] {error}')
-            self.discard_staging()
-            return
-        self.step.set_text(words['build_done'])
-        self.open_button.set_sensitive(True)
+        self.step.setText(words['build_done'])
+        self.open_button.setEnabled(True)
         self.app.refresh_library()

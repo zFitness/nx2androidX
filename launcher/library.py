@@ -5,20 +5,19 @@ executable the Linux runtime builds for it.  The pack is the truth; there is no 
 beside it, so a game the player deleted by hand is simply gone from the library and a
 pack that was copied in from elsewhere shows up on its own.
 
-Only a build that finished well lands here: the pipeline writes into a staging folder
-and the pack is moved into the data directory when it is done.
+The pack is born here: the porter writes it straight into its final place (the porter
+env var NX2A_PACK_DIR, an atomic rename), so what appears in the data directory is
+always a whole pack, never a half-built one.
 """
 from __future__ import annotations
 
 import json
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 MANIFEST = 'nx2a-data.json'
 ICON = 'icon.png'
-STAGING = '.building'      # where a build writes before it is finished
 WRAPPER = 'run.sh'         # the script the launcher writes; not the game itself
 
 
@@ -104,40 +103,3 @@ def scan(library: Path) -> list[Game]:
             games.append(game)
     games.sort(key=lambda g: (g.name.lower(), g.version))
     return games
-
-
-def staging_dir(library: Path, title_id: str) -> Path:
-    """Where a build writes before it is finished."""
-    return library / STAGING / title_id
-
-
-def install(pack: Path, library: Path) -> Path:
-    """Put a built data pack into the library, as <library>/<title id>/.
-
-    The pack is moved when it can be (a rename on the same filesystem, which is instant
-    even for tens of gigabytes); otherwise it is copied.
-    """
-    game = game_of(pack)
-    if not game:
-        raise ValueError(f'{pack}: not a data pack (no {MANIFEST} in it)')
-    library.mkdir(parents=True, exist_ok=True)
-    target = library / game.title_id
-    if target.exists():
-        shutil.rmtree(target)
-    try:
-        os.replace(pack, target)
-    except OSError:
-        shutil.copytree(pack, target)
-        shutil.rmtree(pack, ignore_errors=True)
-    return target
-
-
-def discard(staging: Path) -> None:
-    """Throw a build's leftovers away: a failed or cancelled build leaves nothing."""
-    shutil.rmtree(staging, ignore_errors=True)
-    parent = staging.parent
-    try:
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-    except OSError:
-        pass

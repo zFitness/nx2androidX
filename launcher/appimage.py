@@ -20,6 +20,21 @@ def inside_appimage() -> bool:
     return bool(os.environ.get('APPIMAGE'))
 
 
+ENV_GAMESCOPE = 'GAMESCOPE_WAYLAND_DISPLAY'   # the nested display a gamescope container gives its windows
+
+
+def wants_frame() -> bool:
+    """Whether the window draws its own title bar.
+
+    A machine may run every AppImage inside a gamescope container (the DroidDeck
+    tablet does): the container hands the window its single frame, and an own
+    decoration on top of it is the second title bar the player sees.  There the
+    maximize fills the nested display, which is the whole visible screen.  On an
+    ordinary desktop nothing frames the window, so it keeps its own decoration.
+    """
+    return not bool(os.environ.get(ENV_GAMESCOPE))
+
+
 def _source(repo: Path) -> Path:
     return repo / 'nxnative'
 

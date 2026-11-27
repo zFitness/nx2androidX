@@ -58,5 +58,23 @@ class Settings(unittest.TestCase):
         self.assertTrue(settings.library_set({'library': '/tmp/games'}))
 
 
+class SecondInstance(unittest.TestCase):
+    """One launcher at a time: a second click must not open a second window (inside the
+    tablet's gamescope container it would only pile another shell around the first)."""
+
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory()
+        self.addCleanup(self.folder.cleanup)
+        self.original = settings.CONFIG_DIR
+        settings.CONFIG_DIR = Path(self.folder.name) / 'nx2a'
+        self.addCleanup(lambda: setattr(settings, 'CONFIG_DIR', self.original))
+
+    def test_a_second_instance_is_refused(self):
+        from launcher.__main__ import single_instance
+        self.assertTrue(single_instance())
+        self.assertFalse(single_instance())
+        self.assertFalse(single_instance())
+
+
 if __name__ == '__main__':
     unittest.main()
