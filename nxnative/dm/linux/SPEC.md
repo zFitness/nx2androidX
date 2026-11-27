@@ -200,106 +200,70 @@ CreateThread(0x1006)] 窗口内的代码。崩溃锚点：pc main+0x65a084 ← 0
 block 字段注册被跳过/失败的分支条件（注意：这与「默认堆未注册」是同一
 观察的两面，谁因谁果由 A 裁定）。
 
-### 3.3.4 A 阶段记录（2026-11-27，经外部评审修正后重写）
+### 3.3.4 A 阶段：测量记录（2026-11-27，多轮评审修正后重写，只保留有测量支撑的内容）
 
-**已撤回的结论**：本轮曾提出「v2 emit_tp 形状错误（应加载 dm_slots[2]）」并实施
-4590fa71 + c3d8f9d1——**该结论错误，两次修改为回归，已回退**（c9ba888c）。层级
-混淆：bionic 的 `tpidr_el0[2]`（TLS_SLOT_APP）= 宿主槽位表地址 b，不是宿主表中
-的 KTLS 值；android 的 `emit_tp`（`mrs; ldr [tp,#16]`）加载的正是 b，key page
-偏移（key*8）索引 b 本身。linux v2 的 `addi #slot_off`（base = &dm_slots[0]）
-与之完全同构：dm_slots[] 就是 b 的复刻（[2]=KTLS 区、[3]=TLR，镜像 Horizon
-tpidr_el0 槽位布局），sdk+0xe02e6c 跳板的 [base+0x18]→[tlr+0x1f8] 链在 android
-上本就是设计语义。回归曾使崩溃变为 `pc=0 lr=sdk+0xe02e90`（blr 0），回退后原
-崩溃如期复现（反向确认）。**不要给游戏 TLS 额外填 dm_gate 等宿主字段。**
+**已撤回的结论**（被后续测量或评审否定，不再作为依据）：
+- 「v2 emit_tp 形状错误、应加载 dm_slots[2]」——层级混淆（bionic 的
+  `tpidr_el0[2]` = 宿主槽位表地址 b，不是表内的 KTLS 值）；4590fa71/c3d8f9d1
+  为回归，已回退（c9ba888c）。`addi #slot_off`（base = &dm_slots[0]）与
+  android 同构，是正确形式。
+- 「GetFreeSize 虚调用返回 <0x121」——返回值从未被直接记录。
+- 「尺寸=0 → CreateBlock 失败 → 崩溃」——被直接测量否定：linux 上该
+  CreateBlock(size=0) 返回了合法块。
+- 「调用后失败实锤」——0xe851e4 门的 oLR = 0xe85170（≠ 0xe851e0 的返回址
+  0xe851e4），提示那是绕过 CreateBlock 的直写路径。
+- 「Android 缓存标志=1 / Linux=0」「对象注册表」——无测量支持；调用者的
+  `[sp+48]`（返回结构里的标志）与被调用者自读的 `[x21+48]` 是两回事。
 
-**寻址契约（三方一致，已指令级验证）**：站点 `[tp+slot_off+key*8]`（key page）≡
-宿主 `dm_tsd_set/get` = `dm_slots[k]` ≡ tsd_check 的 `[tp+slot_off+key*8]`。
-install_tpbase 现打印 site[0] 烘焙字（0x91012063 = addi x3,x3,#72 ✓）。
+**寻址契约**（三方一致，指令级验证）：站点 `[tp+slot_off+key*8]` ≡ 宿主
+`dm_tsd_set/get` = `dm_slots[k]` ≡ tsd_check；install_tpbase 打印 site[0]
+烘焙字（0x91012063 = addi x3,x3,#72）。
 
-**OBS 双平台取证结果**（patches.py 7 门 + hle_obstrace.c/DM_OBSTRACE；两平台
-各跑一次，同链寄存器日志）：前 8 条 CreateBlock 同构（同尺寸、同堆基址）；
-**第 9 条起堆内偏移漂移**（linux 0x1ef0 vs android 0x2870）——布局决策在很早
-处已分叉。linux 尾部：`CreateBlock(0=自适应, …, heap+0x2628000)` 的
-post-create-block x0=0；随后的引擎 560B 分配 x1（管理器 block）=0 → new 返回
-null → 崩溃。android 同窗：`CreateBlock(0x180000)/CreateBlock(0x46000)/
-CreateBlock(0x51400000≈1.29GB)` 逐个成功，引擎分配 x1 = 0x74a4790460（管理器
-block 非零）→ 成功。
+**仪器**：
+- OBS 观察门（游戏 patches.py，main build 43ae51ee…）：1/2 引擎分配入参/
+  返回、3/4 构造函数入口与首调用后、5 heap-ctx 查找入口、6 CreateBlock 入口、
+  7 0xe851e4、8 0x44490c（x2≠0 时被 cbnz 跳过，不触发）、12 查询 0xd8e614
+  入口、13 查询返回（读调用者栈 [sp+0x28]/[sp+0x30]）、14 直零路径 0xe8380c、
+  15 0xe83834 CreateBlock 返回、16 0xe837e4 首调用返回。门只能落在函数入口、
+  bl 之后、或 x9–x17 未读的调用前（bl/blr/adrp 等不可重定位指令不能承载门）。
+- 宿主 hle_obstrace.c（DM_OBSTRACE）：x0–x4、x8、NZCV，以及从 _dm_gate 栈帧
+  恢复的**游戏原始 caller LR**（regs[101]）与 FP（regs[100]）——跳板的
+  `stp x29,x30,[sp,#-16]` 对落在 regs+800/+808，guest sp = regs+816。
+  注意：entry.S 实际恢复 x9–x17 与 NZCV/FPSR/FPCR，放置规则里「x9–x17」的
+  顾虑已过时（尚未放宽规则）。
+- DM_TRACESVC（svc 进出、x0–x5、QueryMemory 应答结构）、DM_TRACETLS（仅宿主
+  侧 dm_tsd_set；guest 的 msr 改写是内联 STR，不可见）、DM_HEAPTRACE。
+- 双平台基线：app 的 on-device NDK 构建独立 android dmhost，平板裸跑同版本
+  同档案的 android 模块（DM_TARGET=android，产物目录 patched_v65536_android）。
 
-**注意（评审修正，未定案）**：0xe851e4（`str x0,[x19]`）存在**绕过 0xe851e0
-CreateBlock 调用的前驱**（0xe851bc/0xe851c4 的 `mov x0,xzr; b 0xe851e4`：候选
-块表查无合适项时直接写 0）——post x0=0 不能区分「调用后失败」与「未调用直接
-写 0」。「GetFreeSize 返回不足 0x121」为**假设**（0x44493c 虚调用的返回值无
-直接记录）。已加 4 个 OBS 门（main build 43ae51ee…）：8=0x44493c（虚调用前：
-接收对象 x0、实参 w1、目标 x8）、9=0x444940（虚调用返回 x0）、10=0x851e0
-（CreateBlock 前驱，区分两路径）、11=0x85190（候选块表逐项 x25）。
-数据配对按（线程, 调用位置），不按日志顺序。
+**测量事实**（同调用点，线程 0x1001；oLR = 游戏原始 caller）：
 
-**CreateBlock 参数映射勘误（2026-11-27 第二次修正）**：按 0xe851c8 的
-`mov x0, x25; mov x2, x24` 与 CreateBlock 内部（x24=x0 做 ALIGN8 后与 0x121
-比较 = **尺寸校验**；`ldr x8,[x19]` = 取 **x2 源堆对象**的虚表），正确签名 =
-`CreateBlock(size=x0, out=x1, source_heap=x2, align=w3, …)`。**x0 来自 x25、
-x2 来自 x24——尺寸应追 x25**（此前「x0=候选/x2=尺寸」与「GetFreeSize 虚调用
-返回不足」两版解读均作废；尺寸=0 时 `cbz x24, 0x44492c` 直达失败返回，虚调用
-可能根本未执行）。
+| 门 | linux | android |
+|---|---|---|
+| post-first-call（0xe837e4） | x0=0xc4dccdb8 | x0=0xc4dcadb8 |
+| **post-query（0xe837f8，查询 0xd8e614 的返回）** | **x0=0，ret.size=0，ret.flag=0** | **x0=1，ret.size=0x180000，ret.flag=1** |
+| zero-path（0xe8380c） | 未走（单例非空） | 未走 |
+| create-block-entry（oLR 0xe83834） | x0=0（自适应） | x0=0x180000 |
+| **post-create-block-2（0xe83834）** | **x0=0x75a4633248（成功）** | **x0=0x7aa4635248（成功）** |
+| pre-alloc（0x3159c4） | x1（管理器 block）=0 → new=0 → ctor(0,0) → 崩溃 | （无崩溃） |
 
-**修正后的分叉事实**：同一调用点、同一源堆对象（heap+0x2628xxx，两平台 8KB
-的对象位置差与第 9 块的漂移一致）、同线程——**尺寸实参 android = 0x180000
-（固定 1.5MB）→ 成功链（0x46000、0x51400000 引擎主堆均成功）；linux = 0
-（自适应）→ align8(0)=0 < 0x121 → CreateBlock 失败** → 管理器 block = 0 →
-new 返回 0 → 崩溃。尺寸来自 0xe8515c-98 的**尺寸计划表循环**
-（`ldr x25, [x8, w9, uxtw #3]` = 计划表中第 i 项，x25=0 = 表项为空/已耗尽）——
-**该表（游戏启动早期构建的子堆尺寸计划）的内容或消耗状态在两平台不同**。
+⇒ **第一个实测数据差异 = 查询 0xd8e614 的返回**。调用序列：
+`e837cc cbz x21, 0xe8380c`（单例空 → 直零）→ `bl 0xd8e728` → `bl 0xd8e614`
+（x8 = 间接返回缓冲：[+0] 尺寸、[+8] 标志）→ `csel x0, xzr, x9, eq` →
+`bl 0x4448c0`。被调用者的成功路径（0xd8e704–710）写
+`ret[0] = (ldrsw [x29+28] << 10)`、`ret[+8] = 1`，失败路径（0xd8e6e8）写 0/0；
+内部经三次 `bl 0x678c40`（实参含 main+0x128407c 处的字符串 "Heaps"、调用者
+传入的名字、main+0x129157a 处的字符串）与一次 `bl 0x678df4`，任一失败即走
+失败路径。**这些调用的语义未定性**（不凭字符串名下结论）。
 
-**仪器欠账（下轮先还）**：(1) regs[30] = OBS 跳板自身返回址（main+0x17ea2a0
-恒定），游戏原始 caller LR 未捕获——需改 site_obs 生成器保全 LR（进跳板先存
-x30 并把原 LR 传给宿主），或用调试器；(2) 0x44490c 门在 x2≠0 时被 `cbnz`
-跳过，永不触发（已实证）；(3) 虚调用前后、候选表循环的观察点因放置规则未
-部署——换合法槽位或专用观察方式，不绕过现有检查。**已排除**：CreateBlock
-「调用后返回 0」不能由 post x0=0 单独证明（绕过直写同样产生 x0=0）。
-`heap-ctx-entry(x1=0x100)` 之后的第一个 CreateBlock——android 传
-`x0=0x180000`（**固定 1.5MB**）→ 成功，连锁 0x46000 与 **0x51400000
-（1.29GB 引擎主堆）** 均成功，引擎 560B 分配的管理器 block = 0x74a4790460
-（非零）→ 全部成功；linux 同一调用点传 **`x0=0`（自适应模式）** → 内部尺寸
-计算 <0x121 → CreateBlock 返回 0 → 管理器 block = 0 → new 返回 0 → 崩溃。
-此前两轮观察（默认块=0、second[0x88]=0、GetFreeSize 不足）全部是这一分叉
-的下游。
+**尚未建立的关系**：查询失败 ↔ 0xe851e4 绕过（管理器 block=0）↔ 560B 分配
+返回 0，三者之间的因果未证；linux 上第 9 个 CreateBlock 起堆内偏移已漂移
+（0x1ef0 vs 0x2870），时间上更早。
 
-**下一步（A 继续）**：反汇编该 CreateBlock 调用点的调用者（0xe851xx 包装层
-的上层，x24=尺寸来源），找「固定 0x180000 vs 自适应 0」的分支条件——分支
-输入不在任何 SVC 里（已证一致），在改写站点语义的残余差异或某个未覆盖的
-宿主值。
+**下一步**：在 0xd8e614 内部的 after-bl 槽位（0xd8e674/0xd8e68c/0xd8e6a4/
+0xd8e6b8/0xd8e6d0，均为合法位置）加门记录每步的实参与返回，确定 linux 上
+是哪一步失败及其输入；再决定追查询输入、配置来源还是堆分配内部。
 
-**尺寸实参的分叉点已定位到指令级**（0xe851xx 的调用点 = 0xe83830）：
-```
-e837f4  bl 0xd8e614        ; 查询(obj=x21, buf=x1)：buf[+8]=尺寸、buf[+16]=有效标志字节
-e83804  csel x0, xzr, x9, eq  ; 标志字节=0 → 尺寸=0（自适应）；≠0 → 尺寸=查询值
-```
-0xd8e614 内部 = **游戏对象注册表的按名字查找**：`0x678c40(buf, x?, x2="Heaps")`
-（字符串 "Heaps" 在 main+0x128407c；同类字符串 "PrefabAllCreate"/"ReactionRef"
-证明这是引擎的对象名查找）。`obj+48` 字节 = 「"Heaps" 对象已缓存」标志：
-android = 1（走 [obj+8] 缓存指针）；linux = 0（走 Find 路径，随后失败 →
-自适应尺寸 0 → CreateBlock 失败 → 崩溃链）。
-
-⇒ **分叉 = 游戏级的命名对象状态**：「Heaps」对象在 linux 上的注册/缓存未发生
-或查找失败。这不是宿主 API 差异（SVC/GetInfo 已证一致），而是更早的初始化在
-两平台留下了不同的对象注册表状态——与第 9 块的堆内偏移漂移（0x1ef0 vs
-0x2870）时间线吻合。**A 的下一层**：取证 0x678c40 的查找输入/输出（合法槽位
-OBS 或 0xd8e614 入口/出参缓冲的堆转储），并追「Heaps」对象的创建/注册序列
-在两平台的第一个差异。
-
-**原始 caller LR 已恢复**（hle_obstrace.c 读 _dm_gate 栈帧：跳板的
-`stp x29,x30,[sp,#-16]` 对落在 regs[100]/[101]——guest x29 与**游戏原始
-caller LR**；另 regs[96] = NZCV）。**同调用点配对完成**：
-CreateBlock(0x180000, android ✓) 与 CreateBlock(0=自适应, linux ✗) 的
-oLR **同为 main+0xe83834**，同线程 0x1001、同源堆区域（heap+0x2628xxx）——
-**同一调用点、同一游戏代码，尺寸实参分叉**。且 linux 的失败调用有
-create-block-entry 触发 = **真调用后失败，不是绕过直写**（绕过路径的
-create-block-entry 不会带这个 oLR）。
-
-**收敛点**：尺寸来自 0xe85190 候选表循环（x25 = 计划表第 i 项）——android
-选到 0x180000，linux 选到 0（表项空/耗尽/循环状态不同）。A 的下一步 =
-反汇编 0xe83834 前后 + 0xe8515c-98 的循环推进条件，找计划表内容/状态在
-两平台的第一个差异（表 = 游戏早期构建，构建序列也要看）。
 ### 3.4 已否决的路线（记录，防重蹈）
 
 | 路线 | 否决原因 |
