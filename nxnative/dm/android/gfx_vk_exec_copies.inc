@@ -177,6 +177,13 @@ static VkImage transfer_image(VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
     return im;
 }
+// 1 when two colour formats hold the same texel values in the same channel order, so that vkCmdCopyImage may move the bytes (they are one Vulkan format
+// compatibility class): the same format, or its linear / sRGB twin. RGBA8 and BGRA8 are not: a copy between them is refused, and a 1:1 blit converts them.
+static int fmt_copyable(VkFormat a, VkFormat b) {
+    if (a == b) return 1;
+    return (a == VK_FORMAT_R8G8B8A8_UNORM && b == VK_FORMAT_R8G8B8A8_SRGB) || (a == VK_FORMAT_R8G8B8A8_SRGB && b == VK_FORMAT_R8G8B8A8_UNORM) ||
+           (a == VK_FORMAT_B8G8R8A8_UNORM && b == VK_FORMAT_B8G8R8A8_SRGB) || (a == VK_FORMAT_B8G8R8A8_SRGB && b == VK_FORMAT_B8G8R8A8_UNORM);
+}
 // A texture copy into a LINEAR texture in CPU-visible memory: on the Switch the copy writes the texture's storage, which the CPU then reads. Here it writes the Vulkan
 // image only, so the copied region is also copied back to the storage at the texture's stride, marked as written by the GPU (the pools' copy-back carries it to the CPU).
 // Pokémon Violet captures its scene for the enrollment paper's portrait this way (1920x1080 RGBA8_SRGB into a 1920x1080 RGBA8 LINEAR texture in a CPU_UNCACHED pool,
@@ -276,21 +283,48 @@ static void copy_t2t(const p_copy_t2t *c) {
         vk_img_barrier_all(cb); return; }   // a copy of a region onto itself (two textures over the same storage): nothing to do, and Vulkan forbids overlapping copies
     if (c->flags & DM_COPY_RESOLVE) {
         VkImageResolve r = {ss, {c->sr.xoffset, c->sr.yoffset, 0}, ds, {c->dr.xoffset, c->dr.yoffset, 0}, {(uint32_t)c->sr.width, (uint32_t)c->sr.height, 1}};
-        if (s->fmt == d->fmt) vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
-        else {   // MSAA sRGB is not a family image; its single-sample target can be UNORM.
-            if (s->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT || s->samples <= 1 || d->samples != 1 ||
-                sf->vk != s->fmt || sf->vk != df->vk ||
-                !((s->fmt == VK_FORMAT_R8G8B8A8_SRGB && d->fmt == VK_FORMAT_R8G8B8A8_UNORM) ||
-                  (s->fmt == VK_FORMAT_B8G8R8A8_SRGB && d->fmt == VK_FORMAT_B8G8R8A8_UNORM))) {
-                VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
-                vk_img_barrier_all(cb); return;
+        int col = s->aspect == VK_IMAGE_ASPECT_COLOR_BIT && d->aspect == VK_IMAGE_ASPECT_COLOR_BIT;
+        if (s->fmt == d->fmt && s->samples > 1) vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);   // (as before, depth included)
+        else if (col && s->samples > 1 && d->samples == 1) {
+            // The multisample source's format can differ from the single-sample destination's: an sRGB / UNORM pair (a family image's backing is UNORM) or
+            // another order of the same channels. Resolve into a temporary image in the source's format, then move it into the destination as the two
+            // formats allow: a copy for an sRGB / UNORM pair (byte-preserving), a 1:1 blit when the channel order differs (texel values preserved).
+            VkImage tmp = transfer_image(cb, s->fmt, r.extent.width, r.extent.height); if (!tmp) { vk_img_barrier_all(cb); return; }
+            VkImageResolve tr = r; tr.dstSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}; tr.dstOffset = (VkOffset3D){0, 0, 0};
+            vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &tr); vk_img_barrier_all(cb);
+            VkImageCopy cp = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, {c->dr.xoffset, c->dr.yoffset, 0}, r.extent};
+            if (fmt_copyable(s->fmt, d->fmt)) vkCmdCopyImage(cb, tmp, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+            else {
+                VkFormatProperties sp, dp; vkGetPhysicalDeviceFormatProperties(V.pd, s->fmt, &sp); vkGetPhysicalDeviceFormatProperties(V.pd, d->fmt, &dp);
+                if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(dp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+                    VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
+                else {
+                    VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{0, 0, 0}, {(int32_t)r.extent.width, (int32_t)r.extent.height, 1}},
+                                     ds, {{c->dr.xoffset, c->dr.yoffset, 0}, {c->dr.xoffset + (int32_t)r.extent.width, c->dr.yoffset + (int32_t)r.extent.height, 1}}};
+                    static int n; if (n++ < 4) VKLOG("texture resolve %d -> %d: resolved in a temporary image and blitted (channel order), %ux%u", s->fmt, d->fmt, r.extent.width, r.extent.height);
+                    vkCmdBlitImage(cb, tmp, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                }
             }
-            VkImage tmp = transfer_image(cb, s->fmt, r.extent.width, r.extent.height); if (!tmp) return;
-            VkImageCopy cp = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, r.dstOffset, r.extent};
-            r.dstSubresource = cp.srcSubresource; r.dstOffset = cp.srcOffset;
-            vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &r); vk_img_barrier_all(cb);
-            vkCmdCopyImage(cb, tmp, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
-        }
+        } else if (s->samples == 1 && d->samples == 1 && s->aspect == d->aspect) {
+            // Nothing to resolve: the source is not multisampled. NVN's Downsample is then an image conversion, and games use it as one: Bayonetta copies its
+            // 1280x720 RGBA8 scene into its BGRX8 window every frame (samples 1 -> 1, formats 37 -> 44). That used to be skipped for the formats (red line 107)
+            // and the window stayed black while the game ran on: sound, input and presents were all fine, the screen was black. A copy for the same channel
+            // order, a 1:1 blit when it differs (RGBA8 → BGRA8: R and B swapped, as a view of the other format would show them).
+            VkImageCopy cp = {ss, {c->sr.xoffset, c->sr.yoffset, 0}, ds, {c->dr.xoffset, c->dr.yoffset, 0}, r.extent};
+            VkImageBlit b = {ss, {{c->sr.xoffset, c->sr.yoffset, 0}, {c->sr.xoffset + (int32_t)r.extent.width, c->sr.yoffset + (int32_t)r.extent.height, 1}},
+                             ds, {{c->dr.xoffset, c->dr.yoffset, 0}, {c->dr.xoffset + (int32_t)r.extent.width, c->dr.yoffset + (int32_t)r.extent.height, 1}}};
+            if (fmt_copyable(s->fmt, d->fmt)) vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
+            else if (col) {
+                VkFormatProperties sp, dp; vkGetPhysicalDeviceFormatProperties(V.pd, s->fmt, &sp); vkGetPhysicalDeviceFormatProperties(V.pd, d->fmt, &dp);
+                if (!(sp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) || !(dp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+                    VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
+                else {
+                    static int n; if (n++ < 4) VKLOG("texture downsample %d -> %d (%ux%u, no multisample): blitted with the destination's channel order", s->fmt, d->fmt, r.extent.width, r.extent.height);
+                    vkCmdBlitImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+                }
+            } else VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
+        } else
+            VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
     } else if (!mir && c->sr.width == c->dr.width && c->sr.height == c->dr.height && sf->vk == df->vk) {
         VkImageCopy r = {ss, {c->sr.xoffset, c->sr.yoffset, s->layers > 1 ? 0 : c->sr.zoffset}, ds, {c->dr.xoffset, c->dr.yoffset, d->layers > 1 ? 0 : c->dr.zoffset},
                          {(uint32_t)c->sr.width, (uint32_t)(c->sr.height ? c->sr.height : 1), s->layers > 1 ? 1 : (uint32_t)(c->sr.depth ? c->sr.depth : 1)}};

@@ -151,6 +151,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *v, int dim, int arrayed, i
 VkImageView vk_tex_view_as(const tex_t *t, const view_t *v, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat want);   // the same, in the format want (a storage view of the shader's integer class; 0: the texture's own)
 VkFormat vk_int_fmt(uint32_t bytes, int sint);   // the uint (or sint) format of a texel size (1, 2, 4, 8, 16 bytes) that can be stored into; VK_FORMAT_UNDEFINED when none (gfx_vk_tex.c)
 void vk_watch(const vkimg_t *im, const char *what);   // DM_VK_WATCH (gfx_vk_exec.c)
+void vk_draw_ctx(char *out, size_t n);   // the present, pass and programs of the draw whose view is being made (a diagnostic line; gfx_vk_exec.c)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out);   // registered texture ID → image (NULL if none)
 VkSampler vk_samp_by_id(int sid);
 extern __thread VkFormat vk_view_fmt; extern __thread uint32_t vk_view_layers; extern __thread VkImageUsageFlags vk_view_usage;   // the format, layer count and inherited usage of the view vk_tex_view last returned on this thread

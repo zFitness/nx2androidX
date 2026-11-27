@@ -762,9 +762,20 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
             // Returning a 2D view for a cube shader bypassed tex_desc_for's typed dummy. The saved creation flag also requires a square,
             // single-sample 2D image; having six layers alone is insufficient. Check the selected range before either view cache can keep a wrong type.
             if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) {
-                VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d; texture nvn target %d format %#x %ux%ux%u", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want,
-                           t->d.target, (unsigned)t->d.format, t->d.width, t->d.height, t->d.depth);
-                return VK_NULL_HANDLE;
+                // Bayonetta (010076F0049A2000) samples its 32x32x6 environment cube through a view whose layer range still says one layer: the range it
+                // set for a single-face pass. A cube view needs all six, and refusing it binds a null view, so the shader samples black (the characters
+                // came out black silhouettes while the scene was lit). Widen the range to the cube that holds ly0 (a cube starts at a multiple of 6).
+                if ((im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && want == VK_IMAGE_VIEW_TYPE_CUBE && nly < 6 && nlay >= 6) {
+                    uint32_t cube0 = ly0 / 6 * 6; if (cube0 + 6 > nlay) cube0 = 0;
+                    static int n; if (n++ < 8) { char ctx[192]; vk_draw_ctx(ctx, sizeof ctx);
+                        VKLOG("cube view widened: image %ux%ux%u layers %u, the view's range %u+%u (levels %u+%u) to %u+6 (%s)", im->w, im->h, im->d, im->layers, ly0, nly, lv0, nlv, cube0, ctx); }
+                    ly0 = cube0; nly = 6;
+                } else {
+                    char ctx[192]; vk_draw_ctx(ctx, sizeof ctx);
+                    VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d; texture nvn target %d format %#x %ux%ux%u (%s)", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want,
+                               t->d.target, (unsigned)t->d.format, t->d.width, t->d.height, t->d.depth, ctx);
+                    return VK_NULL_HANDLE;
+                }
             }
             if (want == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
         } else {

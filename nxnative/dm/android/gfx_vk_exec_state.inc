@@ -151,6 +151,12 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
+// The present, pass and programs of the draw whose texture view is being made: gfx_vk_tex.c has no state of its own, and a refused or widened view
+// says nothing about who asked for it without these (the keys identify the shader in shaders.dmsv)
+void vk_draw_ctx(char *out, size_t n) {
+    snprintf(out, n, "present %llu pass %d draw %llu vs %016llx fs %016llx", (unsigned long long)g_tex_frame, g_sub_pass - 1,
+             (unsigned long long)g_pass_draws, (unsigned long long)(S.sh[0] ? S.sh[0]->key : 0), (unsigned long long)(S.sh[1] ? S.sh[1]->key : 0));
+}
 static void cpu_ready_config(void) {
     const char *e = getenv("DM_VK_CPU_READY");
     g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
