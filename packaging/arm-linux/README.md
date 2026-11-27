@@ -32,6 +32,9 @@ compiled. The AppImage runtime and the fonts are fetched.
   `apt install python3 python3-gi`
 - an X11 or Wayland session (GTK needs one)
 - a Vulkan driver (the games need it; the launcher does not)
+- **with `--with-toolchain`, no compiler is needed**: the package carries clang, lld,
+  glslc and a glibc prefix; `build.py --os linux` uses the bundled one automatically
+  (`NX2A_TOOLCHAIN`, set by `AppRun`)
 
 ## How the package is put together
 

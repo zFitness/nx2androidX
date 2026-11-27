@@ -83,7 +83,10 @@ def extract_deb(data, dest):
                 m.name = n
                 # the filter keyword only exists from the release that carries tar_filter (3.12, backported);
                 # a system python (macOS ships 3.9) rejects it even when the value is None
-                t.extract(m, dest, **({'filter': 'tar'} if hasattr(tarfile, 'tar_filter') else {}))
+                try:
+                    t.extract(m, dest, **({'filter': 'tar'} if hasattr(tarfile, 'tar_filter') else {}))
+                except getattr(tarfile, 'OutsideDestinationError', ()):
+                    pass   # an absolute link (sitecustomize.py -> /etc/...) names the host machine's files: the pack never wants it
         return
     raise RuntimeError('no data.tar in the .deb')
 
