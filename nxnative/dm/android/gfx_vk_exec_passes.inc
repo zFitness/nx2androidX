@@ -649,6 +649,8 @@ static int begin_pass(void) {
     // The cut (DM_VK_CB_DRAWS): only before a pass whose depth attachment no earlier pass of this submission drew with. Adreno keeps a low-resolution copy of a depth
     // attachment (LRZ) that it trusts within a command buffer; a pass that goes on with a depth buffer begun in an earlier command buffer had whole 8x8 blocks of its
     // nearest objects rejected in some frames (NEO: bushes, trees and the phone booth near the camera flickered light blue). DM_VK_X_CUTANY=1 cuts before any pass.
+    // The depth rule holds the cut back for a title that keeps one depth buffer across a whole scene: STAR OCEAN THE SECOND STORY R puts a 1213-draw, 97-pass frame
+    // in one command buffer, and the GPU refused it (a device lost, 51-67 s after a load, seven runs). Its profile asks for the cut before any pass (DM_VK_X_CUTANY=1).
     // The rule looks only at the pass at the cut: a later pass may still go on with a depth buffer drawn before it. Hades II cuts before its depth-less passes and then
     // goes on with the 1280x720 D24S8 of the passes before the cut: its lights went out for single frames while Melinoe walked near them (one-frame dark spikes in
     // 6-23 of 600 recorded frames; 0 with DM_VK_CB_DRAWS=0, also 2-15 with the parts submitted together, 135 without the LRZ touches). Such a pass first gets a texel of its
@@ -660,7 +662,7 @@ static int begin_pass(void) {
     vkimg_t *dim = NULL; if (da.imageView) vk_tex_view(&S.rt_dep, S.rt_has_dview ? &S.rt_dview : NULL, 0xff, 0, 1, &dim);
     if (psplit || (g_x_cbdraws > 0 && g_cb_draws >= g_x_cbdraws && (!dim || dim->depth_sub != g_set_epoch || g_x_cutany))) {   // (a pass split: prepare_draw checked the depth rule and the part budget)
         void vk_cmd_split(void); if (g_x_landcut) vk_ubd_land(vk_cmd());
-        if (psplit) vk_cmd_split(); else if (g_ord_parts < 15) { vk_cmd_split(); g_ord_parts++; }   // ordinary cuts as before MAIN_CBS 32 (refused past 15; g_cuts still counts, as it did)
+        if (psplit) vk_cmd_split(); else if (g_ord_parts < g_ord_cap) { vk_cmd_split(); g_ord_parts++; }   // ordinary cuts as before MAIN_CBS 32 (refused past the cap; g_cuts still counts, as it did)
         g_cb_draws = 0; cb = vk_cmd(); g_cuts++;   // no pass is open here; deferred uniform updates stay deferred (draws read their shadows)
     }
     if (dim) { cut_touch = (g_lrz_touch & (LRZ_CUT | LRZ_CUT_RD)) && dim->depth_sub == g_set_epoch && dim->depth_cut != g_cuts; dim->depth_sub = g_set_epoch; dim->depth_cut = g_cuts; }

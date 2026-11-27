@@ -293,6 +293,7 @@ DM_VK_NOPCACHE	str		debug	start	gfx_vk_pipeline_cache.inc	start with an empty Vu
 DM_VK_NOPREWARM	str		debug	start	gfx_vk_exec.c	no pipeline prewarm, and no compute pipelines made ahead at the first submission
 DM_VK_NO_ZEROCOPY	str		debug	?	gfx_vk_core.c	DM_VK_NO_ZEROCOPY (set at all): every pool copied
 DM_VK_ORDER_KEEP	int		debug	?	gfx_vk_exec.c	
+DM_VK_ORD_PARTS	int	15	profile	live	gfx_vk_exec.c	the ordinary command buffer cuts per submission (15): the frame is split every DM_VK_CB_DRAWS draws, and the parts share the 32 command buffers with the pass splits. A title whose frame is heavier than 15 x the draws per cut gets an unbounded tail; raise it for that title alone
 DM_VK_PACE	bool		debug	live	gfx_vk_present.c	present without desired times (`VK_GOOGLE_display_timing`): frames go out at the first vsync after they are latched, as before. On, each frame is timed at the last one's plus the game's period on the display's vsync grid; the log's `[perf] display timing` line counts resyncs (a longer frame where th
 DM_VK_PACE_LOG	bool		debug	live	gfx_vk_present.c	logs the display pacing every 600 frames (`pace log:` the measured lead from a present call to the frame's earliest possible present, the driver's present margin) and each resync with its predicted shortfall
 DM_VK_PASSDUMP	bool		debug	live	gfx_vk_exec.c	dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs**
@@ -368,7 +369,7 @@ DM_VK_WINDOW_GAME_RATE	bool	0	profile	live	gfx_vk_present.c	1 = the display rate
 DM_VK_XFB	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_BC_CPU	bool		debug	start	gfx_vk_core.c	BC textures decoded on the CPU into uncompressed images (`gfx_vk_tex.c` `bc_decode`), as on a driver without `textureCompressionBC`. With `DM_VK_X_FENCES=1` the Y700 stands in for those phones; Wonder's level 1: about 1 more dropped frame in 300, ~100 MiB more memory
 DM_VK_X_COLOR	bool		debug	?	gfx_vk_exec.c	
-DM_VK_X_CUTANY	bool	0	profile	live	gfx_vk_exec.c	1 = command buffers may be cut before any pass (not only passes with a new depth image)
+DM_VK_X_CUTANY	bool	0	profile	live	gfx_vk_exec.c	1 = command buffers may be cut before any pass (not only passes with a new depth image). A title that keeps one depth buffer across a whole scene needs it: the depth rule holds the cut back and its frame's draws reach the GPU as one command buffer (STAR OCEAN THE SECOND STORY R: a device lost, 51-67 s after a load)
 DM_VK_X_CUTFS	hex		debug	live	gfx_vk_exec.c	Diagnostic only: split before and after draws with this fragment shader, for before/after pass dumps. Off by default.
 DM_VK_X_DEPTH	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_DEPTH_CLEAR_COLOR	bool		debug	live	gfx_vk_exec.c	Diagnostic only: also clear colour target 0 to zero when a depth clear occurs on an R11G11B10 pass. Deliberately changes rendering to test dependence on retained colour; never a production correction.

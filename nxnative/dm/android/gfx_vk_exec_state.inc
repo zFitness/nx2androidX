@@ -40,8 +40,8 @@ static void prewarm_start(void); static void compute_warm_start(void); static vo
 static uint64_t g_set_epoch = 1;   // the submission the descriptor set cache belongs to (stage_set)
 static int32_t g_pass_bb[4];   // bounding box of the scissors the open pass's draws used (x0 y0 x1 y1)
 static int g_cb_draws;   // draws in the command buffer being recorded (vk_cmd_split after DM_VK_CB_DRAWS draws, 0 = never)
-static int g_psplit, g_psplit_depth, g_psplit_now, g_ord_parts, g_setsplit;   // DM_VK_PASS_SPLIT / _DEPTH (prepare_draw); g_psplit_now: the pass being begun goes on with the one just ended (begin_pass cuts before it);
-                                                                    // g_ord_parts: ordinary DM_VK_CB_DRAWS cuts in this submission, kept to the old 15 (MAIN_CBS was 16): the extra parts are for pass splits
+static int g_psplit, g_psplit_depth, g_psplit_now, g_ord_parts, g_ord_cap = 15, g_setsplit;   // DM_VK_PASS_SPLIT / _DEPTH (prepare_draw); g_psplit_now: the pass being begun goes on with the one just ended (begin_pass cuts before it);
+                                                                    // g_ord_parts: ordinary DM_VK_CB_DRAWS cuts in this submission, kept to the old 15 (MAIN_CBS was 16): the extra parts are for pass splits; g_ord_cap: that cap (DM_VK_ORD_PARTS)
 static int g_var_now;   // the bisection's change for the draw being recorded (see g_bis_var)
 static int g_tracing;   // the draw being recorded is the one the bisection found (its descriptors are logged)
 // replay counters, printed by gfx_vk_present.c every 600 presents (draws done and skipped by reason, passes, clears folded into load ops, dispatches)
@@ -156,7 +156,7 @@ static void cpu_ready_config(void) {
     g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
 }
 static int g_dbg_draw_live; static uint64_t g_skip_ops_live;   // DM_VK_DBG_DRAW, DM_VK_SKIP_OPS: read with the other live switches, once a submission (bisection at a chosen moment)
-static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_DBG_DRAW"); g_dbg_draw_live = e ? atoi(e) : 0; } { uint64_t s = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) s |= 1ull << v; q = *n ? n + 1 : n; } g_skip_ops_live = s; } const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_DBG_DRAW"); g_dbg_draw_live = e ? atoi(e) : 0; } { uint64_t s = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) s |= 1ull << v; q = *n ? n + 1 : n; } g_skip_ops_live = s; } const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; const char *o = getenv("DM_VK_ORD_PARTS"); g_ord_cap = o ? atoi(o) : 15; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     { const char *e = getenv("DM_VK_C2_FAST"); g_c2fast = !(e && !atoi(e)); }   // c2 segments found by their slots' hash (drv_shared); on unless DM_VK_C2_FAST=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
