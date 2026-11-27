@@ -219,6 +219,22 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         fputc('\n', stderr);
     }
     dm_backtrace(DM_UC_SS(uc)->__fp);
+    // [probe] The nn heap allocation of the Mario vs DK linux boot crash walks these main-module globals: the GOT slot of the
+    // thread-lookup call that returned 0, the heap manager it fell back to, and the thread context whose field feeds the lookup
+    {   module_t *mm = NULL; for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { mm = &g_mod[i]; break; }
+        if (mm) {
+            uint64_t m0 = (uint64_t)mm->base, w = 0, p = 0; char b[192];
+            if (stack_word(m0 + 0x1719020, &w) && w) { crash_addr_str(b, sizeof b, w); fprintf(stderr, "[dm] probe: GOT main+0x1719020 (thread-lookup callee) = %s\n", b); }
+            if (stack_word(m0 + 0x171a670, &p) && stack_word(p, &w) && w) {
+                uint64_t f8 = 0, f104 = 0; crash_addr_str(b, sizeof b, w); stack_word(w + 8, &f8); stack_word(w + 104, &f104);
+                fprintf(stderr, "[dm] probe: heapmgr = %s  mgr+8=%#llx  mgr+104=%#llx\n", b, (unsigned long long)f8, (unsigned long long)f104);
+            }
+            if (stack_word(m0 + 0x1724738, &p) && stack_word(p, &w) && w) {
+                uint64_t f104 = 0; crash_addr_str(b, sizeof b, w); stack_word(w + 104, &f104);
+                fprintf(stderr, "[dm] probe: threadctx = %s  ctx+104=%#llx\n", b, (unsigned long long)f104);
+            }
+        }
+    }
     // Stack words are read with vm_read_overwrite too: a host function the guest called runs on a stack of its own, and Super Mario Bros. Wonder's crash in
     // nvnBufferInitialize (issue #48) had sp 16 bytes below the top of it; the scan read past the top, faulted inside this handler, and its line came out empty
     // Stack scan: when the frame chain is broken (a return address was overwritten, pc = lr lands on garbage) the backtrace prints nothing; scan 512 words up from sp and list everything that resolves to a module / host symbol (nearest callers first)
