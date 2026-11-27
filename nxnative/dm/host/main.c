@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <sys/stat.h>
 void probe_install(void); void hid_keys_init(void); void stubs_report(void); void crash_install(void); void guest_thread_init(void); uint32_t svc_thread_main_init(void);
 typedef void (*fn0)(void); typedef void (*fn2)(uint64_t, uint64_t); typedef void (*fnp)(void *);
 static void *req(const char *n){ void *p=guest_sym(n); if(!p) die("missing symbol %s", n); return p; }
@@ -90,6 +91,16 @@ static int dir_has_files(const char *d) {
     while ((e = readdir(dp))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { found = 1; break; }
     closedir(dp); return found;
 }
+// The save and the scratch folder: the Android app sets DM_SAVE / DM_TEMP to its own; the linux line has no app, so they
+// default to the game's own folder (the pack moves with its save). A value from the environment or env.txt wins.
+static void dirs_default(const char *root) {
+    static char save[1024], temp[1024];
+    snprintf(save, sizeof save, "%s/save", root); snprintf(temp, sizeof temp, "%s/temp", root);
+    const char *s = getenv("DM_SAVE"), *t = getenv("DM_TEMP");
+    if (!s || !*s || !t || !*t) { mkdir(save, 0755); mkdir(temp, 0755); }
+    if (!s || !*s) { setenv("DM_SAVE", save, 0); LOG("save: %s", save); }
+    if (!t || !*t) { setenv("DM_TEMP", temp, 0); LOG("temp: %s", temp); }
+}
 // Where the game's files are, checked before anything reads them: DM_ROMFS as set (the environment, or the pack's env.txt row that points at the port's
 // extracted RomFS), else the pack's own RomFS/ or romfs/. A folder without files is a setup error the game cannot recover from -- it reads its
 // configuration from there (Mario vs. Donkey Kong sizes its heaps from /System/HeapSize and crashes in its first engine allocation without it)
@@ -114,7 +125,7 @@ static void host_preload(int argc, char **argv) {
 #ifdef DM_LINUX
     // argv[1] is the module folder; the data pack's root is DM_ROOT (the launcher sets it), and env.txt lives there
     { const char *root = getenv("DM_ROOT");
-      if (root && *root) { pack_env_apply(root); romfs_check(root); }
+      if (root && *root) { pack_env_apply(root); romfs_check(root); dirs_default(root); }
       else LOG("[RED] DM_ROOT is not set: the data pack's env.txt (DM_ROMFS, the shared fonts) is not applied"); }
 #endif
     flags_init();
