@@ -8,8 +8,9 @@ run:
   * the fonts (a Chinese one and a monospace one): a machine may have no fonts at all,
     and then the interface is unreadable.
 
-The Python and the GTK bindings are the system's own (the launcher is GTK), so nothing
-of them is downloaded here.
+The Python and the PySide6 (Qt) wheels are the system's own or bundled per the
+--with-toolchain flag (the launcher's interface is PySide6), so nothing of them is
+downloaded here.
 """
 from __future__ import annotations
 

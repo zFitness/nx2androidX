@@ -24,7 +24,7 @@ case "$HERE" in
     *) HERE="$PWD/$HERE" ;;
 esac
 
-PYTHON=/usr/bin/python3
+PYTHON="${NX2A_PYTHON:-/usr/bin/python3}"
 if [ ! -x "$PYTHON" ]; then
     PYTHON=$(command -v python3 2>/dev/null)
 fi
@@ -37,17 +37,72 @@ fi
 # started as a child process with this same environment.
 export PYTHONPATH="$HERE/usr/pylibs:$HERE/usr${PYTHONPATH:+:$PYTHONPATH}"
 
+# The Python modules' shared libraries (liblz4, libyaml, libcapstone, ...): the ABI
+# extensions find them only through the loader path.  Set BEFORE the import probes
+# below, so the probes exercise exactly the runtime configuration.
+if [ -d "$HERE/usr/pylibs" ]; then
+    export LD_LIBRARY_PATH="$HERE/usr/pylibs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+unset PYTHONHOME
+
+# Pre-flight probes import the real extension surfaces -- a bare top-level `import lz4`
+# proves neither the C extension nor its .so companion loads.
+if [ -f "$HERE/usr/pylibs/PySide6/__init__.py" ]; then
+    # The interface and pipeline travel in the package. The pipeline's native
+    # modules target cpython-3.14: an interpreter/ABI mismatch must be a hard
+    # block, not a warning the player only hits when clicking Build.
+    PYVER=$("$PYTHON" -c 'import sys; print("%d%02d" % sys.version_info[:2])' 2>/dev/null)
+    if [ -n "$PYVER" ] && [ "$PYVER" -lt 314 ]; then
+        printf '%s\n' "nx2androidX: this package's bundled pipeline needs Python 3.14 (found: $("$PYTHON" -V 2>&1))"
+        printf '%s\n' 'run it with NX2A_PYTHON pointing at a python3.14, or use the thin package (machine PySide6).'
+        exit 1
+    fi
+    if ! "$PYTHON" -c 'import lz4.block, PIL._imaging, capstone, yaml' 2>/dev/null; then
+        printf '%s\n' "nx2androidX: bundled pipeline modules failed to load ($("$PYTHON" -V 2>&1))"
+        printf '%s\n' 'expected ABI: cpython-314; check that usr/pylibs is intact and LD_LIBRARY_PATH applies.'
+        exit 1
+    fi
+    if ! "$PYTHON" -c 'from PySide6 import QtCore, QtWidgets' 2>/dev/null; then
+        printf '%s\n' "nx2androidX: bundled Qt failed to load ($("$PYTHON" -V 2>&1))"
+        printf '%s\n' 'rerun with QT_DEBUG_PLUGINS=1 for details.'
+        exit 1
+    fi
+else
+    # Thin package: the machine provides Qt; missing extensions are named loudly
+    # but only block the build stage, not the launcher itself.
+    if ! "$PYTHON" -c 'from PySide6 import QtCore, QtWidgets' 2>/dev/null; then
+        printf '%s\n' "nx2androidX: PySide6 is not importable by $PYTHON ($("$PYTHON" -V 2>&1))"
+        printf '%s\n' 'this thin package carries no Qt: install PySide6 for the system python,'
+        printf '%s\n' 'or run the --with-toolchain package, which bundles the interface.'
+        printf '%s\n' 'Debian/Ubuntu: apt install python3-pyside6   |   pip: python3 -m pip install PySide6'
+        exit 1
+    fi
+    if ! "$PYTHON" -c 'import lz4.block, PIL._imaging, capstone, yaml' 2>/dev/null; then
+        printf '%s\n' 'nx2androidX: warning: the machine python lacks the port pipeline extension modules'
+        printf '%s\n' '(lz4.block / PIL._imaging / capstone / yaml): the interface starts, but building games will not.'
+        printf '%s\n' 'apt: python3-lz4 python3-capstone python3-pil python3-yaml'
+    fi
+fi
+
 # The build toolchain (--with-toolchain packages): the phone payload's clang and glslc,
 # a Debian glibc prefix beside them, the .NET runtime and the prebuilt C# tools. On a
-# machine with its own compiler every directory here is simply not used.
-export NX2A_TOOLCHAIN="$HERE/usr/toolchain"
-export DOTNET_ROOT="$HERE/usr/dotnet"
-export NX2A_NX_EXTRACT="$HERE/usr/cs-tools/nx_extract"
-export NX2A_DMSH_XLATE="$HERE/usr/cs-tools/dmsh_xlate"
-# the Python modules' shared libraries (liblz4, libyaml, libcapstone, ...): the ABI
-# extensions find them only through the loader path
-export LD_LIBRARY_PATH="$HERE/usr/pylibs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-export PATH="$HERE/usr/toolchain/clang/bin:$HERE/usr/toolchain/bin:$HERE/usr/dotnet:$PATH"
+# machine with its own compiler every directory here is simply not used. The sysroot
+# (usr/toolchain/glibc) is deliberately NOT put on LD_LIBRARY_PATH: linking happens
+# under the sysroot, running stays on the system's glibc.
+if [ -d "$HERE/usr/toolchain" ]; then
+    export NX2A_TOOLCHAIN="$HERE/usr/toolchain"
+    export PATH="$HERE/usr/toolchain/clang/bin:$HERE/usr/toolchain/bin:$PATH"
+fi
+if [ -d "$HERE/usr/dotnet" ]; then
+    export DOTNET_ROOT="$HERE/usr/dotnet"
+    export PATH="$HERE/usr/dotnet:$PATH"
+fi
+if [ -d "$HERE/usr/cs-tools/nx_extract" ]; then
+    export NX2A_NX_EXTRACT="$HERE/usr/cs-tools/nx_extract"
+fi
+if [ -d "$HERE/usr/cs-tools/dmsh_xlate" ]; then
+    export NX2A_DMSH_XLATE="$HERE/usr/cs-tools/dmsh_xlate"
+fi
 
 FONTS="$HERE/usr/share/fonts"
 if [ -d "$FONTS" ]; then

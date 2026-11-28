@@ -175,12 +175,13 @@ class TheSystemPython(unittest.TestCase):
     APPRUN = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
 
     def test_apprun_runs_the_system_python(self):
-        self.assertIn('PYTHON=/usr/bin/python3', self.APPRUN)
+        self.assertIn('PYTHON="${NX2A_PYTHON:-/usr/bin/python3}"', self.APPRUN)
         self.assertIn('exec "$PYTHON" -m launcher', self.APPRUN)
 
     def test_the_package_carries_no_interpreter(self):
         self.assertNotIn('usr/python', self.APPRUN)
-        self.assertNotIn('PYTHONHOME', self.APPRUN)
+        self.assertNotIn('PYTHONHOME=', self.APPRUN)
+        self.assertIn('unset PYTHONHOME', self.APPRUN)
 
     def test_the_pipeline_finds_the_packages_own_code(self):
         self.assertIn('PYTHONPATH="$HERE/usr', self.APPRUN)
@@ -233,8 +234,8 @@ class ThePlainEntry(unittest.TestCase):
         self.assertNotIn('nx2a/app', self.APPRUN)
 
     def test_the_exports_and_the_exec_stay(self):
-        self.assertIn('NX2A_TOOLCHAIN="$HERE/usr/toolchain"', self.APPRUN)
-        self.assertIn('LD_LIBRARY_PATH="$HERE/usr/pylibs', self.APPRUN)
+        self.assertIn('export NX2A_TOOLCHAIN="$HERE/usr/toolchain"', self.APPRUN)
+        self.assertIn('export LD_LIBRARY_PATH="$HERE/usr/pylibs', self.APPRUN)
         self.assertIn('exec "$PYTHON" -m launcher', self.APPRUN)
 
 
@@ -350,7 +351,30 @@ class TheToolchainBundle(unittest.TestCase):
 
     def test_apprun_puts_the_toolchain_on_the_path(self):
         apprun = (REPO / 'packaging/arm-linux/AppRun').read_text(encoding='utf-8')
-        self.assertIn('PATH="$HERE/usr/toolchain/clang/bin:$HERE/usr/toolchain/bin:$HERE/usr/dotnet:$PATH"', apprun)
+        self.assertIn('export PATH="$HERE/usr/toolchain/clang/bin:$HERE/usr/toolchain/bin:$PATH"', apprun)
+        self.assertIn('export PATH="$HERE/usr/dotnet:$PATH"', apprun)
+
+    def test_minimal_thin_layout_passes_without_toolchain(self):
+        """--with-toolchain is opt-in: a complete thin layout (no toolchain bundle)
+        passes the layout check, and only the bundled-piece check refuses it."""
+        with tempfile.TemporaryDirectory() as root:
+            appdir = Path(root) / 'AppDir'
+            for sub in ('usr/launcher', 'usr/porter', 'usr/phone_tools', 'usr/share/fonts'):
+                (appdir / sub).mkdir(parents=True)
+            (appdir / 'usr/launcher/__init__.py').write_text('')
+            (appdir / 'usr/porter/__init__.py').write_text('')
+            (appdir / 'usr/phone_tools/__init__.py').write_text('')
+            (appdir / 'usr/nxnative/dm').mkdir(parents=True)
+            shutil.copy2(REPO / 'packaging/arm-linux/AppRun', appdir / 'AppRun')
+            (appdir / 'AppRun').chmod(0o755)
+            shutil.copy2(REPO / 'packaging/arm-linux/nx2androidX.desktop',
+                         appdir / 'nx2androidX.desktop')
+            build.assert_package_layout(appdir, False)   # thin: no raise expected
+        with tempfile.TemporaryDirectory() as root:
+            appdir = Path(root) / 'AppDir'
+            (appdir / 'usr').mkdir(parents=True)
+            with self.assertRaises(SystemExit):           # bundled pieces are absent
+                build.assert_package_layout(appdir, True)
 
 
 if __name__ == '__main__':
