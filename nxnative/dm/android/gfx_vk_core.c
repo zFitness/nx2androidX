@@ -981,10 +981,12 @@ static int dmabuf_type(uint32_t bits) {   // best exportable host-visible type f
     }
     return cached >= 0 ? cached : vis;
 }
-// DM_VK_DMABUF_ZC=1: pools' buffers become dma-buf exports (v2). Default off — the switch flips only after the
-// visual acceptance run (no shadow, no merge for these pools: coherence is the mapping's, per the probe)
+// DM_VK_DMABUF_ZC=0 turns it back off. Default ON after acceptance (2026-11-28: the user's
+// visual check of the MvDK boot/title at 60/30 fps and the audible run; 13 sentinels also runs
+// its whole 180 s at 58 fps where v1 crashed) — the probe + the per-pool "zero-copy" lines are
+// the evidence trail; DM_VK_POOL_READBACK_RANGES stays on for any pool that is still copied.
 static int dmabuf_zc(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DMABUF_ZC"); v = e && atoi(e); } return v;
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DMABUF_ZC"); v = e ? atoi(e) : 1; } return v;
 }
 #endif
 static int zc_off(void) {
