@@ -41,12 +41,16 @@ def porter_env(pack_dir: Path | str | None = None) -> dict:
     game's own decoder and compiler run here, the way the phone app's porter is its device
     (NX2A_ON_DEVICE, on_android()'s override).  NX2A_PACK_DIR is where the finished pack
     goes: the porter writes it there itself (an atomic rename that replaces an older pack
-    of the same game), so the launcher never moves a pack around.  LD_PRELOAD is dropped:
+    of the same game), so the launcher never moves a pack around.  DM_TARGET=linux names the
+    host's TLS variant of this line (build.py's define and the rewrite's module mode — the
+    same env the dev loop builds the host with on the container).  LD_PRELOAD is dropped:
     the desktop session's exec hook (DroidDeck's libddnatv-hook) redirects ELF executions
     into its own cache and breaks the pipeline's prebuilt tools."""
     env = dict(os.environ)
     env['NX2A_HOST_OS'] = 'linux'
     env['NX2A_ON_DEVICE'] = '1'
+    env['DM_TARGET'] = 'linux'
+    env.pop('LD_PRELOAD', None)   # the desktop session's exec hook breaks the pipeline's tools
     # the confirmed layout: the porter's own config under the launcher's config dir, its
     # working resources under the data dir (work is a running resource, not a cache)
     from launcher.settings import CONFIG_DIR, DEFAULT_WORK
