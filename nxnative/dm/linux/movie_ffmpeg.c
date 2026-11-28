@@ -10,6 +10,7 @@
 #include "hle_movie_avc.h"
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 #include <libswscale/swscale.h>
 #include <stdio.h>
@@ -29,6 +30,8 @@ struct mavc {
     int64_t prev_pts;                     // the last picture's time, for frames the stream gave no time for
     struct SwsContext *sws;               // NV12/whatever → RGBA, for the native texture mode
     uint8_t *rgba_scratch; size_t rgba_cap; int said;
+    unsigned long ntake;                  // pictures taken (the pts health line's cadence)
+    int said_pts;
 };
 
 // ---- AVCC → Annex B ----------------------------------------------------------------------------------
@@ -146,14 +149,25 @@ int mavc_take(mavc *a, int flush, uint8_t *dst, int w, int h, int64_t *pts_us) {
     AVFrame *f = a->fifo[0];
     for (int i = 1; i < a->nfifo; i++) a->fifo[i - 1] = a->fifo[i];
     a->nfifo--;
+    // the picture's presentation time in µs (the packet's pts carried through the decoder), the same
+    // extraction for every output format — the sws branch used to skip it and the movie player saw the
+    // video's time stand at 0 while the audio's advanced, so the intro never presented (black screen).
+    // 0 is a legal timestamp; only AV_NOPTS_VALUE falls back to the last known one.
+    if (f->pts != AV_NOPTS_VALUE) a->prev_pts = f->pts;
+    *pts_us = a->prev_pts;
+    a->ntake++;
+    if (!a->said_pts || a->ntake % 512 == 0) {
+        a->said_pts = 1;
+        fprintf(stderr, "[movie-ffmpeg] dec %p mode %s pix %s take #%lu pts %lld us\n", (void *)a,
+                a->rgba ? "rgba" : "nv12", av_get_pix_fmt_name((enum AVPixelFormat)f->format),
+                a->ntake, (long long)a->prev_pts);
+    }
     const size_t dst_bytes = a->rgba ? (size_t)w * h * 4 : (size_t)w * h * 3 / 2;   // NV12: Y at w*h, interleaved UV at w*h/2
     memset(dst, 0, dst_bytes);   // black: the parts the picture does not cover are padded, the parts past it are cropped away
     if (!a->rgba && f->format == AV_PIX_FMT_NV12) {   // planes straight in (Y at stride w, then interleaved UV at w*h)
         int cw = w < f->width ? w : f->width, ch = (h < f->height ? h : f->height) / 2;
         for (int y = 0; y < (h < f->height ? h : f->height); y++) memcpy(dst + (size_t)y * w, f->data[0] + (size_t)y * f->linesize[0], (size_t)cw);
         for (int y = 0; y < ch; y++) memcpy(dst + (size_t)w * h + (size_t)y * w, f->data[1] + (size_t)y * f->linesize[1], (size_t)cw);
-        if (f->pts != AV_NOPTS_VALUE && f->pts > 0) a->prev_pts = f->pts;
-        *pts_us = a->prev_pts;
         av_frame_free(&f);
         return 1;
     } else {          // anything else (yuv420p, or RGBA mode): through sws, then padded/cropped row by row
