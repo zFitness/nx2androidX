@@ -125,6 +125,7 @@ VPX = srcs('third_party/libvpx/**/*.c')
 ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader bundle's SPIR-V (gfx_vk_shader.c bundle_spv)
 
 # One front (front_android.c: the upstream's, abstracted into a neutral core and an Android shell — a shell's
+FF_LIBS, FF_CFLAGS = [], []   # linux only, filled by port_files() when libavcodec is there: the movie decoder's libraries and headers
 # entry is what a NativeActivity APK runs; the app's :play process drives the core's plain-data inputs through
 # the adapter jni_android.c instead). frame generation and the player's own front are gone with this line's
 # convergence: the host has no lsfg/ or vka/ code, and front_player.c is deleted.
@@ -135,6 +136,20 @@ def port_files():
         # Android folder's platform-neutral pieces the core shares (the settings registry,
         # the common gfx helpers, and the null device the tools build with).
         out = list(srcs('linux/*.c'))
+        # The movie decoder: FFmpeg's software H.264 (linux/movie_ffmpeg.c) when this machine has libavcodec, the stand-in movie_null.c
+        # (every access unit dropped, no picture) otherwise. Which one went in is on record in the build's last line.
+        FF_LIBS.clear()
+        _ff = _sh.which('pkg-config') and subprocess.run(['pkg-config', '--exists', 'libavcodec'], capture_output=True).returncode == 0
+        # The two stand-ins are both in the glob: exactly one goes into the build
+        out = [x for x in out if x.name not in ('movie_null.c', 'movie_ffmpeg.c')]
+        out.append(DM / ('linux/movie_ffmpeg.c' if _ff else 'linux/movie_null.c'))
+        if _ff:
+            # Debian puts ffmpeg's headers in the multiarch include folder (/usr/include/<triplet>/libavcodec/), not /usr/include
+            FF_CFLAGS.extend(subprocess.run(['pkg-config', '--cflags', 'libavcodec', 'libavutil', 'libswscale'], capture_output=True, text=True).stdout.split())
+            FF_LIBS.extend(subprocess.run(['pkg-config', '--libs', 'libavcodec', 'libavutil', 'libswscale'], capture_output=True, text=True).stdout.split())
+            INC.extend(FF_CFLAGS)   # INC is a global from before; the compiles read it here
+        else:
+            print('[build] linux: no libavcodec via pkg-config: movie_null.c stands in for the movie decoder (no pictures)')
         out += [p for p in srcs('android/compat/*.c')
                 if p.name not in ('audiotoolbox_aaudio.c', 'audioconverter_mediacodec.c')]
         out += [DM / 'android/dm_settings.c', DM / 'android/gfx_common.c']
@@ -222,6 +237,7 @@ LDFLAGS = TARGET + ['-Wl,-z,max-page-size=16384', '-Wl,--build-id']
 if not DM_LINUX: LDFLAGS += ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,nostart-stop-gc']
 elif _sh.which('ld.lld'): LDFLAGS += ['-fuse-ld=lld']   # brew llvm's linker; the system's default when there is none
 if DM_LINUX: LDFLAGS += ['-L/usr/lib/aarch64-linux-gnu']   # 宿主 lib 目录：payload clang 驱动的搜索路径不含它（-lSDL3 等宿主库）
+if DM_LINUX and FF_LIBS: LIBS += FF_LIBS   # the movie decoder (linux/movie_ffmpeg.c)
 def link(args, name):
     # The 192 object paths under a long checkout exceed Windows' command-line limit (WinError 206).
     # Clang reads Windows-quoted arguments from a UTF-8 response file, including paths with spaces.

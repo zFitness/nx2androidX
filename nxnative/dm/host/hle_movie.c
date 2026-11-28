@@ -7,6 +7,10 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/resource.h>   // setpriority: the A/B decoder niceness
+#include <sys/syscall.h>    // SYS_gettid
+#endif
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
 #include "hle_movie_avc.h"   // H.264 on VideoToolbox
@@ -72,6 +76,10 @@ typedef struct {
     uint8_t *in[MD_NIN]; int infree[MD_NIN], ninfree;                     // queue of free input indices
     int inown[MD_NIN]; uint64_t instale[MD_NIN];                          // inown: acquired by the client and not sent yet; instale: when a Flush / Stop found it held (the client may still send it), 0 if not
     struct { int used, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap, bytes; } out[MD_NOUT];   // pic: frm holds a decoded picture (audio: bytes of PCM); cap: bytes in frm
+#ifdef DM_LINUX
+    void *cli[MD_NOUT];                   // the client Buffer object the game took with GetOutputBuffer: this game's intro player takes it once
+                                          // and then reads frames from its memory directly, so the host copies every decoded frame into it
+#endif
     int outq[MD_NOUT], noutq;                                             // queue of ready output indices
     struct { int in, off, size; int64_t pts; uint32_t flags; } pend[MD_NIN]; int npend;   // input packets waiting to be decoded (in arrival order)
     // Decoding: dmu lets only one guest thread take and decode packets at a time (packets enter libvpx in order); wmu / wcv hand one job to the host thread and wait for it
@@ -427,21 +435,49 @@ static int md_aac_tail(mdec_t *d, int slot) {
 }
 // The H.264 decoder, made by Configure (when the stream's parameter sets come with it) or by the first packet; RGBA pictures in the native texture mode either way.
 // Absolum's movies bring csd-0 / csd-1 to Configure, and a decoder made there used to stay NV12: the frames' bytes went into the RGBA texture as they were
-static void md_avc_open(mdec_t *d) { if (!d->avc) { d->avc = mavc_new(); if (d->fmt == MD_FMT_ABGR) mavc_set_rgba(d->avc); } }
+#ifdef DM_LINUX
+// DM_OBSERVE=1 (linux/observe.c, the front thread, once a second): the movie's packets in, pictures out, decoders opened and closed -- which
+// link of a running movie has stopped is read from these counters, not from a conditional log
+static _Atomic unsigned long g_obs_mov_in, g_obs_mov_pic; static _Atomic int g_obs_mov_open, g_obs_mov_close;
+unsigned long dm_obs_mov_in(void) { return atomic_load(&g_obs_mov_in); }
+unsigned long dm_obs_mov_pic(void) { return atomic_load(&g_obs_mov_pic); }
+int dm_obs_mov_dec(void) { return atomic_load(&g_obs_mov_open) - atomic_load(&g_obs_mov_close); }
+int dm_obs_mov_closed(void) { return atomic_load(&g_obs_mov_close); }
+#endif
+static void md_avc_open(mdec_t *d) { if (!d->avc) { d->avc = mavc_new(); if (d->fmt == MD_FMT_ABGR) mavc_set_rgba(d->avc); }
+#ifdef DM_LINUX
+    atomic_fetch_add(&g_obs_mov_open, 1);
+#endif
+}
 // H.264: decode the packet (if any) and hand out the next picture in presentation order (with jflush every queued one in turn); 1 = a picture is in the slot, its time in jpts_out
 static int md_avc(mdec_t *d, const uint8_t *p, int n, int slot, int take_only) {
     md_avc_open(d);
-    if (!take_only && n > 0) mavc_decode(d->avc, p, n, d->jpts);
+    if (!take_only && n > 0) { mavc_decode(d->avc, p, n, d->jpts);
+#ifdef DM_LINUX
+        atomic_fetch_add(&g_obs_mov_in, 1);
+#endif
+    }
     if (d->w <= 0 || d->h <= 0) return 0;
     size_t need = (size_t)d->w * d->h * (d->fmt == MD_FMT_ABGR ? 4 : 3) / (d->fmt == MD_FMT_ABGR ? 1 : 2);
     if (d->out[slot].cap < need) { free(d->out[slot].frm); d->out[slot].frm = malloc(need); d->out[slot].cap = need; }
-    return mavc_take(d->avc, d->jflush, d->out[slot].frm, d->w, d->h, &d->jpts_out);
+    { int r = mavc_take(d->avc, d->jflush, d->out[slot].frm, d->w, d->h, &d->jpts_out);
+#ifdef DM_LINUX
+      if (r > 0) atomic_fetch_add(&g_obs_mov_pic, 1);
+#endif
+      return r; }
 }
-static void md_close(mdec_t *d) { if (d->vpx_on) { vpx_codec_destroy(&d->vpx); d->vpx_on = 0; } if (d->vb) { stb_vorbis_close(d->vb); d->vb = NULL; } if (d->aac) { AudioConverterDispose(d->aac); d->aac = NULL; } if (d->avc) { mavc_free(d->avc); d->avc = NULL; } }
+static void md_close(mdec_t *d) {
+#ifdef DM_LINUX
+    atomic_fetch_add(&g_obs_mov_close, 1);
+#endif
+    if (d->vpx_on) { vpx_codec_destroy(&d->vpx); d->vpx_on = 0; } if (d->vb) { stb_vorbis_close(d->vb); d->vb = NULL; } if (d->aac) { AudioConverterDispose(d->aac); d->aac = NULL; } if (d->avc) { mavc_free(d->avc); d->avc = NULL; } }
 void dm_host_helper_qos(qos_class_t q);   // hle_thread.c
 static void *md_worker(void *arg) {
     mdec_t *d = arg;
     pthread_setname_np("dm movie decoder");
+#ifdef __linux__
+    setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);   // A/B 2026-11-28: the decoder yields core priority to the game's threads
+#endif
     dm_host_helper_qos(QOS_CLASS_USER_INITIATED);   // under DM_QOS_MAP: decodes ahead of playback, not on the frame's critical path
     pthread_mutex_lock(&d->wmu);
     for (;;) {
@@ -847,9 +883,19 @@ HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "movie decoder: ge
     size_t need = (size_t)stride * slice * 3 / 2, cap = G.cap(buf);
     uint8_t *p = G.data(buf);
     if (!p || cap < need) { LOG("[RED] movie: client output buffer is %zu bytes, a frame needs %zu", cap, need); G.set_range(buf, 0, 0); return 0x100b; }
+#ifdef DM_LINUX
+    // The game reads this output once, right after Start, and on this port that read raced the first decode and was served the black
+    // frame — after which it never read again and the whole intro played as a black screen. Wait briefly for a real picture before
+    // serving: what the game takes first is a frame of the movie
+    { int waited = 0; while (!d->out[i].pic && waited < 500) { usleep(10000); waited += 10; }
+      if (waited) MD_TRACE(d, 12, "waited %d ms for the picture", waited); }
+#endif
     if (d->out[i].pic && d->out[i].frm) memcpy(p, d->out[i].frm, need);
     else { memset(p, 16, (size_t)stride * slice); memset(p + (size_t)stride * slice, 128, need - (size_t)stride * slice); }
     G.set_range(buf, 0, (int)need);
+#ifdef DM_LINUX
+    d->cli[i] = buf;   // later frames are copied into this buffer at decode time (md_pump): the intro player never calls here again
+#endif
     MD_TRACE(d, 12, "GetOutputBuffer index %d → %zu bytes%s", i, need, d->out[i].pic ? "" : " (black frame)");
     return 0;
 }
