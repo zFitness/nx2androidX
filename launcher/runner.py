@@ -47,6 +47,11 @@ def porter_env(pack_dir: Path | str | None = None) -> dict:
     env = dict(os.environ)
     env['NX2A_HOST_OS'] = 'linux'
     env['NX2A_ON_DEVICE'] = '1'
+    # the confirmed layout: the porter's own config under the launcher's config dir, its
+    # working resources under the data dir (work is a running resource, not a cache)
+    from launcher.settings import CONFIG_DIR, DEFAULT_WORK
+    env.setdefault('NX2A_HOME', str(CONFIG_DIR / 'porter'))
+    env.setdefault('NX2A_WORK', str(DEFAULT_WORK))
     env['PYTHONIOENCODING'] = 'utf-8'
     if pack_dir:
         env['NX2A_PACK_DIR'] = str(pack_dir)

@@ -14,11 +14,14 @@ CONFIG_DIR = Path(os.environ.get('XDG_CONFIG_HOME') or (Path.home() / '.config')
 SETTINGS_FILE = CONFIG_DIR / 'launcher.json'
 DATA_DIR = Path(os.environ.get('XDG_DATA_HOME') or (Path.home() / '.local' / 'share')) / 'nx2a'
 DEFAULT_LIBRARY = DATA_DIR / 'library'
+DEFAULT_WORK = DATA_DIR / 'work'        # porter's unpacked resources; the games' RomFS lives here (referenced, not copied)
+STATE_DIR = Path(os.environ.get('XDG_STATE_HOME') or (Path.home() / '.local' / 'state')) / 'nx2a'   # logs
 
 LANGUAGES = ('zh', 'en')
 
 DEFAULTS = {
     'library': str(DEFAULT_LIBRARY),   # where the ported games live, one folder each
+    'work': str(DEFAULT_WORK),         # porter's unpacked resources; a pack's env.txt points here (DM_ROMFS)
     'language': 'zh',
     'ui_scale': 1.0,        # the player's own multiplier on top of the automatic one
     'porter_dir': '',       # where the porter package is; empty = the checkout next to this launcher

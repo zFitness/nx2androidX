@@ -15,11 +15,10 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from PySide6.QtCore import Qt                     # noqa: E402
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QPushButton   # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel   # noqa: E402
 
 from launcher import runner, scale, settings      # noqa: E402
-from launcher.ui import dialogs                   # noqa: E402
+from launcher.ui import dialogs, theme            # noqa: E402
 from launcher.ui.app import LauncherApp           # noqa: E402
 from porter import config as porter_config        # noqa: E402
 
@@ -72,11 +71,120 @@ class Window(unittest.TestCase):
         self.app.show()
         self.addCleanup(self.app.close)
 
-    def test_the_way_out_is_at_the_right_end_of_the_tabs(self):
-        notebook = self.app.notebook
-        self.assertIs(notebook.cornerWidget(Qt.TopRightCorner), self.app.quit_button)
-        self.assertEqual(self.app.quit_button.text(), self.app.words['quit'])
-        self.assertTrue(self.app.quit_button.isVisibleTo(notebook))
+    def test_the_way_out_is_the_bars_last_control(self):
+        """The window draws its own chrome: the three circles sit at the bar's right
+        end, and the way out of them closes the window."""
+        bar = self.app.titlebar
+        self.assertEqual(bar.close_button._glyph, 'close')
+        self.assertEqual(bar.max_button._glyph, 'max')
+        self.assertEqual(bar.min_button._glyph, 'min')
+        self.assertTrue(bar.close_button.isVisibleTo(bar))
+        bar.close_button.click()
+        self.assertFalse(self.app.isVisible())
+
+    def test_the_panel_speaks_for_the_chosen_game(self):
+        """The action panel carries the chosen game's actions and only exists
+        while a game is picked; picking the same card again puts it away."""
+        library_dir = Path(self.folder.name) / 'library'
+        make_pack(library_dir, '0100000000010000', 'Mario')
+        self.app.settings['library'] = str(library_dir)
+        self.app.library_page.refresh()
+        page = self.app.library_page
+        page.pick(page.cards[0])
+        self.assertTrue(page.panel.isVisible())
+        self.assertEqual(page.panel.title.text(), 'Mario')
+        labels = [page.panel.run_button.text(), page.panel.steam_button.text(),
+                  page.panel.desktop_button.text()]
+        self.assertEqual(labels, [self.app.words['run'], self.app.words['add_steam'],
+                                  self.app.words['add_desktop']])
+        page.pick(page.cards[0])   # the same card again: the panel goes away
+        self.assertFalse(page.panel.isVisible())
+
+    def test_the_grid_packs_from_the_first_column(self):
+        """A tight left-aligned grid: the cards sit next to each other (the gap,
+        not a spread-out column), and the empty library says so."""
+        library_dir = Path(self.folder.name) / 'library'
+        for title_id in ('0100000000010000', '0100000000010001'):
+            make_pack(library_dir, title_id, f'Game {title_id[-1]}')
+        self.app.settings['library'] = str(library_dir)
+        page = self.app.library_page
+        page.refresh()
+        page.reflow(1400)   # a wide window: four columns, the two games sit side by side
+        row0, col0 = page.grid.getItemPosition(0)[:2]
+        row1, col1 = page.grid.getItemPosition(1)[:2]
+        self.assertEqual((row0, row1), (0, 0))       # both on the first row
+        self.assertEqual(col1, 1)                    # the second right beside the first
+        first = page.grid.cellRect(0, 0)
+        second = page.grid.cellRect(0, 1)
+        self.assertLess(second.x() - first.x(), 400)  # neighbours, not half a window apart
+
+    def test_zero_one_two_and_many_games_all_lay_out(self):
+        """0, 1, 2, 4 and 8 games: the count changes, the formula does not."""
+        page = self.app.library_page
+        for count in (0, 1, 2, 4, 8):
+            library_dir = Path(self.folder.name) / f'library{count}'
+            for index in range(count):
+                make_pack(library_dir, f'01000000000100{count:02d}{index:02d}',
+                          f'Game {index}')
+            self.app.settings['library'] = str(library_dir)
+            page.refresh()
+            page.reflow(1400)
+            if count == 0:
+                self.assertFalse(page.cards)
+                self.assertIn(self.app.words['library_empty'], labels_of(page))
+                self.assertFalse(page.panel.isVisible())
+                continue
+            self.assertEqual(len(page.cards), count)
+            columns = page.columns(1400)
+            for index in range(count):
+                row, col = page.grid.getItemPosition(index)[:2]
+                self.assertEqual((row, col), (index // columns, index % columns))
+                self.assertTrue(page.grid.itemAtPosition(row, col).widget() is page.cards[index])
+
+    def test_every_button_is_legible_at_rest(self):
+        """A button's words must be there before the hover: at rest the text
+        colour parses and is bright enough to read on the dark (once, a CSS
+        rgba() spelling fell through QColor and painted black-on-black)."""
+        from launcher.ui.widgets import FlatButton
+        for variant in ('primary', 'quiet', 'outline', 'hero'):
+            button = FlatButton('x', variant)
+            colour = FlatButton._colour(theme.DIM) if variant != 'primary' else FlatButton._colour('#141416')
+            self.assertTrue(colour.isValid())
+            self.assertNotEqual((colour.red(), colour.green(), colour.blue()), (0, 0, 0))
+            if variant != 'primary':
+                self.assertGreater(colour.lightness(), 120)   # readable on #0E0E0F
+        button = FlatButton('库', 'hero')
+        button.setChecked(True)
+        self.assertTrue(FlatButton._colour(theme.INK).lightness() > 200)
+
+    def test_every_page_icon_really_draws(self):
+        """Every icon name the capsule and the gear are given must draw pixels
+        (once the capsule passed 'library' where the painter knew 'gamepad',
+        and the tab showed no icon at all)."""
+        from PySide6.QtGui import QColor, QPainter, QPixmap
+        from PySide6.QtCore import QRectF
+        from launcher.ui.widgets import draw_icon
+        from launcher.ui import theme as th
+        for name in ('library', 'gamepad', 'build', 'gear'):
+            pixmap = QPixmap(24, 24)
+            pixmap.fill(QColor(0, 0, 0, 0))
+            painter = QPainter(pixmap)
+            draw_icon(painter, name, QRectF(0, 0, 24, 24), QColor(th.MUTED))
+            painter.end()
+            image = pixmap.toImage()
+            drawn = sum(1 for y in range(24) for x in range(24)
+                        if image.pixelColor(x, y).alpha() > 40)
+            self.assertGreater(drawn, 15, f'icon {name!r} drew nothing')
+
+    def test_the_build_page_hides_its_debug_options_until_asked(self):
+        """The advanced options start away; the toggle brings them out."""
+        page = self.app.build_page
+        self.assertTrue(page._advanced_group.isHidden())
+        page.toggle_advanced()
+        self.assertFalse(page._advanced_group.isHidden())
+        self.assertEqual(page.advanced_toggle.text(), self.app.words['build_advanced_hide'])
+        page.toggle_advanced()
+        self.assertTrue(page._advanced_group.isHidden())
 
     def test_the_way_out_closes_the_window(self):
         self.app.quit()
@@ -90,11 +198,49 @@ class Window(unittest.TestCase):
         self.app.close()
         self.assertTrue(stopped)
 
-    def test_there_are_three_pages_in_a_fixed_order(self):
-        notebook = self.app.notebook
-        tabs = [notebook.tabText(index) for index in range(notebook.count())]
-        self.assertEqual(tabs, [self.app.words['tab_library'], self.app.words['tab_build'],
-                                self.app.words['tab_settings']])
+    def test_the_bar_holds_the_two_pages_and_the_settings(self):
+        """The bar is the home screen's: the capsule centre, the gear right."""
+        bar = self.app.titlebar
+        seg = bar.nav_seg
+        self.assertEqual([label for _k, label, _i in seg._items],
+                         [self.app.words['tab_library'], self.app.words['tab_build']])
+        self.assertEqual(seg.selected(), 'library')
+        self.assertEqual(bar.settings_button.toolTip(), self.app.words['tab_settings'])
+
+    def test_the_settings_dialog_opens_again_and_again(self):
+        """The settings page must survive its dialog: handed its freedom before
+        the dialog dies (once the parented page died with it, and the dialog
+        could never be opened again)."""
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog
+        for round_index in range(3):
+            opened = []
+
+            def close_soon():
+                for dialog in self.app.findChildren(QDialog):
+                    if dialog.isVisible():
+                        dialog.reject()
+                        break
+
+            original_exec = QDialog.exec
+            QDialog.exec = lambda self=None: opened.append(1) or self.reject()
+            try:
+                self.app.open_settings()
+            finally:
+                QDialog.exec = original_exec
+            self.assertEqual(len(opened), 1)
+            self.assertIsNone(self.app.settings_page.parentWidget())   # free again
+
+    def test_the_two_pages_sit_in_the_stack_in_a_fixed_order(self):
+        stack = self.app.stack
+        self.assertEqual([stack.widget(index) for index in range(stack.count())],
+                         [self.app.library_page, self.app.build_page])
+        # the capsule switches the stack
+        bar = self.app.titlebar
+        bar.nav_seg._pick('build')
+        self.assertIs(stack.currentWidget(), self.app.build_page)
+        bar.nav_seg._pick('library')
+        self.assertIs(stack.currentWidget(), self.app.library_page)
 
     def test_the_library_page_shows_the_games(self):
         library_dir = Path(self.folder.name) / 'library'
@@ -113,10 +259,10 @@ class Window(unittest.TestCase):
         page.app.small = True
         self.assertLessEqual(page.columns(480), 2)
 
-    def test_a_wide_screen_gets_the_columns_it_can_hold(self):
+    def test_a_wide_screen_gets_four_columns_at_most(self):
         page = self.app.library_page
         page.app.small = False
-        self.assertGreater(page.columns(1400), 2)
+        self.assertEqual(page.columns(1400), 4)
 
     def test_the_cards_rearrange_when_the_width_changes(self):
         library_dir = Path(self.folder.name) / 'library'
@@ -126,8 +272,10 @@ class Window(unittest.TestCase):
         page = self.app.library_page
         page.refresh()
         self.assertEqual(page.grid.count(), 3)
-        page.app.small = True
-        page.reflow(480)   # two columns at most: the third card wraps to the next row
+        # a content width that fits exactly two columns: the third card wraps
+        user = scale.user_scale(self.app.settings.get('ui_scale'))
+        cell, gap = scale.cell_size(user), scale.gap(user)
+        page.reflow(2 * cell + gap)
         row, column = page.grid.getItemPosition(2)[:2]
         self.assertEqual((row, column), (1, 0))
 
@@ -138,18 +286,64 @@ class Window(unittest.TestCase):
         self.app.settings['library'] = str(library_dir)
         self.app.library_page.refresh()
         card = card_of(self.app.library_page)
-        self.assertIsInstance(card.layout().itemAt(0).widget(), QFrame)
+        cover = card.layout().itemAt(0).widget()
+        self.assertIsInstance(cover, QLabel)
+        self.assertFalse(cover.pixmap().isNull() if cover.pixmap() else True)   # the letter tile
         self.assertIn('Mario', labels_of(self.app.library_page))
 
     def test_a_card_has_the_three_actions(self):
+        """The three actions live on the panel of the chosen card."""
         library_dir = Path(self.folder.name) / 'library'
         make_pack(library_dir, '0100000000010000', 'Mario')
         self.app.settings['library'] = str(library_dir)
         self.app.library_page.refresh()
-        card = card_of(self.app.library_page)
-        labels = [button.text() for button in card.findChildren(QPushButton)]
-        self.assertEqual(labels, [self.app.words['run'], self.app.words['add_steam'],
-                                  self.app.words['add_desktop']])
+        page = self.app.library_page
+        page.pick(page.cards[0])
+        self.assertEqual([page.panel.run_button.text(), page.panel.steam_button.text(),
+                          page.panel.desktop_button.text(), page.panel.manage_button.text()],
+                         [self.app.words['run'], self.app.words['add_steam'],
+                          self.app.words['add_desktop'], self.app.words['manage']])
+
+    def test_remove_hides_the_pack_without_deleting_it(self):
+        """'Remove from the library' renames the folder away — the scan passes it
+        by, the files stay."""
+        library_dir = Path(self.folder.name) / 'library'
+        pack = make_pack(library_dir, '0100000000010000', 'Mario')
+        self.app.settings['library'] = str(library_dir)
+        page = self.app.library_page
+        page.refresh()
+        page.pick(page.cards[0])
+        confirmed = []
+        original = dialogs.danger_confirm
+        dialogs.danger_confirm = lambda *a, **k: confirmed.append(a) or True
+        try:
+            page._remove_from_library(page.selected_game())
+        finally:
+            dialogs.danger_confirm = original
+        self.assertTrue(confirmed)
+        self.assertFalse(pack.exists())                    # gone from its place
+        self.assertTrue(pack.with_name('.ignored-' + pack.name).is_dir())   # not deleted
+        self.app.settings['library'] = str(library_dir)
+        page.refresh()
+        names = [getattr(c, '_game').title_id for c in page.cards]
+        self.assertNotIn('0100000000010000', names)        # the library says so
+
+    def test_delete_removes_the_pack_for_good(self):
+        """'Delete the game data' removes the folder itself, after the question."""
+        library_dir = Path(self.folder.name) / 'library'
+        pack = make_pack(library_dir, '0100000000010000', 'Mario')
+        self.app.settings['library'] = str(library_dir)
+        page = self.app.library_page
+        page.refresh()
+        page.pick(page.cards[0])
+        original = dialogs.danger_confirm
+        dialogs.danger_confirm = lambda *a, **k: True
+        try:
+            page._delete_game(page.selected_game())
+        finally:
+            dialogs.danger_confirm = original
+        self.assertFalse(pack.exists())
+        self.assertFalse(pack.parent.joinpath(pack.name + '.ignored').exists())
 
     def test_the_build_page_wants_a_data_directory(self):
         shown = []
@@ -178,8 +372,16 @@ class Window(unittest.TestCase):
 
     def test_the_build_page_wants_prod_keys(self):
         shown = []
+        opened = []
         original = dialogs.message
         dialogs.message = lambda *args, **kwargs: shown.append(args)
+
+        def fake_open_settings() -> None:
+            opened.append(())
+
+        original_open = self.app.open_settings
+        self.app.open_settings = fake_open_settings
+        self.addCleanup(lambda: setattr(self.app, 'open_settings', original_open))
         configured = porter_config.load()['keys']
         porter_config.set_value('keys', '')
         self.addCleanup(porter_config.set_value, 'keys', configured)
@@ -191,8 +393,9 @@ class Window(unittest.TestCase):
             dialogs.message = original
         self.assertTrue(shown)
         self.assertIn(self.app.words['build_need_keys'], shown[-1][2])
-        # the dialog says where to fix it, and the window is already there
-        self.assertIs(self.app.notebook.currentWidget(), self.app.settings_page)
+        # the dialog says where to fix it, and the window opens it by itself (the
+        # dialog itself is modal, so the test only checks the door was opened)
+        self.assertEqual(opened, [()])
 
     def test_the_settings_page_holds_the_keys_and_saves_them_back(self):
         page = self.app.settings_page
@@ -206,11 +409,57 @@ class Window(unittest.TestCase):
         finally:
             dialogs.message = original
         self.assertEqual(porter_config.load()['keys'], keys)
+        self.assertFalse(shown)   # a quiet flash on the button, no dialog
+        self.assertEqual(page.save_button.text(), self.app.words['set_saved'])
 
-    def test_an_inspect_runs_off_the_interface_thread(self):
+    def test_a_folder_is_refused_before_the_porter_is_asked(self):
+        """A folder in the entry fails at once, with the words that say what
+        belongs there — the porter is never woken for it."""
         page = self.app.build_page
         folder = Path(self.folder.name) / 'game'
         folder.mkdir()
+        calls = []
+        original = runner.run_json_async
+        runner.run_json_async = lambda root, args, callback, **kw: calls.append(1)
+        self.addCleanup(setattr, runner, 'run_json_async', original)
+        page.folder.setText(str(folder))
+        page.inspect()
+        self.assertFalse(calls)                       # never asked
+        self.assertIn(self.app.words['card_wants_file'].split('{')[0],
+                      page.card.text().replace(folder.name, folder.name))   # says why
+
+    def test_a_wrong_suffix_is_refused_with_the_kinds_named(self):
+        page = self.app.build_page
+        target = Path(self.folder.name) / 'game.zip'
+        target.write_bytes(b'x')
+        calls = []
+        original = runner.run_json_async
+        runner.run_json_async = lambda root, args, callback, **kw: calls.append(1)
+        self.addCleanup(setattr, runner, 'run_json_async', original)
+        page.folder.setText(str(target))
+        page.inspect()
+        self.assertFalse(calls)
+        self.assertIn('.zip', page.card.text())
+        self.assertIn('.nsp', page.card.text())       # the kinds are named
+
+    def test_a_compressed_game_is_accepted(self):
+        """NSZ counts: the porter unpacks it, the entry lets it through."""
+        page = self.app.build_page
+        target = Path(self.folder.name) / 'game.nsz'
+        target.write_bytes(b'x')
+        calls = []
+        original = runner.run_json_async
+        runner.run_json_async = lambda root, args, callback, **kw: calls.append((root, args, callback))
+        self.addCleanup(setattr, runner, 'run_json_async', original)
+        page.folder.setText(str(target))
+        page.inspect()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1][1], str(target))
+
+    def test_an_inspect_runs_off_the_interface_thread(self):
+        page = self.app.build_page
+        folder = Path(self.folder.name) / 'game.nsp'
+        folder.write_bytes(b'not a game, but the shape is the porter\'s business')
         calls = []
         original = runner.run_json_async
         runner.run_json_async = lambda root, args, callback, **kw: calls.append((root, args, callback))
@@ -228,8 +477,8 @@ class Window(unittest.TestCase):
 
     def test_a_stale_inspect_is_thrown_away(self):
         page = self.app.build_page
-        folder = Path(self.folder.name) / 'game'
-        folder.mkdir()
+        folder = Path(self.folder.name) / 'game.nsp'
+        folder.write_bytes(b'not a game, but the shape is the porter\'s business')
         calls = []
         original = runner.run_json_async
         runner.run_json_async = lambda root, args, callback, **kw: calls.append((root, args, callback))

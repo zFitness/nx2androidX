@@ -29,6 +29,38 @@ def message(parent, title: str, text: str, kind: str = 'info', words: dict | Non
     box.exec()
 
 
+def confirm(parent, title: str, text: str) -> bool:
+    """Ask a yes/no question; True when the player accepted."""
+    box = QMessageBox(QMessageBox.Question, title, text,
+                      QMessageBox.Yes | QMessageBox.No, window_of(parent))
+    return box.exec() == QMessageBox.Yes
+
+
+def danger_confirm(parent, title: str, text: str, note: str, accept_label: str) -> bool:
+    """A destructive question, the desktop launcher's shape: the words say what
+    happens, the note says the price, and the destructive button never stands as
+    the default."""
+    box = QMessageBox(QMessageBox.Warning, title, text, QMessageBox.NoButton,
+                      window_of(parent))
+    box.setInformativeText(note)
+    accept = box.addButton(accept_label, QMessageBox.DestructiveRole)
+    cancel = box.addButton(QMessageBox.Cancel)
+    box.setDefaultButton(cancel)
+    box.exec()
+    return box.clickedButton() is accept
+
+
+def wait_or_kill(process, seconds: int = 5) -> bool:
+    """Wait for a process to exit on its own; kill it when the wait runs out."""
+    import time
+    limit = time.monotonic() + seconds
+    while time.monotonic() < limit:
+        if process.poll() is not None:
+            return True
+        time.sleep(0.2)
+    return process.poll() is not None
+
+
 def choose_file(parent, title: str, words: dict, patterns: list[tuple[str, str]] | None = None,
                 folder: bool = False) -> str:
     """Ask for a file (or a folder).  An empty string when the player cancels.

@@ -1,13 +1,11 @@
-"""The build page: the same pipeline the phone app runs.
+"""The build page: the same pipeline the phone app runs, on the desktop
+launcher's card column.
 
-The layout follows the desktop tool's build tab (gui/app.py): the game file and what it
-holds, the options, the stages with their times, the log.  What differs is what a phone
-does not need (installing an APK, a device, the SD card, the package) and what a Linux
-machine does not need (a Vulkan driver in the pack: the driver comes from the system).
-
-The game file is looked at first, the port runs with its stages and its progress, and
-the pack it makes lands in the data directory — the porter writes it there itself
-(NX2A_PACK_DIR, an atomic rename), and only a port that ends well leaves a pack.
+The page is one column of cards that fills the window (with its own margins on
+the sides): the page heading, then cards — the game file, the options (the
+everyday ones; the debug ones behind one quiet advanced toggle), the action
+bar, the stages, the log.  Same porter calls, same events, same stages and the
+same results as before; only the arrangement changed.
 """
 from __future__ import annotations
 
@@ -17,14 +15,16 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, QTimer
-from PySide6.QtGui import QDesktopServices, QFontDatabase
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
-                               QScrollArea, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+                               QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QScrollArea,
+                               QSizePolicy, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
 
-from launcher import runner, settings
-from launcher.ui import clear_layout, dialogs
+from launcher import runner, scale, settings
+from launcher.ui import clear_layout, dialogs, theme
+from launcher.ui.cards import CardGroup, CenteredColumn, page_note_font, page_title_font
+from launcher.ui.widgets import FlatButton
 from porter import config as porter_config
 
 GAME_LANGUAGES = [
@@ -33,10 +33,9 @@ GAME_LANGUAGES = [
     ('ru', 'Russian'), ('ko', 'Korean'), ('zh-Hans', 'Chinese (Simplified)'),
     ('zh-Hant', 'Chinese (Traditional)'), ('system', 'Follow the system'),
 ]
-STATUS_COLOUR = {'playable': '#2e7d32', 'wip': '#ef6c00', 'boots': '#ef6c00',
-                 'experimental': '#ef6c00', 'not ported': '#757575'}
-CARD_COLOUR = {'name': '#202124', 'dim': '#757575', 'ok': '#2e7d32',
-               'warn': '#ef6c00', 'bad': '#c62828'}
+
+# The tone of the state line: one colour per state of a build.
+STEP_TONES = {'busy': 'busy', 'done': 'ready', 'bad': 'bad', 'dim': 'dim'}
 
 
 def hms(seconds) -> str:
@@ -79,50 +78,69 @@ class BuildPage(QWidget):
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
         scroller.setFrameShape(QScrollArea.NoFrame)
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         outer.addWidget(scroller)
-        inner = QWidget()
-        scroller.setWidget(inner)
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        body = CenteredColumn()   # the cards fill the window, margins on the sides
+        scroller.setWidget(body)
+        column = body.body_col
 
-        # The game file.
+        # The page heading.
+        self.headline = QLabel(words['tab_build'])
+        self.headline.setObjectName('pageTitle')
+        self.headline.setFont(page_title_font(scale.user_scale(self.app.settings.get('ui_scale'))))
+        self.subline = QLabel(words['build_subtitle'])
+        self.subline.setObjectName('pageNote')
+        self.subline.setFont(page_note_font(scale.user_scale(self.app.settings.get('ui_scale'))))
+        self.subline.setWordWrap(True)
+        column.addWidget(self.headline)
+        column.addWidget(self.subline)
+
+        # Card 1: the game file.  The hint says the rule (updates and DLC come
+        # along) once, on the card's own footer; the field's placeholder stays
+        # a short instruction — the same words are never said twice on screen.
+        files = CardGroup(title=words['build_game_file'], footer=words['build_game_file_hint'])
+        column.addWidget(files)
+        self.files_card = files
         row = QHBoxLayout()
-        row.setSpacing(6)
-        row.addWidget(QLabel(words['build_game_file']))
+        row.setSpacing(8)
         self.folder = QLineEdit()
+        self.folder.setPlaceholderText(words['build_pick_file'])
         self.folder.returnPressed.connect(self.inspect)
         self.folder.editingFinished.connect(self.inspect_if_changed)
         row.addWidget(self.folder, 1)
-        browse = QPushButton(words['browse'])
+        browse = FlatButton(words['browse'], 'quiet')
         browse.clicked.connect(self.pick_folder)
         row.addWidget(browse)
-        inspect = QPushButton(words['build_inspect'])
+        inspect = FlatButton(words['build_inspect'], 'quiet')
         inspect.clicked.connect(self.inspect)
         row.addWidget(inspect)
         self.inspect_button = inspect
-        layout.addLayout(row)
+        files.add_row(row)
 
-        hint = QLabel(words['build_game_file_hint'])
-        hint.setStyleSheet('color: #757575')
-        layout.addWidget(hint)
-
-        # The card: what the game is.
+        # What the game is: a quiet card under the file's.
+        info_card = QFrame()
+        info_card.setObjectName('nxcard')
+        info_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        theme.styled_background(info_card)
+        info_col = QVBoxLayout(info_card)
+        info_col.setContentsMargins(18, 13, 18, 13)
         self.card = QLabel()
+        self.card.setObjectName('rowTitle')
         self.card.setWordWrap(True)
         self.card.setTextFormat(Qt.RichText)
         self.card.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.card)
+        info_col.addWidget(self.card)
+        column.addWidget(info_card)
 
-        # The options.
-        options = QGroupBox(words['build_options'])
-        layout.addWidget(options)
-        grid = QGridLayout(options)
-        grid.setContentsMargins(10, 6, 10, 6)
+        # Card 2: the options (the everyday ones).
+        options = CardGroup(title=words['build_options'])
+        column.addWidget(options)
+        self.options_card = options
+        grid = QGridLayout()
         grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(4)
-
+        grid.setVerticalSpacing(8)
         self.name_label = QLabel(words['opt_name'])
+        self.name_label.setObjectName('rowTitle')
         self.name = QLineEdit()
         self.language = QComboBox()
         for _code, language_name in GAME_LANGUAGES:
@@ -130,78 +148,108 @@ class BuildPage(QWidget):
         self.language.setCurrentIndex(0)
         self.headroom = QLineEdit()
         self.headroom.setPlaceholderText(words['headroom_auto'])
-        self.font = QLineEdit()
         for index, (label, widget) in enumerate((
                 (self.name_label, self.name), (QLabel(words['opt_language']), self.language),
-                (QLabel(words['opt_headroom']), self.headroom),
-                (QLabel(words['opt_font']), self.font))):
+                (QLabel(words['opt_headroom']), self.headroom))):
             grid.addWidget(label, index, 0)
             grid.addWidget(widget, index, 1)
-        font_browse = QPushButton(words['browse'])
-        font_browse.clicked.connect(self.pick_font)
-        grid.addWidget(font_browse, 3, 2)
+        headroom_hint = QLabel(words['opt_headroom_hint'])
+        headroom_hint.setProperty('dim', True)
+        headroom_hint.setWordWrap(True)
+        grid.addWidget(headroom_hint, 3, 1, 1, 2)
         self.fps60 = QCheckBox(words['opt_fps60'])
         self.touch = QCheckBox(words['opt_touch'])
+        checks = QHBoxLayout()
+        checks.setSpacing(18)
+        checks.addWidget(self.fps60)
+        checks.addWidget(self.touch)
+        checks.addStretch(1)
+        grid.addLayout(checks, 4, 0, 1, 2)
+        options.card.layout().addLayout(grid)
+
+        # The advanced options: behind one quiet toggle.
+        advanced = CardGroup(title=words['build_advanced'])
+        column.addWidget(advanced)
+        self._advanced_group = advanced
+        adv = QGridLayout()
+        adv.setContentsMargins(0, 0, 0, 0)
+        adv.setHorizontalSpacing(10)
+        adv.setVerticalSpacing(8)
+        self.font = QLineEdit()
+        self.font.setPlaceholderText(words['opt_font'])
+        font_browse = FlatButton(words['browse'], 'quiet')
+        font_browse.clicked.connect(self.pick_font)
+        adv.addWidget(QLabel(words['opt_font']), 0, 0)
+        adv.addWidget(self.font, 0, 1)
+        adv.addWidget(font_browse, 0, 2)
         self.no_menu = QCheckBox(words['opt_no_menu'])
         self.mt_replay = QCheckBox(words['opt_mt_replay'])
         self.debug = QCheckBox(words['opt_debug'])
         self.experimental = QCheckBox(words['opt_experimental'])
         self.experimental.toggled.connect(lambda _on: self.update_port_button())
-        for index, check in enumerate((self.fps60, self.touch, self.no_menu, self.mt_replay,
-                                       self.debug, self.experimental), start=4):
-            grid.addWidget(check, index, 1)
-        headroom_hint = QLabel(words['opt_headroom_hint'])
-        headroom_hint.setWordWrap(True)
-        grid.addWidget(headroom_hint, 10, 1, 1, 2)
+        for index, check in enumerate((self.no_menu, self.mt_replay, self.debug,
+                                       self.experimental)):
+            adv.addWidget(check, index + 1, 0, 1, 2)
+        advanced.card.layout().addLayout(adv)
+        advanced.hide()
 
-        # The buttons and the progress.
-        buttons = QHBoxLayout()
-        buttons.setSpacing(6)
-        self.start_button = QPushButton(words['build_start'])
+        self.advanced_toggle = FlatButton(words['build_advanced_show'], 'outline')
+        self.advanced_toggle.clicked.connect(self.toggle_advanced)
+        adv_row = QHBoxLayout()
+        adv_row.addStretch(1)
+        adv_row.addWidget(self.advanced_toggle)
+        column.addLayout(adv_row)
+
+        # Card 3: the action bar.
+        action = CardGroup()
+        column.addWidget(action)
+        self.action_card = action
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        self.start_button = FlatButton(words['build_start'], 'primary')
         self.start_button.setEnabled(False)
         self.start_button.clicked.connect(self.start_build)
-        buttons.addWidget(self.start_button)
-        self.cancel_button = QPushButton(words['build_cancel'])
+        bar.addWidget(self.start_button)
+        self.cancel_button = FlatButton(words['build_cancel'], 'outline')
         self.cancel_button.setEnabled(False)
         self.cancel_button.clicked.connect(self.cancel)
-        buttons.addWidget(self.cancel_button)
-        buttons.addStretch(1)
-        self.open_button = QPushButton(words['build_open'])
+        bar.addWidget(self.cancel_button)
+        self.open_button = FlatButton(words['build_open'], 'quiet')
         self.open_button.setEnabled(False)
         self.open_button.clicked.connect(self.open_out)
-        buttons.addWidget(self.open_button)
-        layout.addLayout(buttons)
-
+        bar.addWidget(self.open_button)
+        bar.addSpacing(12)
         self.step = QLabel('')
-        layout.addWidget(self.step)
+        self.set_step('', 'dim')
+        bar.addWidget(self.step, 1)
+        action.add_row(bar)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
-        layout.addWidget(self.progress)
+        action.add_row(self.progress)
 
-        # The stages and the log.
-        paned = QSplitter(Qt.Vertical)
-        stages = QGroupBox(words['build_stages'])
-        stages_layout = QVBoxLayout(stages)
-        stages_layout.setContentsMargins(4, 4, 4, 4)
+        # Card 4: the stages.
+        stages = CardGroup(title=words['build_stages'])
+        column.addWidget(stages)
         self.stage_view = QTreeWidget()
         self.stage_view.setColumnCount(4)
         self.stage_view.setHeaderLabels(['', words['build_stages'], words['build_result'],
                                          words['build_time']])
         self.stage_view.setRootIsDecorated(False)
-        stages_layout.addWidget(self.stage_view)
-        paned.addWidget(stages)
-        log = QGroupBox(words['build_log'])
-        log_layout = QVBoxLayout(log)
-        log_layout.setContentsMargins(4, 4, 4, 4)
+        self.stage_view.setAlternatingRowColors(False)
+        stages.card.layout().addWidget(self.stage_view)
+
+        # Card 5: the log.
+        log = CardGroup(title=words['build_log'])
+        column.addWidget(log)
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.log.setMaximumBlockCount(20000)
-        log_layout.addWidget(self.log)
-        paned.addWidget(log)
-        layout.addWidget(paned, 1)
+        log.card.layout().addWidget(self.log)
 
-        self.set_card([[(words['build_game_file_hint'], 'dim')]])
+        column.addStretch(1)
+
+        self.set_card([[(words['build_card_idle'], 'dim')]])
         # The porter's events come in on a queue the interface drains; the tick keeps
         # the running stage's time (both run only while their work is on).
         self.poll_timer = QTimer(self)
@@ -212,9 +260,25 @@ class BuildPage(QWidget):
         self.tick.timeout.connect(self.on_tick)
         self.tick.start()
 
+    def toggle_advanced(self) -> None:
+        """The debug options come out (or go away); the everyday page is quiet."""
+        shown = self._advanced_group.isHidden()
+        self._advanced_group.setVisible(shown)
+        self.advanced_toggle.setText(self.words['build_advanced_hide'] if shown
+                                     else self.words['build_advanced_show'])
+
     def rebuild(self) -> None:
         """The page is built again (the settings changed)."""
         self.words = self.app.words   # the language may have changed with the settings
+        user = scale.user_scale(self.app.settings.get('ui_scale'))
+        self.headline.setText(self.words['tab_build'])
+        self.headline.setFont(page_title_font(user))
+        self.subline.setText(self.words['build_subtitle'])
+        self.subline.setFont(page_note_font(user))
+        self.files_card.set_title(self.words['build_game_file'])
+        self.files_card.set_footer(self.words['build_game_file_hint'])
+        self.options_card.set_title(self.words['build_options'])
+        self._advanced_group.set_title(self.words['build_advanced'])
         self.stop_porter()
         for timer in (self.poll_timer, self.tick):
             timer.stop()
@@ -234,11 +298,18 @@ class BuildPage(QWidget):
         markup = []
         for parts in lines:
             for content, tag in parts:
-                colour = CARD_COLOUR.get(tag, '#202124')
+                colour = theme.TAGS.get(tag, theme.INK)
                 weight = ' font-weight: bold;' if tag == 'name' else ''
                 markup.append(f'<span style="color:{colour};{weight}">{html.escape(content)}</span>')
             markup.append('<br>')
         self.card.setText(''.join(markup))
+
+    def set_step(self, text: str, tone: str) -> None:
+        """The state line: the words of the state and its one colour (busy, done,
+        failed, gone)."""
+        self.step.setText(text)
+        self.step.setProperty('status', STEP_TONES.get(tone, 'dim'))
+        theme.repolish(self.step)
 
     # ---- what a player picks ----------------------------------------------------------
 
@@ -267,27 +338,44 @@ class BuildPage(QWidget):
         if folder != self.inspected:
             self.inspect()
 
+    # The game files the porter reads (compressed ones included — it unpacks them).
+    GAME_SUFFIXES = ('.nsp', '.xci', '.nsz', '.xcz')
+
     def inspect(self) -> None:
+        """Look at what the entry points at — the entry itself first (a wrong
+        path or a wrong kind of file fails at once, before the porter is ever
+        asked), then the porter's own reading of the game."""
         words = self.words
         folder = self.folder.text().strip()
         self.info = None
         self.inspected = folder
         self.update_port_button()
         if not folder:
+            self.set_card([[(words['build_card_idle'], 'dim')]])
             return
-        if not Path(folder).exists():
+        path = Path(folder).expanduser()
+        if not path.exists():
             self.set_card([[(words['card_not_found'].format(path=folder), 'bad')]])
+            return
+        if path.is_dir():
+            # A folder of files is the Switch 2 shape on the desktop; here the
+            # porter reads one file.  Say which kind, and where they are.
+            self.set_card([[(words['card_wants_file'].format(path=folder), 'bad')]])
+            return
+        if path.suffix.lower() not in self.GAME_SUFFIXES:
+            self.set_card([[(words['card_bad_suffix'].format(
+                suffix=path.suffix or path.name, kind='/'.join(self.GAME_SUFFIXES)), 'bad')]])
             return
         root = self.porter_root()
         if not root:
-            self.set_card([[(words['build_no_porter'].format(path=folder), 'bad')]])
+            self.set_card([[(words['build_no_porter'].format(path=str(path)), 'bad')]])
             return
         if self.inspecting:
             return   # one look at a time; a stale answer re-reads what the entry shows
         self.set_card([[(words['card_reading'], 'dim')]])
         self.inspecting = True
         self.inspect_button.setEnabled(False)
-        runner.run_json_async(root, ['inspect', folder, '--json'],
+        runner.run_json_async(root, ['inspect', str(path), '--json'],
                               lambda document, code, error: self.inspect_done(folder, document, code, error))
 
     def inspect_done(self, folder: str, document: dict | None, code: int, error: str) -> None:
@@ -323,11 +411,12 @@ class BuildPage(QWidget):
         words = self.words
         android = info.get('android') or {}
         status = android.get('status') or ('not ported' if info.get('profile') else 'not supported')
-        colour = STATUS_COLOUR.get(status, '#c62828')
+        colour = theme.STATUS_COLOUR.get(status, theme.DANGER)
         head: list[tuple[str, str]] = []
         head.append((str(info.get('name') or info.get('title_id') or ''), 'name'))
         head.append((f"  {info.get('title_id') or ''}", 'dim'))
-        head.append((f"  {status}", 'ok' if colour == '#2e7d32' else ('dim' if colour == '#757575' else 'warn')))
+        head.append((f"  {status}", 'ok' if colour == theme.READY
+                     else ('dim' if colour == theme.UNBUILT else 'warn')))
         lines = [head]
         files = ['base game'] + [f"update {u.get('version')}" for u in info.get('updates') or []]
         if info.get('dlc'):
@@ -415,7 +504,7 @@ class BuildPage(QWidget):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setTextVisible(False)
-        self.step.setText(words['build_running'])
+        self.set_step(words['build_running'], 'busy')
         self.start_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.open_button.setEnabled(False)
@@ -477,6 +566,7 @@ class BuildPage(QWidget):
         item = self.stages.get(key)
         if item is None:
             item = QTreeWidgetItem(['▶', name, '', ''])
+            item.setForeground(0, QColor(theme.BUILDING))
             self.stage_view.addTopLevelItem(item)
             self.stages[key] = item
         return item
@@ -486,12 +576,13 @@ class BuildPage(QWidget):
         if kind == 'stage':
             item = self.stage_item(event.get('k'), str(event.get('name') or ''))
             item.setText(0, '▶')
-            self.step.setText(f"[{event.get('k')}/{event.get('n')}] {event.get('name')}"
-                              + (f" · {event['step']}" if event.get('step') else ''))
+            item.setForeground(0, QColor(theme.BUILDING))
+            self.set_step(f"[{event.get('k')}/{event.get('n')}] {event.get('name')}"
+                          + (f" · {event['step']}" if event.get('step') else ''), 'busy')
             self.progress.setRange(0, 0)   # no number yet: the busy indicator
         elif kind == 'step':
-            self.step.setText(f"{event.get('name')}"
-                              + (f" · {event.get('step')}" if event.get('step') else ''))
+            self.set_step(f"{event.get('name')}"
+                          + (f" · {event.get('step')}" if event.get('step') else ''), 'busy')
         elif kind == 'progress':
             done, total = event.get('done'), event.get('total')
             count = ''
@@ -499,24 +590,23 @@ class BuildPage(QWidget):
                 count = f'{done:,}' + (f' / {total:,}' if total else '')
                 if event.get('unit'):
                     count += f' {event["unit"]}'
-            self.step.setText(f"{event.get('name')}"
-                              + (f" · {event.get('step')}" if event.get('step') else '')
-                              + (f' · {count}' if count else ''))
+            self.set_step(f"{event.get('name')}"
+                          + (f" · {event.get('step')}" if event.get('step') else '')
+                          + (f' · {count}' if count else ''), 'busy')
             if event.get('frac') is not None:
                 self.progress.setRange(0, 100)
                 self.progress.setValue(round(max(0.0, min(1.0, float(event['frac']))) * 100))
-                self.progress.setTextVisible(True)
             else:
                 self.progress.setRange(0, 0)
         elif kind == 'stage_end':
             item = self.stage_item(event.get('k'), str(event.get('name') or ''))
             ok = event.get('ok', True)
             item.setText(0, '✓' if ok else '✗')
+            item.setForeground(0, QColor(theme.READY if ok else theme.DANGER))
             item.setText(2, str(event.get('summary') or ''))
             item.setText(3, hms(event.get('elapsed')))
             self.progress.setRange(0, 100)
             self.progress.setValue(100 if ok else 0)
-            self.progress.setTextVisible(True)
         elif kind == 'say':
             self.append(str(event.get('msg') or ''))
         elif kind == 'result':
@@ -544,14 +634,14 @@ class BuildPage(QWidget):
         self.start_button.setEnabled(True)
         self.cancel_button.setEnabled(False)
         if self.cancelled or code == 130:
-            self.step.setText(words['build_cancelled'])
+            self.set_step(words['build_cancelled'], 'dim')
             return
         if code != 0:
-            self.step.setText(words['build_failed'])
+            self.set_step(words['build_failed'], 'bad')
             return
         if not (self.result or {}).get('data'):
-            self.step.setText(words['build_failed'])
+            self.set_step(words['build_failed'], 'bad')
             return
-        self.step.setText(words['build_done'])
+        self.set_step(words['build_done'], 'done')
         self.open_button.setEnabled(True)
         self.app.refresh_library()

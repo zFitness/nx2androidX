@@ -41,6 +41,34 @@ class Game:
         return f'{self.name}  {self.version}' if self.version else self.name
 
     @property
+    def romfs_path(self) -> Path | None:
+        """The RomFS the pack's env.txt points at, resolved against the pack folder
+        (relative paths are the layout: ../../work/<title>_build/extract/<v>/RomFS).
+        None when the pack has no env.txt or no DM_ROMFS at all."""
+        try:
+            for line in (self.path / 'env.txt').read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if line.startswith('DM_ROMFS='):
+                    raw = line.split('=', 1)[1].strip().strip('"')
+                    if not raw:
+                        return None
+                    candidate = Path(raw)
+                    if not candidate.is_absolute():
+                        candidate = self.path / raw
+                    return candidate
+        except OSError:
+            return None
+        return None
+
+    @property
+    def romfs_ready(self) -> bool:
+        """The referenced RomFS exists on this machine (the pack decides visibility; the
+        resources decide runnability). A pack without a DM_ROMFS at all counts ready: the
+        resource story is the porter's business then."""
+        romfs = self.romfs_path
+        return True if romfs is None else romfs.is_dir()
+
+    @property
     def exe_path(self) -> Path | None:
         """This game's own executable, when it has one.
 
