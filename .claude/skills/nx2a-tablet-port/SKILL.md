@@ -82,6 +82,15 @@ $ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c \
 
 ## 6. 已知边界
 
-- 语言:GUI 构建时选的语言进 env.txt（DM_LANG）;运行期 env 里已有的值赢过 env.txt（`nxnative/dm/host/main.c:87`）——即语言是构建期选择,当前无运行期切换 UI。
+- 语言:构建不再选语言（包带 languages.txt）;库页 管理⋯→游戏语言 写 pack 的 env.txt（DM_LANG）,下次运行生效。运行期 env 里已有的值赢过 env.txt（`nxnative/dm/host/main.c:87`）。
 - 桌面/Steam 快捷方式：写 ~ 下的 .desktop/shortcuts（会话树里可用,Steam 需真装了）。
-- 手柄: SDL3 路径在会话树已实证（pad_relay 历史）。
+- 手柄: SDL3 路径在会话树已实证（pad_relay 历史）。**DroidDeck 会话里 SDL 的 Wayland
+  手柄事件在 init 后即停**——front 已改为每帧轮询发布（4d5f4e70）;手柄能被枚举
+  （日志 `[front] gamepad N: ...`）但按键无反应就是这个病,别再查枚举。
+- 声音: Linux 默认曾是静音 sink（DM_AUDIO_DEFAULT 用了 TARGET_OS_IPHONE）,4d5f4e70 起
+  Linux 默认真实输出（SDL3 → 会话的 pipewire,/run/droiddeck/pipewire-0）。应急开关:
+  pack 的 env.txt 加 `DM_AUDIO=1`（env 赢过默认值）。日志里 `silent sink` = 走了静音。
+- DroidDeck 会话的输入/音频**不需要特殊路径**:rootfs 的 /etc/ld.so.preload 已注入
+  libddsession/libfakeinput/libddfastpath（虚拟手柄经它进 /dev/input/event* + 假 sysfs）,
+  pipewire socket 在 XDG_RUNTIME_DIR(/run/droiddeck）。SDL 全都能直接用——两个 bug 都在
+  我们自己代码里,不在环境。
