@@ -103,6 +103,13 @@ __attribute__((weak)) float dm_overlay_opacity(void) { return 0.6f; }
 __attribute__((weak)) int dm_overlay_layout(void) { return 0; }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
 __attribute__((weak)) int dm_ui_zh(void) { return 0; }
+// The menu UI module (menu/dmui.c, DM_LINUX): the shared ImGui menu (openspec overlay-menu). Weak on
+// purpose — the Android build links no dmui yet, and these resolve to 0 there (the menu stays off).
+#include "dmui.h"   // menu/dmui.h: dmui_vk_info (platform-neutral, no Vulkan types)
+__attribute__((weak)) int dmui_wants_frame(void);
+__attribute__((weak)) void dmui_frame(void *cmd, float w, float h);
+__attribute__((weak)) void dmui_vk_ensure(const dmui_vk_info *info);
+__attribute__((weak)) void dmui_vk_invalidate(void);
 static void pace_reset(void); static void ov_fb_drop(void);
 // Pre-rotation. A landscape window on a panel whose own orientation is portrait (the Retroid Pocket 5: 1080x1920, the window 1920x1080, currentTransform
 // ROTATE_90) left the turn to Android's compositor, and its display hardware does not rotate such a layer: SurfaceFlinger composited it on the GPU every
@@ -458,6 +465,11 @@ static int swap_make(void) {
     for (uint32_t i = 0; i < nf; i++) if (sf[i].format == g_want) g_sfmt = g_want;   // the window texture's sRGB-ness (g_want), so the blit copies its bytes as they are
     if (g_sfmt != g_want) VKRED_ONCE(95, "the surface offers no format %d for the window texture: its picture is %s", g_want, g_want == VK_FORMAT_R8G8B8A8_SRGB ? "darker" : "lighter");
 #ifdef DM_LINUX
+    { static VkFormat ui_fmt;   // the menu UI's backend pipeline carries the swapchain's format: a change re-forms it on the next menu frame
+      if (ui_fmt && ui_fmt != g_sfmt && dmui_vk_invalidate) dmui_vk_invalidate();
+      ui_fmt = g_sfmt; }
+#endif
+#ifdef DM_LINUX
     // The surface names its size where the window system does (Wayland: the window's size in pixels, and a swapchain of another size is out of
     // date at once); elsewhere the window's, kept inside the surface's bounds
     VkExtent2D e = caps.currentExtent;
@@ -717,6 +729,7 @@ static const char *ovm_label(int it) {
     case OVM_OUTLINE: return TR("Outline", "描边");
     case OVM_SIZE: return TR("Size", "大小");
     case OVM_RESUME: return TR("Resume", "继续游戏");
+    case OVM_QUIT: return TR("Quit to the launcher", "退出到启动器");
     default: return "";
     }
 }
@@ -786,6 +799,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
             continue;
         }
         if (it == OVM_RESUME) { const char *w = ovm_label(OVM_RESUME); cv_rrect(target, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(target, r[0] + (rw - cv_text_w(w, is)) / 2, cy, w, is, C_ACCENT); continue; }
+        if (it == OVM_QUIT) { const char *w = ovm_label(OVM_QUIT); cv_text(target, r[0] + (rw - cv_text_w(w, is)) / 2, cy, w, is, C_HOT); continue; }   // the Linux front's row: centred, in the too-hot red (it ends the process)
         const char *lbl = ovm_label(it), *btn = ovm_button(it);
         cv_text(target, r[0] + rh * 0.15f, cy, lbl, is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY || it == OVM_SHARP) {   // a slider: its track, filled to the value, the knob and the percent
@@ -1453,6 +1467,10 @@ static int sr_ready(uint32_t k, vkimg_t *im) {   // the pipeline and present slo
     vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);   // this slot's fence was just waited, so its previous descriptor is no longer in use
     return 1;
 }
+// The menu UI's submit-lock callbacks (menu/dmui.c → the Vulkan backend's own submits): the game's
+// render threads and the backend's font uploads share one queue under this mutex.
+static void ov_dmui_qlock(void) { extern pthread_mutex_t g_vk_queue_mu; pthread_mutex_lock(&g_vk_queue_mu); }
+static void ov_dmui_qunlock(void) { extern pthread_mutex_t g_vk_queue_mu; pthread_mutex_unlock(&g_vk_queue_mu); }
 static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
     uint32_t k = g_pi++ % 8;
     // A redraw is not worth a freeze: this device's kgsl or compositor can hold a fence or a buffer for half a second, and waiting it out stalls the whole menu. Wait
@@ -1479,9 +1497,21 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
     int external = dm_external_active();
     int ovm = external ? 0 : dm_overlay_visible(), menu = external ? -1 : dm_menu_state(), fps = dm_overlay_fps();
+    int ui = dmui_wants_frame ? dmui_wants_frame() : 0;   // the shared menu's pixels are wanted this frame (menu open)
+    if (ui && dmui_vk_ensure) {   // once, lazily: the backend forms on this thread (the context's owner); its own submits take the queue mutex
+        dmui_vk_info ii = {};
+        ii.instance = (void *)V.inst; ii.physical_device = (void *)V.pd; ii.device = (void *)V.dev;
+        ii.queue = (void *)V.q; ii.queue_family = V.qf; ii.pipeline_cache = (void *)V.pcache;
+        ii.gipa = (void *)vk_gipa(); ii.api_version = V.props.apiVersion; ii.image_count = g_nsimg ? g_nsimg : 3;
+        ii.use_dynamic_rendering = V.has_dynrender; ii.color_format = g_sfmt;
+        ii.render_pass = V.has_dynrender ? NULL : ov_rp();
+        ii.submit_lock = ov_dmui_qlock; ii.submit_unlock = ov_dmui_qunlock;
+        ii.font_size_px = 22.0f;
+        dmui_vk_ensure(&ii);
+    }
     atomic_store_explicit(&g_fg_on, fps && (fpso_rows(dm_fps_opts()) & FPSO_GRAPH), memory_order_relaxed);
     // the panel's raster is uploaded before the target's rendering scope starts, so the overlay can draw inside it
-    int ovon = (ovm || menu >= 0 || fps) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx));
+    int ovon = (ovm || menu >= 0 || fps || ui) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx));
     // a picture that grows by at least a sixteenth goes through SGSR 1.0; one that shrinks or fits stays with the blit (the same cost, no filter)
     int sr = sr_on() && dw * 16 >= cw * 17 && V.has_dynrender && im->samples == 1 && im->layers == 1 && im->d == 1 && sr_ready(k, im);
     static int sr_was = -1, sr_ws = -1; static uint32_t sr_lw, sr_ldw;   // the log follows the switch, a new picture size and a new sharpness, not every frame
@@ -1515,6 +1545,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_ov.set, 0, NULL);
             ov_render(cb, ovm, menu, fps);
         }
+        if (ui && dmui_frame) dmui_frame(cb, (float)g_sext.width, (float)g_sext.height);   // the shared menu, in this scope, after the picture
         vkCmdEndRendering(cb);
         lay = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     } else {
@@ -1538,6 +1569,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
             VkViewport vp = {0, 0, (float)g_sext.width, (float)g_sext.height, 0, 1}; VkRect2D sc = {{0, 0}, g_sext};
             vkCmdSetViewport(cb, 0, 1, &vp); vkCmdSetScissor(cb, 0, 1, &sc);
             ov_render(cb, ovm, menu, fps);
+            if (ui && dmui_frame) dmui_frame(cb, (float)g_sext.width, (float)g_sext.height);   // the shared menu (both rendering forms: dynamic here or the render pass above)
             if (V.has_dynrender) vkCmdEndRendering(cb); else vkCmdEndRenderPass(cb);
         }
     }
@@ -1634,7 +1666,7 @@ static void *present_thread(void *arg) {
         while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) {
             // With the pause menu open the game sends no frame, so nothing would be presented between two touches and a dragged slider would only move on the next
             // touch event. Present the last frame again at 30 Hz instead (a 33 ms timer, not the panel's vsync), which is what makes the menu follow the finger
-            if (dm_menu_state() >= 0) {
+            if (dm_menu_state() >= 0 || (dmui_wants_frame && dmui_wants_frame())) {
                 struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);   // (the condvar's clock: pthread_cond_timedwait takes an absolute time on it)
                 ts.tv_nsec += 33333333; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
                 if (pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts)) break;   // (timed out: a redraw; a state change that came in lands here too)

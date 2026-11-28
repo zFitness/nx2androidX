@@ -154,6 +154,7 @@ def port_files():
         out += [p for p in srcs('android/compat/*.c')
                 if p.name not in ('audiotoolbox_aaudio.c', 'audioconverter_mediacodec.c')]
         out += [DM / 'android/dm_settings.c', DM / 'android/gfx_common.c']
+        out += srcs('menu/*.c')   # the pause menu: the shared functionality (dm_menu.c) and the ImGui UI module (dmui.c)
         if a.gfx == 'null': out.append(DM / 'android/gfx_null.c')
         else: out += srcs('android/gfx_vk*.c')   # --gfx vk: the Vulkan backend the Android app runs (the NVN HLE's mtl_* interface), on SDL3's Wayland window
         return out
@@ -165,7 +166,7 @@ def port_files():
         out.append(p)
     return out
 
-INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include', str(DM / 'android/dm_settings.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
+INC = ['-include', str(DM / 'android/compat/include/darwin_compat.h'), '-include', str(DM / 'android/dm_settings.h'), f'-I{DM / "android/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}', f'-I{DM / "menu"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', '-I/usr/include/SDL3', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 if DM_LINUX: INC.insert(0, f'-I{DM / "linux/include"}')   # the Linux stand-ins for the Android headers (linux/include/android): first, and for Linux builds only -- Android keeps its own
 if DM_LINUX and Path('/usr/include/SDL3').is_dir():
@@ -178,10 +179,24 @@ CFLAGS = TARGET + [f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ff
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
           '-Werror=incompatible-pointer-types', '-Werror=int-conversion', '-D_GNU_SOURCE', '-DDM_LINUX=1' if DM_LINUX else '-DDM_ANDROID=1', *(['-DDM_TSD_APPLE=1'] if DM_TSD_APPLE else []), *(['-DDM_TSD_LINUX=1'] if DM_TSD_LINUX else []), '-fno-strict-aliasing', '-fvisibility=hidden'] + (['-DDM_RELEASE=1'] if a.release else [])
 VPX_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/libvpx/config"}', '-w']
+# The menu UI's vendor C++ (third_party/cimgui: imgui core + cimgui + the Vulkan backend, openspec
+# overlay-menu D2): no core forced includes, no core warnings; NO_PROTOTYPES (the host loads every
+# Vulkan entry point itself and hands the loader over); the dynamic-flags stamp below covers these.
+CIMGUI_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', '-std=c++17', '-w',
+              '-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES', '-DIMGUI_DISABLE_DEMO_WINDOWS',
+              # imgui_demo.cpp is not vendored (openspec overlay-menu D2); the shim stubs the four
+              # demo windows imgui's debug-tools hooks name (unreachable from the menu)
+              f'-I{DM / "third_party/cimgui"}', f'-I{DM / "third_party/cimgui/imgui"}', f'-I{DM / "third_party/vulkan-headers/include"}']
+# cimgui.cpp wraps the full API surface and must not take the release disables above
+CIMGUI_BASE_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', '-std=c++17', '-w',
+              '-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES',
+              f'-I{DM / "third_party/cimgui"}', f'-I{DM / "third_party/cimgui/imgui"}', f'-I{DM / "third_party/vulkan-headers/include"}']
+# (cimgui.cpp includes imgui.h itself: no CIMGUI_DEFINE_ENUMS_AND_STRUCTS here — the C consumers
+# (menu/dmui.c) define it in their own source before including cimgui.h)
 ZSTD_FLAGS = TARGET + ['-O2'] + DBG + ['-fPIC', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-w']   # its API stays inside libdmhost.so
 
 import hashlib, shutil
-_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, CC)).encode()).hexdigest()
+_stamp = obj / 'flags.stamp'; _flags = hashlib.sha256(repr((CFLAGS, INC, VPX_FLAGS, ZSTD_FLAGS, CIMGUI_FLAGS, CC)).encode()).hexdigest()
 if not _stamp.exists() or _stamp.read_text() != _flags:   # compiler flags changed: every object is rebuilt
     shutil.rmtree(obj, ignore_errors=True); obj.mkdir(parents=True, exist_ok=True); _stamp.write_text(_flags)
 
@@ -203,7 +218,7 @@ def compile_one(s):
         if not src.exists() or src.stat().st_mtime < s.stat().st_mtime:
             subprocess.run([sys.executable, str(DM / 'android/tools/darwin2elf.py'), str(s), str(src)], check=True)
     if not dep_stale(o, d, src): return s, o, 0, ''
-    flags = VPX_FLAGS if 'third_party/libvpx' in str(rel).replace(os.sep, '/') else ZSTD_FLAGS if 'third_party/zstd' in str(rel).replace(os.sep, '/') else TARGET + DBG if s.suffix == '.S' else CFLAGS + INC
+    flags = VPX_FLAGS if 'third_party/libvpx' in str(rel).replace(os.sep, '/') else ZSTD_FLAGS if 'third_party/zstd' in str(rel).replace(os.sep, '/') else CIMGUI_BASE_FLAGS if str(rel).replace(os.sep, '/') == 'third_party/cimgui/cimgui.cpp' else CIMGUI_FLAGS if 'third_party/cimgui' in str(rel).replace(os.sep, '/') else TARGET + DBG if s.suffix == '.S' else CFLAGS + INC
     r = subprocess.run([CC] + CC_EXTRA + flags + ['-MMD', '-MF', str(d), '-c', str(src), '-o', str(o)], capture_output=True, text=True, errors='replace')
     return s, o, r.returncode, r.stderr
 
@@ -223,12 +238,16 @@ def shape_files():
     return HOST + GFX + port_files() + ASM
 FILES = shape_files()
 PLAYS = srcs('android/jni_android.c')   # the app's JNI adapter: compiled always (the errors surface here too), linked only for --play
+VENDOR = srcs('third_party/cimgui/*.cpp', 'third_party/cimgui/imgui/*.cpp', 'third_party/cimgui/backends/*.cpp') if DM_LINUX else []
+# phase 1 vendors the menu UI for Linux only (the Android build adds it when the same menu lands there)
 objs, failed = build(FILES)
 if not DM_LINUX: pobjs, pfailed = build(PLAYS)   # jni_android.c: the app's adapter, Android only (the Linux link never takes it)
 else: pobjs, pfailed = [], []
 vobjs, vfailed = build(VPX + ZSTD)
-failed += pfailed + vfailed
-print(f'compiled {len(FILES) + len(PLAYS) + len(VPX) + len(ZSTD)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
+uobjs, ufailed = build(VENDOR) if VENDOR else ([], [])
+objs += uobjs
+failed += pfailed + vfailed + ufailed
+print(f'compiled {len(FILES) + len(PLAYS) + len(VPX) + len(ZSTD) + len(VENDOR)} sources, {len(failed)} failed' + (': ' + ', '.join(str(f.relative_to(DM)) for f in failed) if failed else ''))
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
@@ -238,6 +257,12 @@ LDFLAGS = TARGET + ['-Wl,-z,max-page-size=16384', '-Wl,--build-id']
 if not DM_LINUX: LDFLAGS += ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,nostart-stop-gc']
 elif _sh.which('ld.lld'): LDFLAGS += ['-fuse-ld=lld']   # brew llvm's linker; the system's default when there is none
 if DM_LINUX: LDFLAGS += ['-L/usr/lib/aarch64-linux-gnu']   # 宿主 lib 目录：payload clang 驱动的搜索路径不含它（-lSDL3 等宿主库）
+if DM_LINUX:
+    # The menu UI's vendor C++ (third_party/cimgui). This container ships the libstdc++ runtime
+    # without the -dev symlink (-lstdc++ fails) and without clang++: link the versioned library
+    # directly — the recorded DT_NEEDED is the same soname as -lstdc++ would give.
+    _stdcpp = '/usr/lib/aarch64-linux-gnu/libstdc++.so.6'
+    LDFLAGS += [_stdcpp] if Path(_stdcpp).is_file() else ['-lstdc++']
 if DM_LINUX and FF_LIBS: LIBS += FF_LIBS   # the movie decoder (linux/movie_ffmpeg.c)
 def link(args, name):
     # The 192 object paths under a long checkout exceed Windows' command-line limit (WinError 206).

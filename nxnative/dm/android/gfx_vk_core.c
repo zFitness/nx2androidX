@@ -2152,3 +2152,4 @@ int mtl_wait(uint64_t fence, uint64_t timeout_ns) {
 }
 void mtl_finish(void) { mtl_wait(g_fence, ~0ull); }
 void mtl_drain(void) { mtl_finish(); vk_pipeline_cache_save(); }
+PFN_vkGetInstanceProcAddr vk_gipa(void) { return p_vkGetInstanceProcAddr; }   // the one loader (gfx_vk.h): the menu UI's backend resolves through it (openspec overlay-menu D2)

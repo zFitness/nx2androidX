@@ -24,6 +24,8 @@
 // Keyboard mapping (v1, no remapper yet): WASD = left stick, arrows = d-pad,
 // J=A K=B U=X I=Y, Q=ZL E=ZR, 1=L 2=R, Return=Plus, Backspace=Minus.
 // Real controllers: SDL3's gamepad API, standard layout → dm_pad_set_player.
+// The pause menu: F8 / Insert / R3+L2 open it (Esc, B or the shortcut again closes);
+// while it is open every key and pad press goes to the menu and nothing reaches the game.
 #include "front.h"
 #include "dm.h"          // dm_host_shutdown: the orderly stop the window's close goes through
 #include "dm_input.h"
@@ -49,6 +51,7 @@ __attribute__((weak)) void dm_front_tick(void);
 __attribute__((weak)) int vk_testcard_step(uint64_t now_ns, int period_ms);
 __attribute__((weak)) void dm_front_vk_window_thread(void);   // gfx_vk_present.c, DM_LINUX: this thread, registered before anything else runs
 void dm_observe_tick(void);                              // linux/observe.c: the once-a-second counters, under DM_OBSERVE=1
+__attribute__((weak)) void dm_overlay_redraw(void);      // gfx_vk_present.c: re-present the last frame with the new menu state; kick for redraw path
 
 // ---- what the backend is handed from this thread -------------------------------------------
 static SDL_Window *g_win;
@@ -90,6 +93,22 @@ static void stick_recompute(void) {
     g_kbd_lx = (k_right - k_left) * DM_STICK_MAX;
     g_kbd_ly = (k_up - k_down) * DM_STICK_MAX;   // the host reads a positive y as up (hle_hid.c: ly > thresh is LUp)
 }
+
+// ---- the pause menu (menu/dmui.c + menu/dm_menu.c, openspec overlay-menu): F8 / Insert / R3+L2
+// (same device) open the shared ImGui menu; while it is open the game is held and nothing passes
+// through. The channels below route through it, so its names sit here first. dm_menu_hold does the
+// freezing (clock, audio, movies); dm_menu_quit is the launcher-facing exit; the fps switch is the
+// one persisted setting (the pack's settings.txt, the app's KEY=VALUE format).
+static int g_menu_held;   // dmui_open() mirrored: the hold's transitions log here
+static uint64_t g_padcmd_prev, g_relay_prev;   // the injected channels' last seen state: presses are edges
+void dm_audio_suspend(int on);   // hle_audio.c (hle.h): used through dm_menu_hold
+static void menu_pad_tick(void);
+static int menu_key_event(SDL_Keycode k, int down);   // 1 = consumed by the menu (or its opening shortcut)
+static int g_guest_on;   // the guest thread is up: there is a game to hold (the test card runs without one)
+static int dmui_key_of(uint64_t bit);   // a DM_BTN bit → the UI's semantic key (defined in the menu block below)
+#include "dmui.h"       // menu/dmui.h: the shared ImGui menu (openspec overlay-menu)
+#include "dm_menu.h"    // menu/dm_menu.h: hold / quit / the persisted setting
+
 static void key_apply(SDL_Keycode k, int down) {
     uint64_t b = g_kbd_btn;
     switch (k) {
@@ -148,23 +167,27 @@ static void pad_publish(int i) {
     int32_t zl = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), zr = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     if (zl > DM_STICK_MAX / 20) b |= DM_BTN_ZL;   // pressed past 5 % of its travel
     if (zr > DM_STICK_MAX / 20) b |= DM_BTN_ZR;
+    if (dmui_open()) { b = 0; ax[0] = ax[1] = ax[2] = ax[3] = 0; }   // the menu holds the game: nothing passes through
     dm_pad_set_player(g_pad_player[i], b, ax[0], -ax[1], ax[2], -ax[3]);
     dm_pad_players(g_pad_mask);
 }
 static void pad_publish_pub(void) { for (int i = 0; i < MAX_PADS; i++) if (g_pad[i]) pad_publish(i); }
 
 // DM_PAD_CMD=<file>: the game's pad input as kernel-style lines appended to a file — "key <code> <v>" with the uinput button codes
-// (304 A 305 B 306 X 307 Y 310 L 311 R 312 ZL 313 ZR 314 minus 315 plus) and "axis <code> <v>" (0 left-x 1 left-y 2 right-x
+// (304 A 305 B 306 X 307 Y 310 L 311 R 312 ZL 313 ZR 314 minus 315 plus, 317 L3 318 R3, 103 up 105 left 106 right 108 down —
+// the arrows so the injected file can drive the pause menu too) and "axis <code> <v>" (0 left-x 1 left-y 2 right-x
 // 3 right-y, y up-negative like SDL). The host reads the appended lines each frame and drives player 0: no kernel input device,
 // no compositor, no focus — the injection path works whatever holds the screen (the same shape as the Android touch injection)
 static int padcmd_on = -1; static char padcmd_path[512];
-static long long padcmd_mtime;
+static long long padcmd_mtime;   // the file's mtime in ns (st_mtim): second granularity would merge rapid successive writes
 static unsigned padcmd_btn; static unsigned padcmd_logged; static int padcmd_ax[4];
 static unsigned padcmd_bit(int code) {
     switch (code) {
     case 304: return DM_BTN_A; case 305: return DM_BTN_B; case 306: return DM_BTN_X; case 307: return DM_BTN_Y;
     case 310: return DM_BTN_L; case 311: return DM_BTN_R; case 312: return DM_BTN_ZL; case 313: return DM_BTN_ZR;
     case 314: return DM_BTN_MINUS; case 315: return DM_BTN_PLUS;
+    case 317: return DM_BTN_LS; case 318: return DM_BTN_RS;
+    case 103: return DM_BTN_UP; case 105: return DM_BTN_LEFT; case 106: return DM_BTN_RIGHT; case 108: return DM_BTN_DOWN;
     default: return 0;
     }
 }
@@ -179,8 +202,9 @@ static void padcmd_tick(void) {
     if (!padcmd_on) return;
     struct stat st;
     if (stat(padcmd_path, &st) != 0) return;
-    if ((long long)st.st_mtime == padcmd_mtime) return;   // the state is unchanged
-    padcmd_mtime = (long long)st.st_mtime;
+    long long m = (long long)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
+    if (m == padcmd_mtime) return;   // the state is unchanged
+    padcmd_mtime = m;
     // The file is the pad's state snapshot, whole and current: re-read it from the top on every change and make the pad match
     FILE *f = fopen(padcmd_path, "r");
     if (!f) return;
@@ -203,6 +227,18 @@ static void padcmd_tick(void) {
         padcmd_logged = padcmd_btn;
         fprintf(stderr, "[front] pad state: buttons %#x sticks %d %d %d %d\n", padcmd_btn, ax[0], -ax[1], ax[2], -ax[3]);
     }
+    uint64_t mb = padcmd_btn;
+    if ((mb & (DM_BTN_RS | DM_BTN_ZL)) == (DM_BTN_RS | DM_BTN_ZL) && (g_padcmd_prev & (DM_BTN_RS | DM_BTN_ZL)) != (DM_BTN_RS | DM_BTN_ZL)) {
+        g_padcmd_prev = mb; if (g_guest_on) dmui_toggle(); return;   // R3 + L2 opens the menu (the pair's edge: it fires once per press)
+    }
+    uint64_t presses = mb & ~g_padcmd_prev, releases = g_padcmd_prev & ~mb;
+    g_padcmd_prev = mb;
+    if (dmui_open()) {   // the menu consumes the file's presses; the game's pad stays empty while it is open
+        for (; presses; presses &= presses - 1) { int k = dmui_key_of(presses & -presses); if (k >= 0) dmui_input_pad(k, 1); }
+        for (; releases; releases &= releases - 1) { int k = dmui_key_of(releases & -releases); if (k >= 0) dmui_input_pad(k, 0); }
+        dm_pad_set_player(0, 0, 0, 0, 0, 0); dm_pad_players(1);
+        return;
+    }
     dm_pad_set_player(0, padcmd_btn, padcmd_ax[0], -padcmd_ax[1], padcmd_ax[2], -padcmd_ax[3]); dm_pad_players(1);
 }
 
@@ -220,8 +256,8 @@ static void pad_relay_tick(void) {
     if (!pad_relay_on) return;
     struct stat st;
     if (stat(pad_relay_path, &st) != 0) { if (++pad_relay_missing == 60) fprintf(stderr, "[front] pad relay state %s is not there yet\n", pad_relay_path); return; }
-    if ((long long)st.st_mtime == pad_relay_mtime) return;   // the relay rewrites it at 10 Hz: read on change only
-    pad_relay_mtime = (long long)st.st_mtime;
+    if ((long long)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec == pad_relay_mtime) return;   // the relay rewrites it at 10 Hz: read on change only (ns mtime: second granularity would swallow nine of ten writes)
+    pad_relay_mtime = (long long)st.st_mtim.tv_sec * 1000000000ll + st.st_mtim.tv_nsec;
     FILE *f = fopen(pad_relay_path, "r");
     if (!f) return;
     unsigned mask = 0; int lx = 0, ly = 0, rx = 0, ry = 0;
@@ -234,8 +270,127 @@ static void pad_relay_tick(void) {
     if (mask & 16u) b |= DM_BTN_L;     if (mask & 32u) b |= DM_BTN_R;
     if (mask & 64u) b |= DM_BTN_PLUS;  if (mask & 128u) b |= DM_BTN_MINUS;
     if (mask & 4096u) b |= DM_BTN_ZL;  if (mask & 8192u) b |= DM_BTN_ZR;
+    if (mask & 256u) b |= DM_BTN_LS;   if (mask & 512u) b |= DM_BTN_RS;   // the thumbs (pad_relay.c): R3 with L2 opens the menu
+    if ((b & (DM_BTN_RS | DM_BTN_ZL)) == (DM_BTN_RS | DM_BTN_ZL) && (g_relay_prev & (DM_BTN_RS | DM_BTN_ZL)) != (DM_BTN_RS | DM_BTN_ZL)) {
+        g_relay_prev = b; if (g_guest_on) dmui_toggle(); return;   // the pair's edge: once per press
+    }
+    uint64_t presses = b & ~g_relay_prev, releases = g_relay_prev & ~b;
+    g_relay_prev = b;
+    if (dmui_open()) {   // the menu takes the relay's presses; the game's pad stays empty
+        for (; presses; presses &= presses - 1) { int k = dmui_key_of(presses & -presses); if (k >= 0) dmui_input_pad(k, 1); }
+        for (; releases; releases &= releases - 1) { int k = dmui_key_of(releases & -releases); if (k >= 0) dmui_input_pad(k, 0); }
+        dm_pad_set_player(0, 0, 0, 0, 0, 0); dm_pad_players(1);
+        return;
+    }
     dm_pad_set_player(0, b, lx, -ly, rx, -ry);   // the relay's Y is SDL's (up negative); the host reads a positive y as up
     dm_pad_players(1);
+}
+
+// ---- the pause menu's glue: the shared UI module (menu/dmui.c) driven by this front's events. The
+// menu's open state lives in the module; the hold (clock, audio, movies) and the quit run from here,
+// on this thread — the same lifecycle the window's close takes. One persisted setting (fps) rides in
+// the pack's settings.txt through menu/dm_menu.c, the app's KEY=VALUE format.
+int dm_overlay_fps(void) { return dm_menu_setting_get("fps", 0); }   // the counter's switch: the menu's persisted setting (read through the cache)
+
+// a pad state's DM_BTN bit → the UI's semantic key (-1: the menu does not use it)
+static int dmui_key_of(uint64_t bit) {
+    switch (bit) {
+    case DM_BTN_A: return DMUI_KEY_OK; case DM_BTN_B: return DMUI_KEY_BACK;
+    case DM_BTN_UP: return DMUI_KEY_UP; case DM_BTN_DOWN: return DMUI_KEY_DOWN;
+    case DM_BTN_LEFT: return DMUI_KEY_LEFT; case DM_BTN_RIGHT: return DMUI_KEY_RIGHT;
+    case DM_BTN_L: case DM_BTN_ZL: return DMUI_KEY_TAB_PREV;
+    case DM_BTN_R: case DM_BTN_ZR: return DMUI_KEY_TAB_NEXT;
+    default: return -1;   // X/Y, the sticks' presses, +/−: reserved rows and panels use them later
+    }
+}
+
+// The keyboard: F8 and Insert open and close (the edge only — SDL's autorepeat is dropped in the event
+// loop); Esc closes; the game's own mapping becomes the menu's (arrows = the d-pad, J/Space/Enter = OK,
+// K = back). While the menu is open every key is consumed here: nothing reaches the game.
+static int menu_key_event(SDL_Keycode k, int down) {   // 1 = consumed
+    if (down && (k == SDLK_F8 || k == SDLK_INSERT)) { if (g_guest_on) dmui_toggle(); return 1; }
+    if (!dmui_open()) return 0;
+    int dk = -1;
+    switch (k) {
+    case SDLK_UP: case SDLK_W: dk = DMUI_KEY_UP; break;
+    case SDLK_DOWN: case SDLK_S: dk = DMUI_KEY_DOWN; break;
+    case SDLK_LEFT: case SDLK_A: dk = DMUI_KEY_LEFT; break;
+    case SDLK_RIGHT: case SDLK_D: dk = DMUI_KEY_RIGHT; break;
+    case SDLK_J: case SDLK_SPACE: case SDLK_RETURN: case SDLK_KP_ENTER: dk = DMUI_KEY_OK; break;
+    case SDLK_K: case SDLK_LSHIFT: case SDLK_BACKSPACE: dk = DMUI_KEY_BACK; break;
+    case SDLK_ESCAPE: if (down) { dmui_input_key(DMUI_KEY_BACK, 1); dmui_input_key(DMUI_KEY_BACK, 0); } return 1;
+    default: return 1;   // the rest is swallowed while the menu is open
+    }
+    dmui_input_key(dk, down);
+    return 1;
+}
+
+// The gamepads, polled (not through the events: SDL3's Wayland gamepad events stop arriving in this
+// environment, the same reason the pad relay exists). R3+L2 opens — on one device only: the combo's
+// edge is tracked per controller (two pads pressing one button each must not make a shortcut). A
+// newly pressed key acts once while the menu is open (edges only: holding never repeats it — the UI
+// makes its own nav repeat); the left stick past half travel is the d-pad. pad_publish keeps the
+// game's own pad state at zero meanwhile.
+static struct { uint32_t id; uint64_t prev; } g_combo[MAX_PADS];
+static int combo_slot(uint32_t id) {
+    for (int i = 0; i < MAX_PADS; i++) if (g_combo[i].id == id) return i;
+    for (int i = 0; i < MAX_PADS; i++) if (!g_combo[i].id) { g_combo[i].id = id; return i; }
+    return 0;
+}
+#define DM_STICK_BITS (1ull << 20 | 1ull << 21 | 1ull << 22 | 1ull << 23)   // the stick's digital directions, above the pad bits
+#define COMBO_BITS (DM_BTN_RS | DM_BTN_ZL)
+
+static void menu_pad_tick(void) {
+    for (int i = 0; i < MAX_PADS; i++) if (g_pad[i]) {
+        SDL_Gamepad *p = g_pad[i];
+        uint64_t m = 0;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_SOUTH)) m |= DM_BTN_A;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_EAST)) m |= DM_BTN_B;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_UP)) m |= DM_BTN_UP;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_DOWN)) m |= DM_BTN_DOWN;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) m |= DM_BTN_LEFT;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) m |= DM_BTN_RIGHT;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER)) m |= DM_BTN_L;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER)) m |= DM_BTN_R;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_START)) m |= DM_BTN_PLUS;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_BACK)) m |= DM_BTN_MINUS;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_LEFT_STICK)) m |= DM_BTN_LS;
+        if (SDL_GetGamepadButton(p, SDL_GAMEPAD_BUTTON_RIGHT_STICK)) m |= DM_BTN_RS;
+        if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > DM_STICK_MAX / 20) m |= DM_BTN_ZL;
+        if (SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > DM_STICK_MAX / 20) m |= DM_BTN_ZR;
+        int32_t lx = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTX), ly = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFTY);
+        if (ly < -DM_STICK_MAX / 2) m |= 1ull << 20;   // up (SDL's y is up-negative)
+        if (ly > DM_STICK_MAX / 2) m |= 1ull << 21;
+        if (lx < -DM_STICK_MAX / 2) m |= 1ull << 22;
+        if (lx > DM_STICK_MAX / 2) m |= 1ull << 23;
+        int c = combo_slot(SDL_GetGamepadID(p));
+        if ((m & COMBO_BITS) == COMBO_BITS && (g_combo[c].prev & COMBO_BITS) != COMBO_BITS) {
+            g_combo[c].prev = m; if (g_guest_on) dmui_toggle(); continue;   // the pair's edge: once per press
+        }
+        uint64_t presses = m & ~g_combo[c].prev, releases = g_combo[c].prev & ~m;
+        g_combo[c].prev = m;
+        if (!dmui_open()) continue;
+        for (; presses; presses &= presses - 1) {
+            uint64_t bit = presses & -presses;
+            if (bit & DM_STICK_BITS) { int k = bit >> 20; dmui_input_pad(k == 1 ? DMUI_KEY_UP : k == 2 ? DMUI_KEY_DOWN : k == 4 ? DMUI_KEY_LEFT : DMUI_KEY_RIGHT, 1); }
+            else { int k = dmui_key_of(bit); if (k >= 0) dmui_input_pad(k, 1); }
+        }
+        for (; releases; releases &= releases - 1) {
+            uint64_t bit = releases & -releases;
+            if (bit & DM_STICK_BITS) { int k = bit >> 20; dmui_input_pad(k == 1 ? DMUI_KEY_UP : k == 2 ? DMUI_KEY_DOWN : k == 4 ? DMUI_KEY_LEFT : DMUI_KEY_RIGHT, 0); }
+            else { int k = dmui_key_of(bit); if (k >= 0) dmui_input_pad(k, 0); }
+        }
+    }
+}
+
+// The mouse and the touch (the Droidspaces display's input reaches SDL — the finger ids are counted
+// here: two or more distinct ids in a run means the chain carries true multi-touch, one id means the
+// compositor folds it to a single pointer and the on-screen pad stays out of reach for now).
+static uint32_t g_touch_seen[8]; static int g_touch_n;
+static void touch_note(uint32_t id) {
+    for (int i = 0; i < g_touch_n; i++) if (g_touch_seen[i] == id) return;
+    if (g_touch_n < 8) g_touch_seen[g_touch_n++] = id;
+    fprintf(stderr, "[front] touch: finger id %u (%d distinct this run)%s\n", id, g_touch_n, g_touch_n > 1 ? " — multi-touch reaches SDL" : "");
 }
 
 // ---- front.h 契约 --------------------------------------------------------------
@@ -297,6 +452,7 @@ void front_run(void (*guest)(void)) {
         SDL_DestroyWindow(g_win); SDL_Quit();
         return;
     }
+    g_guest_on = !tc;   // the menu can hold a running game only (the test card runs without one)
     if (tc) fprintf(stderr, "[front] test card: a frame every %d ms, no guest%s\n", tc_ms,
                     script ? "; the window scripted: minimized at 6 s, brought back by the compositor, waited for" : "");
 
@@ -314,8 +470,23 @@ void front_run(void (*guest)(void)) {
                     fprintf(stderr, "[front] window %s: %d x %d%s\n", wev(ev.window.type), (int)ev.window.data1, (int)ev.window.data2, unseen() ? " (not seen)" : "");
                 }
                 break;
-            case SDL_EVENT_KEY_DOWN: fprintf(stderr, "[front] key down %d\n", (int)ev.key.key); key_apply(ev.key.key, 1); break;
-            case SDL_EVENT_KEY_UP: key_apply(ev.key.key, 0); break;
+            case SDL_EVENT_KEY_DOWN: if (ev.key.repeat) break; if (menu_key_event(ev.key.key, 1)) break;   // the menu (or its opening shortcut) takes it
+                fprintf(stderr, "[front] key down %d\n", (int)ev.key.key); key_apply(ev.key.key, 1); break;
+            case SDL_EVENT_KEY_UP: if (ev.key.repeat) break; if (menu_key_event(ev.key.key, 0)) break;   // a release while the menu is open: the game never saw the press
+                key_apply(ev.key.key, 0); break;
+            case SDL_EVENT_MOUSE_MOTION: if (dmui_open()) dmui_input_mouse(ev.motion.x, ev.motion.y); break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+                if (dmui_open()) { dmui_input_mouse(ev.button.x, ev.button.y); dmui_input_mouse_btn(0, ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN); }
+                break;
+            case SDL_EVENT_FINGER_DOWN: case SDL_EVENT_FINGER_MOTION: case SDL_EVENT_FINGER_UP: {
+                if (!dmui_open()) break;   // the game has no touch of its own on this platform
+                int tw = 0, th = 0; SDL_GetWindowSize(g_win, &tw, &th);
+                float x = ev.tfinger.x * tw, y = ev.tfinger.y * th;   // the finger's coordinates are normalized
+                touch_note((uint32_t)ev.tfinger.fingerID);
+                if (ev.type == SDL_EVENT_FINGER_MOTION) dmui_input_mouse(x, y);
+                else { dmui_input_mouse(x, y); dmui_input_mouse_btn(0, ev.type == SDL_EVENT_FINGER_DOWN); }
+                break;
+            }
             case SDL_EVENT_GAMEPAD_ADDED: {
                 for (int i = 0; i < MAX_PADS; i++) if (!g_pad[i]) {
                     g_pad[i] = SDL_OpenGamepad(ev.gdevice.which);
@@ -348,6 +519,25 @@ void front_run(void (*guest)(void)) {
         px_publish();   // what the swapchain is sized to, or nothing while the window is not seen
         dm_observe_tick();
         padcmd_tick();   // the pad relay (SDL gamepad context) is unused in this environment: its state never varies here
+        menu_pad_tick();   // the gamepads, polled: R3+L2 opens the shared menu, its keys go to it while it is open
+        {   // the hold follows the menu's open state; its actions (quit) run here, never on the UI thread
+            int open = dmui_open();
+            if (open != g_menu_held) {
+                g_menu_held = open;
+                if (open) {
+                    g_kbd_btn = 0; k_up = k_down = k_left = k_right = 0; stick_recompute();
+                    dm_input_set(0, 0, 0, 0, 0);   // nothing stays pressed in the game
+                    for (int i = 0; i < DM_PLAYERS; i++) dm_pad_set_player(i, 0, 0, 0, 0, 0);
+                    dm_menu_hold(1);
+                    fprintf(stderr, "[front] menu opened: the game is held (clock frozen, audio and movies suspended)\n");
+                } else {
+                    dm_menu_hold(0);
+                    fprintf(stderr, "[front] menu closed: the game goes on\n");
+                }
+                if (dm_overlay_redraw) dm_overlay_redraw();   // wake the present thread: with the queue empty and the game held it sleeps on g_pq_cv and would never re-render otherwise
+            }
+            for (int a; (a = dmui_poll_action()); ) if (a == DMUI_ACT_QUIT) dm_menu_quit();
+        }
         if (dm_front_tick) dm_front_tick();   // the surface the Vulkan backend's present thread asked for, and the ones it is done with
         if (sc != SC_DONE) {
             double el = (double)(now_ns() - t0) / 1e9, here = (double)(now_ns() - sc_since) / 1e9;
