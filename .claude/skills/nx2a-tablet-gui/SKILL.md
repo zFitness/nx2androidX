@@ -117,9 +117,18 @@ PYEOF
 # 5) 冒烟（三层，全过才算部署好）:
 #    a) --check: porter 找到 + PySide6 版本行
 $ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c '<§5 的 env> cd \$U && python3 -m launcher --check'"
-#    b) 真窗口: 后台起桌面入口脚本 → /proc/<pid>/maps 有 libQt6WaylandClient + 进程 10s 不死
+#    b) 真窗口: **只能在桌面上点图标起** —— 从 adb 跑 `guest.sh ... &` 起的进程会随那个
+#       proot 会话退出被 `--kill-on-exit` 带走，窗口一闪即逝（2026-11-28 实测：进程表
+#       里查不到、日志只有一行 launch）。点图标后 `pgrep` 扫 /proc cmdline 以
+#       `python3 -m launcher` 开头的那条（`pgrep -f "m launcher"` 会匹配到自己那条 shell）
 #    c) 截图对比: 起 vs 杀 两张 screencap 字节差 >30% = 窗口真实上屏
 #       （/proc fd 的 socket inode 匹配法在 proot 会话里不可靠,别用）
+#    d) 不点图标也能验证代码本身（adb 可做，进程退出没关系）:
+#       --check + 离屏建窗一条命令：
+#       python3 -c "from PySide6.QtWidgets import QApplication; from launcher.ui.app import
+#         LauncherApp; a=QApplication([]); w=LauncherApp(); w.showMaximized(); print(w.size())"
+#       （QT_QPA_PLATFORM=offscreen；2026-11-28 用它在平板上抓出 `Qt` 没 import 的启动崩溃，
+#        tests 走 LauncherApp 不经 main()，所以测试全绿也漏）
 ```
 
 ## 5. GUI 的启动环境（会话树 GUI 的 env 契约）
@@ -139,8 +148,9 @@ export XDG_RUNTIME_DIR=/run/droiddeck  DISPLAY=:0   # 会话自己的 Wayland so
 入口（实测在位）= 桌面 `/root/Desktop/nx2AndroidX-launch.sh` + `nx2AndroidX.desktop`
 （图标 `nx2androidX.png`,从 v0.4.0 导入区补的）。脚本要点：全套 §5 env +
 `mkdir -p /root/.local/share/nx2a/tmp; export TMPDIR=...`（adb 链会漏进 Android 侧的
-`/data/local/tmp`,clang 会死于 unable to make temporary file）+ 日志重定向到桌面
-`nx2aAndroidX-start.log`（成败都保留）。`cd $U && exec python3 -m launcher`。
+`/data/local/tmp`,clang 会死于 unable to make temporary file）+ `WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}`
+（点图标起时 compositor 的 env 自然继承；从 adb shell 起时没有，Qt 会退到 xcb :0 并死）
++ 日志重定向到桌面 `nx2aAndroidX-start.log`（成败都保留）。`cd $U && exec python3 -m launcher`。
 
 ## 6. 更新循环（改代码 → 平板见效）
 
