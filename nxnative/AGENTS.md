@@ -2,7 +2,9 @@
 
 > **Fork note (nx2androidX).** This file, and the docs under `nxnative/`, describe the upstream
 > engine's Apple/iOS route (iPhone, Metal, unsigned IPAs). This checkout is the nx2androidX fork:
-> the product is the **Android app** (the runtime is in `dm/android/`, the app in `../../android/`),
+> the product is the **Android app** (the runtime is in `dm/android/`, the app in `../../android/`;
+> the fork also has its own ARM Linux line — the runtime front end `dm/linux/`, the launcher at
+> `../../launcher/` — documented by the repository root's `AGENTS.md` and `launcher/SPEC.md`),
 > and iOS is upstream heritage that this fork does not develop. For this fork's scope, build
 > (APK), run and release rules, see the repository root's `AGENTS.md`. Read on for the engine's
 > game-profile mechanics, which apply here too.

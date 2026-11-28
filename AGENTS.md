@@ -2,13 +2,14 @@
 
 > 本文件是本仓库对 AI agent 的**权威上下文**。`CLAUDE.md` 只指向这里，不重复维护内容。
 >
-> **一句话：本 fork 的产物是手机 app（APK）。** 看到仓库里的 PC / iOS 相关目录，
-> 不要因此以为项目要往那个方向做。仓库里另有一条 ARM Linux 线（`launcher/`，图形启动器）：
-> 它是本线自有的第二个门面，与 APK 并存，运行时那一侧还在做。
+> **一句话：本 fork 的主产物是手机 app（APK）**，另有一条并行自有的 ARM Linux 线。
+> 看到仓库里的 PC / iOS 相关目录，不要因此以为项目要往那个方向做。ARM Linux 线
+> （`launcher/` 图形启动器 + `nxnative/dm/linux/` 运行时）是本线自有的第二个门面：
+> 与 APK 并存，运行时已在真机跑通部分游戏，兼容面与收尾仍在做（细节见 §2 与 `launcher/SPEC.md`）。
 
 ## 1. 项目身份
 
-**nx2androidX 的产物是 Android 手机 app（APK）**；另有一条在做的 ARM Linux 线（`launcher/`）。
+**nx2androidX 的主产物是 Android 手机 app（APK）**；另有一条在做的 ARM Linux 线（`launcher/` + `nxnative/dm/linux/`）。
 
 - 血统：`shirai91/nx2android`（桌面工具，在 PC 上移植游戏、产出数据包）→ 本 fork 把移植搬进手机 app，
   移植、游戏运行、数据包管理都在手机上完成，没有电脑在中间；引擎来自 `seedds/nxnative`（Apple/iOS 路线），
@@ -25,7 +26,9 @@
 | `porter/` | 移植流水线本体（Python） | 活跃代码：玩家桌面工具与手机 app 共用同一套 pipeline |
 | `phone_tools/` | 手机上的小工具（Python） | 随 payload 进手机（`tool/tools/`）：助手与玩家按名字调用，与流水线同版本 |
 | `gui/` | 桌面壳（PySide/Tk） | 玩家向工具，不是开发重心 |
-| `launcher/` | ARM Linux 线的图形启动器（Python + GTK 3/PyGObject） | 本线自有：库页、构建页、桌面条目与 Steam 条目；调 `porter.phone_cli`，不复制流水线 |
+| `launcher/` | ARM Linux 线的图形启动器（Python + PySide6/Qt；早期 GTK 3 版本已弃用） | 本线自有：库页、构建页、桌面条目与 Steam 条目；调 `porter.phone_cli`，不复制流水线 |
+| `nxnative/dm/linux/` | ARM Linux 运行时前端（`front_linux.c`：SDL3 窗口/输入、音频、影片解码路径） | 本线自有：与 Android 共享宿主核心，已在 Droidspaces 容器真机跑通部分游戏（MvDK、13 Sentinels），兼容面未铺开 |
+| `nxnative/dm/menu/` | 共享暂停菜单（`dm_menu.c` 功能层 + `dmui.c` ImGui UI 层；`openspec/changes/imgui-overlay-menu` 第一阶段：Linux 已接入两页签菜单，Android 迁移未开始） | 本线自有：Android 仍用旧菜单路径（`dm/android/` 覆盖层）|
 | `packaging/` | 玩家桌面 zip + `android-apk/` 出 APK | 桌面 zip 是玩家分发物；**APK 才是本 fork 的产物** |
 | `nxnative/`（其余） | 上游引擎 fork | 运行时在 `dm/android/`；`nxnative/AGENTS.md` 与 `nxnative/docs/` 讲的是上游的 Apple/iOS 路线，不是本 fork 的方向 |
 | `nxnative/dm/ios/` | 上游 iOS 侧代码 | 上游遗产，本 fork 不动 |
@@ -45,20 +48,21 @@
 
 README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家分发物 —— 它只是不是本 fork 的开发对象。
 
-### ARM Linux 线（`launcher/`）
+### ARM Linux 线（`launcher/` + `nxnative/dm/linux/`）
 
-- 这条线是**本线自有**的，与 APK 并存：图形启动器（库页 / 构建页 / Steam 条目），调 `porter.phone_cli`
-- 它**还没有 Linux 运行时**：宿主在 Linux 上的前端（WSI、音频、影片解码）是另一件事，
-  在那之前启动器只能构建、只能列库，「运行」入口会说明运行时不在
-- 这条线**不发版**：APK 仍是本 fork 唯一的发布物；不要把它当成"桌面版发布流程"
-- 它的分发形态是 **AppImage**（`packaging/arm-linux/build_appimage.py`）：ARM64 Linux 上一个文件，自带流水线与一份中文字体，不带 glibc、不带 Python 与游戏档案（档案走 release 的档案包导入）；厚包（`--with-profiles`）把档案也打进去
-- 界面是 **GTK 3**，跑在**系统 python3 + PyGObject**（`python3-gi`）上：包只带代码，不带工具包——所以包很小（~33 MB），机器上要装 `python3` 与 `python3-gi`；没有 FUSE 的机器用 `APPIMAGE_EXTRACT_AND_RUN=1` 解包运行
-- 上游同步时 `launcher/` 不参与：`porter/`、`gui/`、`nxnative/dm/android/` 各自的规则照旧
+- 这条线是**本线自有**的，与 APK 并存：图形启动器（库页 / 构建页 / Steam 条目，PySide6/Qt）调 `porter.phone_cli`；玩家文档入口 `launcher/README.md`，已定形态见 `launcher/SPEC.md`
+- **运行时已部分跑通，不是"没有 Linux 运行时"**：`nxnative/dm/linux/front_linux.c`（SDL3 窗口/输入）与宿主核心已构建为 Linux ELF（`build.py --os linux`，包内 `host/dmhost`），在 Droidspaces 容器真机跑通 Mario vs. Donkey Kong 与 13 Sentinels（60 fps，v2 dma-buf host，2026-11 证据）。**不能推及全游戏兼容**：其他游戏、手柄虚拟按键、ImGui 菜单收尾项未验证，见 `openspec/changes/imgui-overlay-menu`（进行中）
+- **这条线不发版 tag**：APK 仍是本 fork 唯一的发布物。AppImage 是当前测试交付（手工分发），**不要自行宣布改变发布政策**；目标与现状的差距见 `openspec/changes/add-arm-linux-appimage/tasks.md`（§5 真机验证多项未勾）
+- 分发形态是 **AppImage**（`packaging/arm-linux/build_appimage.py`）：ARM64 Linux 一个文件，自带流水线、引擎工具与中文字体，不带 glibc；档案走 release 档案包导入或厚包（`--with-profiles`）。另有**打包迁移进行中**：目标是复用 ARM64 容器原生 PyInstaller + appimagetool 链（保留 launcher 入口），由打包会话处理，**未完成前不要写成"已迁移/自包含"**——`packaging/arm-linux/README.md` 以打包会话的已验证事实为准
+- 界面是 **PySide6 (Qt)**，跑在**系统 python3** 上：薄包只带代码（机器要装 `python3` + PySide6）；`--with-toolchain` 厚包带 Qt 轮子、clang 工具链与 .NET runtime（要求 python 3.14 跑流水线 ABI 扩展，详见 `packaging/arm-linux/README.md`）。没有 FUSE 的机器用 `APPIMAGE_EXTRACT_AND_RUN=1` 解包运行
+- **环境边界**：目标机器是**完整的 ARM64 Linux 容器**（如 Droidspaces），不是 APK 集成 rootfs；编译 sysroot（`usr/toolchain/glibc`）**绝不进游戏运行时全局 `LD_LIBRARY_PATH`**；ADB 只是开发/测试通道，玩家 UI 流程不依赖 ADB/root
+- **数据边界**（用户已定，勿回退）：RomFS 持久在 porter work（`~/.local/share/nx2a/work`，运行资源不是可弃缓存），pack 的 `env.txt` 用 `DM_ROMFS` 指向实际资源；压缩 profile（`romfs zstd`）指向构建工作区的实际输出。库里 pack 目录存在决定列表可见，RomFS 等资源齐全决定能否运行（`launcher/library.py` `romfs_ready`）。失败的重建必须保留旧 pack 与引用资源、save 与 settings
+- 上游同步时 `launcher/`、`nxnative/dm/linux/`、`nxnative/dm/menu/` 不参与：`porter/`、`gui/`、`nxnative/dm/android/` 各自的规则照旧
 
 ## 3. 发布（唯一真相）
 
-本线的版本号是它承载的**上游基版本**：`porter/__init__.py` 持有基版本（`0.MINOR.PATCH`，当前 `0.3.0`）；
-发布 tag 是基版本加上本线的预发布阶段：`v<base>-alphaNN`（如 `v0.3.0-alpha02`），或正式版 `v<base>`。
+本线的版本号是它承载的**上游基版本**：`porter/__init__.py` 持有基版本（`0.MINOR.PATCH`，当前 `0.4.1`）；
+发布 tag 是基版本加上本线的预发布阶段：`v<base>-alphaNN`（如 `v0.4.1-alpha02`），或正式版 `v<base>`。
 
 - 逐步操作见 [nx2android-release skill](.claude/skills/nx2android-release/SKILL.md)：发版的命令顺序、构建只看 tag、
   产物怎么核、alpha 怎么变成当前版本、这些坑
@@ -88,7 +92,7 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
   之后的预发布不会自动抢走这个位置。**只改标记可能不会让 "Latest" 指过去**：GitHub 的 "Latest" 在创建时
   就定了（`make_latest`），事后去标记要另外显式点名：
   `gh api -X PATCH repos/zFitness/nx2androidX/releases/<id> -F make_latest=true`。
-  现状：`v0.4.1-alpha01` 是 Latest（已去掉预发布标记，所有玩家的更新检查都会看到这一版）
+  现状：`v0.4.1-alpha02` 是 Latest（2026-11-24 起，所有玩家的更新检查都会看到这一版；此前 `v0.4.1-alpha01` 也曾去掉预发布标记成为 Latest）
 - **构建只由 tag 触发**：推分支什么都不构建。tag 一推，构建就开始（产物从那个 tag 的提交来），
   它会等 release 建好后把 APK 附上去（`gh release create` 紧跟着 tag 就行）。**要重新构建就把 tag 重推一次**
   （`git tag -f` + `git push --force`），构建跟着新 tag 走
@@ -103,7 +107,7 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
   名单用 `python3 devtools/release_contributors.py` 取（上个 tag 之后合并的 PR 与作者），粘进 notes；
   游戏级别的署名同时落在 `docs/PORT_CHECKLIST.md` 的那一行（`ported by @handle`）——
   名单由 `python3 docs/gen_tables.py` 从档案生成，署名取自加入该档案的那次提交的 GitHub 账号
-- app 的 `versionName` 在 `android/app/build.gradle.kts`（当前 `0.4.1-alpha01`），与 tag 去掉 `v` 一致
+- app 的 `versionName` 在 `android/app/build.gradle.kts`（当前 `0.4.1-alpha02`），与 tag 去掉 `v` 一致
 - **一次发布带手机的 APK 和游戏档案包，别无其它**。App 不带游戏档案（几百 MB 的着色器表），玩家自己导入：
   release 的第二个附件 `nx2a-profiles-r<版本>-<commit>.zip`（CI 切，`devtools/profiles_zip.py`），夸克网盘里
   同样放一份。桌面 workflow（`release-windows.yml` / `release-macos.yml`）不发版，
@@ -163,6 +167,7 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 |---|---|
 | 加游戏档案 / 改共享核心（宿主、Vulkan、着色器、输入、覆盖层） | `.claude/skills/nx2android-dev` |
 | 真机排障（闪烁、崩溃、掉帧、压测、实况验证） | `.claude/skills/switch-android-port` |
+| DroidDeck/Droidspaces 平台调试（binfmt/glycin/属主/双 uid） | `.claude/skills/droiddeck-debug`、`.claude/skills/droidspaces` |
 | 推给上游（开 PR、rebase、回 review） | `.claude/skills/nx2android-upstream-pr` |
 | 同步上游进来（镜像快进、合并、解冲突、验证） | `.claude/skills/nx2android-upstream-sync` |
 | 分层与契约、目录职责 | `docs/ARCHITECTURE.md` |
@@ -170,4 +175,23 @@ README 的 "For players" 一节讲桌面工具，那仍是真实存在的玩家�
 | 游戏进度清单 | `docs/PORT_CHECKLIST.md`、`docs/PORT_STATUS.md` |
 | 同步进来的上游档案（未移植的档案、来源、已知缺口） | `docs/UPSTREAM_PROFILES.md` |
 | 档案包（App 不带档案，玩家导入；发版时它也是 release 的附件） | `docs/UPSTREAM_PROFILES.md`、`porter/profiles_layer.py`、`devtools/profiles_zip.py` |
-| 上游引擎（Apple 路线）的档案格式与调查手册 | `nxnative/AGENTS.md`、`nxnative/docs/agents/` |
+| ARM Linux 线：玩家用法 / 已定形态 / 打包 | `launcher/README.md`、`launcher/SPEC.md`、`packaging/arm-linux/README.md` |
+| 历史发现与踩坑记录（带当时环境，不作默认指南） | `my-docs/`（armlinux 专栏等；`00-专栏规划.md` 有读法） |
+| 上游引擎（Apple 路线）的档案格式与调查手册 | `nxnative/AGENTS.md`、`nxnative/docs/agents/`（是上游 Apple 线的材料，不是本 fork 的做法） |
+
+## 8. 防漂移约定（轻量）
+
+- **改功能同时更新其契约文档**：动 `launcher/`、`nxnative/dm/linux|menu/`、`packaging/arm-linux/` 的代码，
+  同一轮把 `launcher/SPEC.md` / `packaging/arm-linux/README.md` / `docs/ARCHITECTURE.md` 对应段落一起改；
+  验收标准落在 `openspec/changes/<change>/tasks.md`，不写进 AGENTS。
+- **AGENTS 记稳定事实，不记易变进度**：菜单接到哪一步、哪个包型刚打出来这类瞬态，写进对应 change 的
+  tasks.md（勾选 + 日期 + 证据），AGENTS 只写"已完成/进行中/未开始"三态中的稳定结论。
+- **单一来源用链接引用**：同一事实只在一份文档里展开（如 AppImage 基线要求只在
+  `packaging/arm-linux/README.md`），其余位置写一句话 + 链接，不复制第二份。
+- **完成状态需验证证据**：文档写"已支持/已验证"时要么给实现位置（文件/符号），要么给构建/测试记录；
+  代码存在、编译成功、真机通过是三种证据，分开写。没有真机证据的写"已实现，真机未验证"。
+- **历史记录不作默认指南**：`my-docs/` 是带日期的发现记录，当时结论（根因、修法）不脱离当时环境照搬；
+  指南性内容以 `launcher/SPEC.md`、skills 与 `packaging/` 文档为准。
+- **易变数字用自动生成或有明确时点**：游戏数由 `python3 docs/gen_tables.py` 生成；版本号、Latest release
+  等写明的值以 `porter/__init__.py` / `android/app/build.gradle.kts` / `gh release view` 的实查为准，
+  不要凭记忆抄。

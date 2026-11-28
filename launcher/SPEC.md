@@ -10,8 +10,10 @@ tabs — **Library** and **Build** — exactly like the Android app's home.
   build page, settings. Single instance by flock (`launcher.lock` in the config dir) —
   the DroidDeck tablet's gamescope makes a second window look like a shell around the
   first, so a second start must do nothing.
-- **One package shape: the THICK AppImage** (with profiles, with toolchain). The thin
-  package and the profiles-import flow are dropped; there is no other build to keep true.
+- **Package shapes: thin / full / toolchain / toolchain-full** (the build's switches
+  decide). The 2026-11-28 decision to ship one thick AppImage recorded below was reversed
+  after the profiles-import flow came back: the package line builds all four today, and
+  [packaging/arm-linux/README.md](../packaging/arm-linux/README.md) documents them.
 - **Target: a plain ARM64 Linux machine.** The DroidDeck tablet's Droidspaces container
   is one of those (a bare Linux userland) and needs no special casing: the launcher is an
   ordinary desktop app, reads and writes its XDG paths directly, and starts games with
@@ -35,7 +37,12 @@ tabs — **Library** and **Build** — exactly like the Android app's home.
         host/dmhost                   # the host binary THE PACK CARRIES (one-click run)
         mods/                         # the rewritten modules with fixups
         env.txt  settings.txt  run.sh # the launcher's entry, as on Android
-        romfs/  fonts/                # the game's own data the pack resolves
+        romfs/                        # only when the profile keeps its RomFS in the pack;
+                                      # the app's mode points at the work folder instead
+                                      # (env.txt DM_ROMFS) — see the rules below
+    work/                             # the porter's running resources (NOT a cache):
+        <title>_build/extract/<v>/RomFS/   # what a pack's DM_ROMFS usually points at
+        romfs_zstd/<v>/                    # the zstd-packed copy, when the profile asks
     cache/
         builds/<run id>/              # build staging: a failed or cancelled build leaves
                                       # nothing in the library, only here until dismissed
@@ -49,7 +56,16 @@ Rules the whole code holds to:
 - The pack carries its own `host/dmhost`, so **running a game depends on nothing inside
   the AppImage** — the AppImage is the factory that makes packs and the shelf that lists
   them, not a runtime the games need.
-- A build writes into `cache/builds/` and moves into the library only when it finished.
+- **One thing sits outside the pack by decision**: the RomFS. It stays persistent in the
+  porter work folder (`~/.local/share/nx2a/work`), and the pack's `env.txt` points at the
+  real thing with `DM_ROMFS` (a profile with `romfs zstd` points at the packed folder the
+  build actually produced). The library therefore has two truths: the pack's presence
+  decides the list, the referenced resources decide runnability (`romfs_ready`). The work
+  folder is a running resource, **not** a disposable cache.
+- A build writes the pack through a `.partial` staging folder and an atomic rename into
+  the library, replacing an older pack of the same game only at the end. **A failed or
+  cancelled rebuild keeps the previous pack, the referenced resources, the saves and the
+  settings.**
 - The `DM_VK_DMABUF_ZC` (v2 zero-copy) default ships ON; `env.txt` may override, as on
   Android.
 
@@ -73,10 +89,28 @@ usual Qt polish of the library grid.
 
 ## Out of scope (deliberately)
 
-- The thin AppImage and the profiles-import settings flow — the thick package carries the
-  profiles.
+- The thin AppImage and the profiles-import settings flow — decided against, then
+  re-decided: the thin package and the profiles import are back (the shipped shapes are
+  thin / full / toolchain / toolchain-full, see
+  [packaging/arm-linux/README.md](../packaging/arm-linux/README.md)). The original
+  "one thick AppImage" decision below is kept as the record of 2026-11-28's intent; the
+  package README is the authority for what is built today.
 - FUSE bridging of any kind — the launcher reads host paths directly.
 - Container lifecycle management — if the player's machine happens to run its Linux
   inside Droidspaces, that is the machine's business, not the launcher's.
 - Window management experiments (maximize/drag-resize): games run fullscreen, as on
   Android.
+
+## Where the line stands (checked 2026-11-28; the day-by-day truth is the change's tasks)
+
+- **Runs the two proven games** (MvDK, 13 Sentinels, 60 fps, Droidspaces container,
+  v2 dma-buf host). Other games are unverified.
+- The **shared pause menu** (`nxnative/dm/menu/`, ImGui) is on Linux only in its first
+  phase — two tabs, the FPS switch, resume and quit, device-tested (build
+  B20261128T060816Z-798e6ad3); the panel migration, the settings store's finishing work and
+  the Android migration are open (`openspec/changes/imgui-overlay-menu`). The Android app
+  keeps its existing menu until that change lands.
+- The **virtual on-screen gamepad on Linux is not verified**.
+- The **AppImage's packaging migration** (native PyInstaller + appimagetool chain) is in
+  progress in a parallel session; the current shipped shape is what
+  [packaging/arm-linux/README.md](../packaging/arm-linux/README.md) documents.

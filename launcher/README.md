@@ -5,6 +5,12 @@ games and whose **Build** tab makes a new game pack from a dump — the same two
 the Android app's home. See [SPEC.md](SPEC.md) for the decided shape; this file is the
 short user-facing view.
 
+**How far the line runs (Nov 2026)**: the runtime itself is real and on-device — the same
+host core as Android, built as a Linux ELF, with Mario vs. Donkey Kong and 13 Sentinels
+proven at 60 fps in a Droidspaces container. Those two are the verified games; the rest of
+the catalogue is unverified, and the shared in-game menu is still being finished (Linux
+has it, Android does not yet).
+
 ## Running it
 
 ```sh
@@ -45,15 +51,20 @@ truth.
 **Run** starts the pack's own `run.sh` with the pack as its working directory and
 `DM_ROOT`: the pack carries its own host binary, its modules and its environment
 (`env.txt`, `settings.txt`), so a game runs with one click and needs nothing else — not
-even the AppImage it may have been built with.
+even the AppImage it may have been built with. One thing the pack points at rather than
+carries: the game's RomFS, which lives in the porter work folder (`env.txt`'s `DM_ROMFS`
+row). The card says **resources missing** when that folder is not on the machine, and Run
+explains it instead of failing silently — the work folder is a running resource, not a
+disposable cache.
 
 ## The Build tab
 
 The port pipeline the phone app runs, laid out locally: pick a game file (read right
 away — the card says what it holds and whether it can be ported), set the options, build.
-The stages come in with their times, the log under them. A build writes into the cache
-and moves into the library only when it finished; a failed or cancelled build leaves
-nothing behind.
+The stages come in with their times, the log under them. A build writes its pack through a
+staging folder and moves it into the library only when it finished (an atomic rename that
+replaces an older pack of the same game); a failed or cancelled build leaves the previous
+pack, its referenced resources, the saves and the settings untouched.
 
 ## The Settings dialog
 
@@ -69,6 +80,7 @@ touches the game itself.
 
 ## The package
 
-The launcher ships as ONE AppImage: the thick one, with the pipeline, the engine tools,
-the game profiles, the toolchain and a Chinese font. See
-[packaging/arm-linux/README.md](../packaging/arm-linux/README.md) for the build.
+The launcher ships as an AppImage in several thicknesses (thin, full, toolchain,
+toolchain-full); which one a player needs — and the baseline each demands of the machine —
+is decided in [packaging/arm-linux/README.md](../packaging/arm-linux/README.md). A pack in
+the library does not depend on the AppImage to run.
