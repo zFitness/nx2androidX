@@ -244,8 +244,9 @@ dm/linux 是 headless 线（null 图形/音频/影片），VK-on-linux 的窗口
 
 > **2026-11-28 更新：§15 的"会话内构建不可解"已被推翻——它只适用于 native userland 模式。**
 > 用户开启 **proot 模式**后会话树构建/运行全线可用（fork+exec / 线程池 / 文件风暴三件套
-> 探针全过，PySide6/厚包工具链正常，GUI 全量移植实测成功）。部署与流程见
-> `.claude/skills/nx2a-tablet-gui` 与 `nx2a-tablet-port` SKILL。以下原文保留作 native 模式的踩坑记录。
+> 探针全过，PySide6/厚包工具链正常，GUI 全量移植实测成功、host 205 源 0 失败、
+> 游戏可跑）。部署与流程见 `.claude/skills/nx2a-tablet-gui` 与 `nx2a-tablet-port`
+> SKILL（含会话 rootfs 的构建依赖包清单）。以下原文保留作 native 模式的踩坑记录。
 
 **执行模型（tools/nativeguest 源码实证，因果见专栏 06）**：DroidDeck **没有 proot**——
 与手机线同构：rootfs 的 glibc loader 直启 + LD_PRELOAD hook（libddnatv-hook）翻译

@@ -78,40 +78,48 @@ proot 模式实证结果：Seccomp=2 但 proot 拦截层不再触发补丁差异
 COPYFILE_DISABLE=1 git archive <commit> porter launcher nxnative | gzip > /tmp/nx2a-deploy-<sha>.tar.gz
 python3 -c "import tarfile; ns=tarfile.open('/tmp/nx2a-deploy-<sha>.tar.gz').getnames(); \
   assert not [n for n in ns if '/._' in n or n.startswith('._')]; print('clean', len(ns))"
+git ls-tree -r <commit> -- porter launcher nxnative | awk '$1=="100755"{print $4}' > exec-list.txt
 
-# 2) 推进平板共享存储（adb push 自动 chown 归 0:0 —— agent 侧推的；进 proot 后再归位）
-$ADB push /tmp/nx2a-deploy-<sha>.tar.gz /sdcard/Download/nx2a-dev/
+# 2) 推进平板共享存储（/sdcard/Download/nx2a-dev/ = 会话内 /root/Storage/Download/nx2a-dev/）
+$ADB push /tmp/nx2a-deploy-<sha>.tar.gz /sdcard/Download/nx2a-dev/tree.tar.gz
+$ADB push exec-list.txt /sdcard/Download/nx2a-dev/
 
-# 3) 会话内解包替换（目标=/opt/appimages/user/nx2androidx-arm64-toolchain-full/app/usr）
+# 3) 会话内解包替换（实测最终版：目标 USR = 工具链导入区，rmtree 连旧垃圾一起走）
 $ADB -s "$T" shell "sh /data/local/tmp/guest.sh python3 -" <<'PYEOF'
-import tarfile, os, stat
-SRC = '/root/Storage/Download/nx2a-dev/nx2a-deploy-<sha>.tar.gz'
+import tarfile, os, shutil
+SRC = '/root/Storage/Download/nx2a-dev/tree.tar.gz'
 USR = '/opt/appimages/user/nx2androidx-arm64-toolchain-full/app/usr'
 stage = '/tmp/nx2a-stage'
-os.makedirs(stage, exist_ok=True)
+shutil.rmtree(stage, ignore_errors=True)
+os.makedirs(stage)
 with tarfile.open(SRC) as t:
     members = [m for m in t.getmembers() if '._' not in m.name]   # 过滤任何 AppleDouble（双保险）
     t.extractall(stage, members=members)
 for tree in ('porter', 'launcher', 'nxnative'):
     dst = f'{USR}/{tree}'
-    if os.path.exists(dst): __import__('shutil').rmtree(dst)
+    if os.path.exists(dst): shutil.rmtree(dst)
     os.rename(f'{stage}/{tree}', dst)
-# 关键：rootfs tar 解包丢执行位 → 按 git 权限时还原（git ls-tree 100755 清单）
-for root, dirs, files in os.walk(USR):
-    for f in files:
-        p = os.path.join(root, f)
-        # （简化：build.py/*.sh/c1_guard.py/dmsh_xlate_bin 等可执行见 exec-list）
+shutil.rmtree(stage)
+n = 0
+for line in open('/root/Storage/Download/nx2a-dev/exec-list.txt'):
+    f = line.strip()
+    if f:
+        os.chmod(f'{USR}/{f}', 0o755); n += 1
+leftover = sum(1 for r, d, fs in os.walk(USR) for f in fs if f.startswith('._'))
+print(f'redeployed; exec bits {n}; leftover ._ files: {leftover}')   # 必须 0
 PYEOF
 
-# 4) 执行位清单（本地生成，随包推送）:
-git ls-tree -r <commit> -- porter launcher nxnative | awk '$1=="100755"{print $4}' > exec-list.txt
-# 容器内: while read f; do chmod 755 "$USR/$f"; done < exec-list.txt
+# 4) 配置（P0 起 NX2A_HOME=$XDG_CONFIG_HOME/nx2a/porter）:
+#    /root/.config/nx2a/porter/config.json 预置 keys/firmware（只补缺的键，不覆盖用户的）
+#    /root/.config/nx2a/launcher.json 保留 ui_scale/language,只补 library 指向
+#    （实测脚本见上轮部署记录；nxhome 旧路径的 config 仍是 CLI 线的）
 
-# 5) 配置（只写键，不整体覆盖——用户的 nx2a/launcher.json 保留 ui_scale/language）:
-#    library/work/nxhome 已在位不动；P0 起 NX2A_HOME=$XDG_CONFIG_HOME/nx2a/porter
-#    部署后核对 /root/.config/nx2a/porter/config.json 的 keys 行指向有效 prod.keys
-
-# 6) 冒烟：--check（porter 找到、PySide6 版本）+ 起一次窗口看 Wayland/GL 正常
+# 5) 冒烟（三层，全过才算部署好）:
+#    a) --check: porter 找到 + PySide6 版本行
+$ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c '<§5 的 env> cd \$U && python3 -m launcher --check'"
+#    b) 真窗口: 后台起桌面入口脚本 → /proc/<pid>/maps 有 libQt6WaylandClient + 进程 10s 不死
+#    c) 截图对比: 起 vs 杀 两张 screencap 字节差 >30% = 窗口真实上屏
+#       （/proc fd 的 socket inode 匹配法在 proot 会话里不可靠,别用）
 ```
 
 ## 5. GUI 的启动环境（会话树 GUI 的 env 契约）
@@ -128,7 +136,11 @@ export NX2A_PLAYER_API_REVISION=9
 export XDG_RUNTIME_DIR=/run/droiddeck  DISPLAY=:0   # 会话自己的 Wayland socket
 ```
 
-入口脚本模板 = `/root/Desktop/start-nx2a-gui.sh`（见 §7 部署物），点它直启。
+入口（实测在位）= 桌面 `/root/Desktop/nx2AndroidX-launch.sh` + `nx2AndroidX.desktop`
+（图标 `nx2androidX.png`,从 v0.4.0 导入区补的）。脚本要点：全套 §5 env +
+`mkdir -p /root/.local/share/nx2a/tmp; export TMPDIR=...`（adb 链会漏进 Android 侧的
+`/data/local/tmp`,clang 会死于 unable to make temporary file）+ 日志重定向到桌面
+`nx2aAndroidX-start.log`（成败都保留）。`cd $U && exec python3 -m launcher`。
 
 ## 6. 更新循环（改代码 → 平板见效）
 
@@ -144,7 +156,7 @@ $ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c \
 
 ## 7. 坑（全部实测）
 
-### 7a. 会话 rootfs 的构建依赖包（2026-11-28，一次装齐）
+### 7a. 会话 rootfs 的构建依赖包（2026-11-28 已装齐，重装系统才需要再来）
 
 ```sh
 # host 阶段编译要的开发头（运行库 libSDL3.so.0 系统已带，头没带）：
@@ -159,6 +171,19 @@ DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y -qq \
   temporary file"；GUI 启动脚本已固定 `TMPDIR=/root/.local/share/nx2a/tmp`
 - 装完依赖后重跑构建即可：build.py 的 flags.stamp 含 INC（FF_CFLAGS 变了），
   对象缓存自动全量重编，不用清 work
+
+### 7b. host 构建的成功基线（2026-11-28,MvDK,干净 out 目录实测）
+
+```
+compiled 205 sources, 0 failed
+linked <out>/dmhost    → ELF 64-bit ARM aarch64, ~3.5 MB, interpreter /lib/ld-linux-aarch64.so.1
+```
+- 有 libav 三件套时**不应**再出现 `[build] linux: no libavcodec ... movie_null.c
+  stands in`（那是无画面降级；真 FFmpeg 时过场动画有画面）
+- host 阶段失败的定位入口：`work/<TID>_build/logs/linux_host.log`
+  （着色器阶段是 `android_shaders.log`;12,691 个着色器 27s 全过是正常速度）
+- ldd dmhost 会看到 `libddsession.so/libfakeinput.so/libddfastpath.so` 前几行 ——
+  DroidDeck 会话注入层的噪声，不是链接错误
 
 | 坑 | 事实与修法 |
 |---|---|

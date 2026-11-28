@@ -1,7 +1,9 @@
 # nx2a 平板移植流程（GUI 走查 + 取证）
 
 > 面向 DroidDeck 会话树（proot）部署的启动器 GUI（部署见 nx2a-tablet-gui SKILL）。
-> 2026-11-28 实测：GUI 全量构建 maliao1.xci（Mario vs Donkey Kong）成功。
+> 2026-11-28 实测：GUI 全量构建 maliao1.xci（Mario vs Donkey Kong）成功——
+> host 阶段 205 源 0 失败链接出 dmhost，pack 落库，游戏可跑。
+> 环境依赖（SDL3 头 / FFmpeg 三件套 / TMPDIR）见 nx2a-tablet-gui §7a——已装齐。
 
 ## 0. 前置检查（一次）
 
@@ -28,6 +30,8 @@
 - **一次一个**：构建中按钮置灰；设置保存**不会**杀构建（页面在构建结束后才重建）。
 - **取消**：SIGTERM 整进程组（dotnet/clang 子进程一起死）；pack 原子性保证库里没有半成品。
 - 阶段缓存：重跑同游戏时 nx_extract/着色器秒过是**正常**的（增量复用），不代表没干活。
+  修环境后重跑（如补装 SDL 头）也一样：build.py 的 flags.stamp 自动触发受影响文件全量重编。
+- MvDK 实测耗时参考（会话树,增量后）：着色器翻译 12,691 个 27s;host 全量 205 源约 1–2 分钟。
 
 ## 2. 构建成功的判据（不要看按钮收尾就下结论）
 
