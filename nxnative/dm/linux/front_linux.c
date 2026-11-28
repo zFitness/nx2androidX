@@ -143,6 +143,8 @@ static void key_apply(SDL_Keycode k, int down) {
 static SDL_Gamepad *g_pad[MAX_PADS];
 static int g_pad_player[MAX_PADS];   // 0 = player 1
 static uint32_t g_pad_mask;
+static uint64_t g_pad_ignore[MAX_PADS];   // buttons held when the menu closed, suppressed until released (the close key must not reach the game)
+static int g_pad_gate[MAX_PADS], g_prev_menu_open;   // g_pad_gate[i]: capture pad i's held buttons on its next publish
 
 static void pad_publish(int i) {
     SDL_Gamepad *p = g_pad[i];
@@ -168,11 +170,21 @@ static void pad_publish(int i) {
     int32_t zl = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_LEFT_TRIGGER), zr = SDL_GetGamepadAxis(p, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     if (zl > DM_STICK_MAX / 20) b |= DM_BTN_ZL;   // pressed past 5 % of its travel
     if (zr > DM_STICK_MAX / 20) b |= DM_BTN_ZR;
+    // Release gate: when the menu closes, the buttons still held (the confirm/back that closed it) must not
+    // reach the game until they are released — else Resume on A acts, or Back cancels, the moment play resumes.
+    if (g_pad_gate[i]) { g_pad_ignore[i] = b; g_pad_gate[i] = 0; }   // the menu just closed: capture what is held
+    g_pad_ignore[i] &= b;                                            // a released button leaves the ignore set (a re-press passes)
+    b &= ~g_pad_ignore[i];                                           // suppress the still-held ones
     if (dmui_open()) { b = 0; ax[0] = ax[1] = ax[2] = ax[3] = 0; }   // the menu holds the game: nothing passes through
     dm_pad_set_player(g_pad_player[i], b, ax[0], -ax[1], ax[2], -ax[3]);
     dm_pad_players(g_pad_mask);
 }
-static void pad_publish_pub(void) { for (int i = 0; i < MAX_PADS; i++) if (g_pad[i]) pad_publish(i); }
+static void pad_publish_pub(void) {
+    int open = dmui_open();
+    if (g_prev_menu_open && !open) for (int i = 0; i < MAX_PADS; i++) g_pad_gate[i] = 1;   // just closed: gate the held buttons
+    g_prev_menu_open = open;
+    for (int i = 0; i < MAX_PADS; i++) if (g_pad[i]) pad_publish(i);
+}
 
 // DM_PAD_CMD=<file>: the game's pad input as kernel-style lines appended to a file — "key <code> <v>" with the uinput button codes
 // (304 A 305 B 306 X 307 Y 310 L 311 R 312 ZL 313 ZR 314 minus 315 plus, 317 L3 318 R3, 103 up 105 left 106 right 108 down —

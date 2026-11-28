@@ -19,16 +19,22 @@ void dm_menu_hold(int on);
 // the same path the window's close button takes. Never blocks on the caller's own thread.
 void dm_menu_quit(void);
 
-// The player's settings: one int per key, missing or malformed reads as def (the hot-path "fps"
-// key defaults to 0 at cache load — a custom def on it is ignored, the cache is authoritative).
-// The file lives in dm_menu_set_dir()'s folder (default: DM_ROOT), written through on every set.
-// unknown line (including over-4KB ones) is preserved via getline, and a failed read/write/
-// close/rename leaves the original file untouched. The hot-path "fps" key is served from a
-// cross-thread atomic cache (present-thread poller reads it every frame): loaded lazily on the
-// first get, refreshed after each successful save, invalidated by dm_menu_settings_reload().
+// The player's settings: one int per key. The file lives in dm_menu_set_dir()'s folder (default:
+// DM_ROOT), written through on every set; any unknown line (including over-4KB ones) is preserved
+// via getline, and a failed read/write/close/rename leaves the original file untouched.
+//
+// The settings the render thread and the menu read every frame ("fps", "sr", "sharpness") are
+// cached in cross-thread atomics: a get is served from the cache (loaded lazily on the first get,
+// refreshed after each successful save, invalidated by dm_menu_set_dir / dm_menu_settings_reload),
+// so the present-thread poller never opens the file. Each cached key has a fixed default and legal
+// range (loaded and stored values are clamped to it); a get on a cached key ignores the passed def.
+// A key not in the cache is cold: read from the file on each get.
+//
+// dm_menu_setting_set returns 0 when the file really holds the new value, -1 on any failure (the
+// original is kept) — the menu must not show a change as saved when it returns -1.
 int  dm_menu_setting_get(const char *key, int def);
-void dm_menu_setting_set(const char *key, int value);
-void dm_menu_settings_reload(void);   // re-read settings.txt from disk on the next hot-key get
+int  dm_menu_setting_set(const char *key, int value);
+void dm_menu_settings_reload(void);   // re-read settings.txt from disk on the next cached-key get
 
 // Where settings.txt lives. Call once at front start-up; Android hands over its files folder
 // (phase 2), Linux keeps the default.

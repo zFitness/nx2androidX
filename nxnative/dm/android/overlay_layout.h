@@ -205,11 +205,7 @@ const ov_theme *dm_overlay_theme(int layout);   // the theme's sprites for a lay
 void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: their memory can go
 
 // ---- the frame rate counter's options (settings.txt fps_rows, fps_pos, fps_colour, fps_outline, fps_size), packed in one int for the backend (dm_fps_opts) ----
-enum { FPSO_FPS = 1, FPSO_SOC = 2, FPSO_BAT = 4, FPSO_DRV = 8, FPSO_GRAPH = 16, FPSO_ALL = 31, FPSO_ROWS_DEFAULT = FPSO_FPS | FPSO_SOC | FPSO_BAT };   // fps_rows: the rows shown, a bit each (the driver row: the Vulkan driver in use; the graph: the frame times, one bar a frame); by default FPS, SOC and BAT, the counter before these options (the driver row and the graph would make it reach the - button or L and ZL on a 1920x1080 window)
-enum { FPSO_TL, FPSO_TR, FPSO_BL, FPSO_BR, FPSO_POS_N };   // fps_pos: the corner (top left, top right, bottom left, bottom right)
-enum { FPSO_WHITE, FPSO_YELLOW, FPSO_GREEN, FPSO_CYAN, FPSO_MAGENTA, FPSO_COLOUR_N };   // fps_colour: the text (a temperature too hot stays red)
-enum { FPSO_BOX, FPSO_NONE, FPSO_THIN, FPSO_MEDIUM, FPSO_THICK, FPSO_OUTLINE_N };   // fps_outline: the dark block behind the rows; nothing; a black outline round each letter, 1, 2 or 3 font texels
-enum { FPSO_SMALL, FPSO_NORMAL, FPSO_LARGE, FPSO_XL, FPSO_SIZE_N };   // fps_size: the letters' scale = base - 1, base, base + 1, 2 * base (base: 2.2% of the window's height / PF_CAP, at least 2)
+#include "dm_fps_opts.h"   // the encoding contract: the FPSO_* enums, FPSO_DEFAULT, fpso_pack/unpack/scale (shared with the ImGui menu and the Linux front)
 static const char *const FPSO_POS_NAMES_EN[FPSO_POS_N] = {"Top left", "Top right", "Bottom left", "Bottom right"};
 static const char *const FPSO_POS_NAMES_ZH[FPSO_POS_N] = {"左上", "右上", "左下", "右下"};
 #define FPSO_POS_NAMES (dm_ui_zh() ? FPSO_POS_NAMES_ZH : FPSO_POS_NAMES_EN)
@@ -223,14 +219,6 @@ static const char *const FPSO_SIZE_NAMES_EN[FPSO_SIZE_N] = {"Small", "Normal", "
 static const char *const FPSO_SIZE_NAMES_ZH[FPSO_SIZE_N] = {"小", "标准", "大", "特大"};
 #define FPSO_SIZE_NAMES (dm_ui_zh() ? FPSO_SIZE_NAMES_ZH : FPSO_SIZE_NAMES_EN)
 static const uint8_t FPSO_RGB[FPSO_COLOUR_N][3] = {{255, 255, 255}, {255, 220, 0}, {64, 255, 96}, {0, 230, 255}, {255, 64, 255}};
-#define FPSO_DEFAULT (FPSO_ROWS_DEFAULT | FPSO_TL << 5 | FPSO_WHITE << 7 | FPSO_BOX << 10 | FPSO_NORMAL << 13)
-static inline int fpso_rows(int o) { return o & 31; }
-static inline int fpso_pos(int o) { return o >> 5 & 3; }
-static inline int fpso_colour(int o) { return o >> 7 & 7; }
-static inline int fpso_outline(int o) { return o >> 10 & 7; }
-static inline int fpso_size(int o) { return o >> 13 & 3; }
-static inline int fpso_pack(int rows, int pos, int colour, int outline, int size) { return rows | pos << 5 | colour << 7 | outline << 10 | size << 13; }
-static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (base > 1 ? base - 1 : 1) : size == FPSO_LARGE ? base + 1 : size == FPSO_XL ? 2 * base : base; }
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,

@@ -11,20 +11,25 @@
 
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
-    if (strcmp(argv[1], "get") == 0) {   // print the file/cache fps value
-        printf("%d\n", dm_menu_setting_get("fps", 0));
+    if (strcmp(argv[1], "get") == 0) {   // get <key> [def]: print the file/cache value
+        if (argc < 3) return 2;
+        printf("%d\n", dm_menu_setting_get(argv[2], argc > 3 ? atoi(argv[3]) : 0));
         return 0;
     }
-    if (strcmp(argv[1], "set") == 0) {   // set the file (and cache on success)
-        if (argc < 3) return 2;
-        dm_menu_setting_set("fps", atoi(argv[2]));
-        return 0;
+    if (strcmp(argv[1], "set") == 0) {   // set <key> <value>: write; exit 0 saved, 1 failed
+        if (argc < 4) return 2;
+        return dm_menu_setting_set(argv[2], atoi(argv[3])) == 0 ? 0 : 1;
     }
     if (strcmp(argv[1], "cycle") == 0) {   // set then get in one process: proves the cache updated on save
+        if (argc < 4) return 2;
+        int rc = dm_menu_setting_set(argv[2], atoi(argv[3]));
+        printf("%d %d\n", rc, dm_menu_setting_get(argv[2], 0));
+        return 0;
+    }
+    if (strcmp(argv[1], "reload") == 0) {   // reload then get: proves an external edit is picked up
         if (argc < 3) return 2;
-        int v = atoi(argv[2]);
-        dm_menu_setting_set("fps", v);
-        printf("%d\n", dm_menu_setting_get("fps", 0));
+        dm_menu_settings_reload();
+        printf("%d\n", dm_menu_setting_get(argv[2], 0));
         return 0;
     }
     return 2;
