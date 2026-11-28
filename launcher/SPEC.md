@@ -68,6 +68,12 @@ Rules the whole code holds to:
   settings.**
 - The `DM_VK_DMABUF_ZC` (v2 zero-copy) default ships ON; `env.txt` may override, as on
   Android.
+- **Touch-first interaction rules** (the tablet is the target machine): a page tab switches
+  on the press (a finger's release often never arrives), a card's selection frame is the
+  card's own height, and a Steam shortcut is written even while Steam runs — on the tablet
+  the desktop keeps Steam alive, so refusing would mean never being able to add a game; the
+  player is told it appears at Steam's next start (Steam reads `shortcuts.vdf` when it
+  quits/starts).
 
 ## The four steps (each anchored on: MvDK runs with one click)
 
