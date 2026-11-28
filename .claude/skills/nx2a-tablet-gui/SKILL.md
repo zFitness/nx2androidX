@@ -70,8 +70,14 @@ proot 模式实证结果：Seccomp=2 但 proot 拦截层不再触发补丁差异
 ## 4. 部署流程（commit → 会话树）
 
 ```sh
-# 1) 开发机: git archive 出三棵树（porter/ launcher/ nxnative/），带上执行的 commit
-git archive <commit> porter launcher nxnative | gzip > /tmp/nx2a-deploy-<sha>.tar.gz
+# 1) 开发机: 一步出包（不要中转解包再打包！）
+#    macOS 的 bsdtar 会把文件的扩展属性序列化成 ._* AppleDouble 条目（3640 个垃圾文件，
+#    glslc 把 ._depthscale.comp 当真着色器编译 → host 阶段必死。2026-11-28 实测）。
+#    git archive 直接进 gzip 就没有 xattr；find/ls 在 APFS 上看不见 ._（藏在 xattr 里），
+#    一进 tar 才显形。出包后必须 python tarfile 数一遍 '_ 条目 == 0'。
+COPYFILE_DISABLE=1 git archive <commit> porter launcher nxnative | gzip > /tmp/nx2a-deploy-<sha>.tar.gz
+python3 -c "import tarfile; ns=tarfile.open('/tmp/nx2a-deploy-<sha>.tar.gz').getnames(); \
+  assert not [n for n in ns if '/._' in n or n.startswith('._')]; print('clean', len(ns))"
 
 # 2) 推进平板共享存储（adb push 自动 chown 归 0:0 —— agent 侧推的；进 proot 后再归位）
 $ADB push /tmp/nx2a-deploy-<sha>.tar.gz /sdcard/Download/nx2a-dev/
@@ -83,7 +89,9 @@ SRC = '/root/Storage/Download/nx2a-dev/nx2a-deploy-<sha>.tar.gz'
 USR = '/opt/appimages/user/nx2androidx-arm64-toolchain-full/app/usr'
 stage = '/tmp/nx2a-stage'
 os.makedirs(stage, exist_ok=True)
-with tarfile.open(SRC) as t: t.extractall(stage)
+with tarfile.open(SRC) as t:
+    members = [m for m in t.getmembers() if '._' not in m.name]   # 过滤任何 AppleDouble（双保险）
+    t.extractall(stage, members=members)
 for tree in ('porter', 'launcher', 'nxnative'):
     dst = f'{USR}/{tree}'
     if os.path.exists(dst): __import__('shutil').rmtree(dst)
@@ -140,6 +148,7 @@ $ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c \
 |---|---|
 | native userland 模式构建必死 | 三件套死刑（§15 老结论的适用条件）；**开 proot 模式全活**。判断：`ps -A | grep libproot` 见 `libproot.so` 进程 |
 | tar 解包丢执行位 | rootfs 的 exec 位在 tar/解包链路被剥；**部署必附 exec-list.txt**（`git ls-tree` 755 清单），解包后 chmod 还原。FUSE 桥同样丢 |
+| macOS AppleDouble 污染包 | 开发机 `tar -x` 中转再 `tar -czf` 会把 xattr 序列化成 3640 个 `._*` 条目（APFS 上 find/ls 看不见）；glslc 拿 `._depthscale.comp` 编译 → host 阶段 "require version 140" 假报错。**一步 `git archive \| gzip` 出包 + 出包后验 0 个 `._` + 解包端过滤**（§4） |
 | `/data/local/tmp` 会被清 | agent 侧临时物放 `/sdcard`（=会话 `/root/Storage`），不放 `/data/local/tmp` |
 | adb push 的属主 | agent 推的文件归 uid 0；会话用户读到失败时 `chown 10284:10284` 归位（Linux 侧路径 `$D/files/linuxfs/root/...`） |
 | 坏 pack（env.txt 指容器路径） | 显示"资源缺失"是**正确行为**；要么重移植、要么删掉 pack+work。删除清单：`library/<App>-data` + `work/<TID>_build` |
