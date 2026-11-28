@@ -29,7 +29,12 @@ _Static_assert(sizeof(NpadState) == 0x28, "NpadState");
 // Front-end publishing: the keyboard / touch path (dm_input_set) and player 1's physical controller path (dm_pad_set) are ORed; each further player has a controller path of its own
 // (dm_pad_set_player). Press edges are latched until the game's next read so short presses are not lost
 static _Atomic uint64_t g_btn, g_axes, g_latch, g_pad_btn[DM_PLAYERS], g_pad_axes[DM_PLAYERS], g_pad_latch[DM_PLAYERS];
-static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
+static _Atomic int64_t g_sampling = 1 << 16;
+#ifdef DM_LINUX
+static _Atomic unsigned long g_obs_hid_reads;                          // all npad state fills
+static _Atomic unsigned long g_obs_hid_reads_id[8];                    // per npad id (No1..No8 = 0..7, Handheld = 0x20 & 7)
+static _Atomic unsigned long g_obs_hid_buttons_id[8];                  // the buttons that id's newest fill carried
+#endif   // starts high so the history entries below the newest keep positive sampling numbers
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
@@ -57,6 +62,11 @@ void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t 
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
+#ifdef DM_LINUX
+unsigned long dm_obs_hid_reads(void) { return (unsigned long)atomic_load(&g_obs_hid_reads); }
+unsigned long dm_obs_hid_reads_id(unsigned long id) { return (unsigned long)atomic_load(&g_obs_hid_reads_id[id & 7]); }
+unsigned long dm_obs_hid_buttons_id(unsigned long id) { return (unsigned long)atomic_load(&g_obs_hid_buttons_id[id & 7]); }
+#endif
 // DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR (plus the sticks LLeft LUp LRight LDown and RLeft RUp RRight RDown) Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown,
 //   T<x>x<y> = a touch at normalized picture coordinates (origin top left) for the hold time, and Shake = the controller shaken for the hold time (at least one whole shake);
 //   held 0.15 s by default, at most 1024 steps (counted after repeats are expanded). Goes through player 1's controller path (dm_pad_set), ORed with keyboard / touch, neither overrides the other. Times are counted from host start.
@@ -282,6 +292,13 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (s->ry < -STICK_THRESH) b |= 1u << 23;
     s->buttons = b;
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
+#ifdef DM_LINUX
+    // DM_OBSERVE=1 (linux/observe.c): what the game's reads of the Handheld npad actually see — the injected buttons end up here
+    // or nowhere
+    unsigned uid = (unsigned)id < 8u ? (unsigned)id : ((unsigned)id == 0x20u ? 7u : 8u);   // Handheld folds into slot 7
+    atomic_fetch_add(&g_obs_hid_reads, 1);
+    if (uid < 8u) { atomic_fetch_add(&g_obs_hid_reads_id[uid], 1); atomic_store(&g_obs_hid_buttons_id[uid], (unsigned long)b); }
+#endif
 }
 
 // GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the

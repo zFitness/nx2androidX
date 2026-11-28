@@ -2066,8 +2066,18 @@ static void engine_dyn_tick(uint64_t presents) {
     if (nk != k) { static int nlog; if (nlog++ < 100) LOG("[nvn] engine dynamic resolution: GPU clock factor %.2f → %.2f at present %llu (GPU p90 %.1f ms, budget %.1f)", k, nk, (unsigned long long)presents, p90, budget);
         k = nk; gclk_set(k); }
 }
+#ifdef DM_LINUX
+// DM_OBSERVE=1 (linux/observe.c): the guest's presents, counted here and read once a second from the front thread -- a counter that stops
+// growing while others go on is the link that stopped
+static _Atomic unsigned long g_obs_qpt;
+unsigned long dm_obs_qpt(void) { return atomic_load(&g_obs_qpt); }
+#endif
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
-    (void)q; win_t *o = (win_t *)w; o->presents++; SEQ("present %d", idx);
+    (void)q; win_t *o = (win_t *)w; o->presents++;
+#ifdef DM_LINUX
+    atomic_fetch_add(&g_obs_qpt, 1);
+#endif
+    SEQ("present %d", idx);
     dm_fps_lock_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
     if (dm_fps_state) dyn_scale_tick(o->presents);
@@ -2900,11 +2910,31 @@ NVN(nvnTextureWriteTexelsStrided, void, const NVNtexture *t, const NVNtextureVie
     write_texels(CTX(t), (const view_t *)v, r, src, (size_t)row, (size_t)img);
 }
 // The movie decoder's native-texture output (DecoderMode 2, hle_movie.c): a whole frame into level 0 of the client texture, as WriteTexels does; returns the texture format, or −1 when the object is not a texture
+#ifdef DM_LINUX
+// DM_OBSERVE=1 (linux/observe.c): the movie layer's writes into its NVN texture (hle_movie.c) -- a call count that stays at zero, or a
+// fail count that grows (the client's object was not a texture of ours), is where a decoded movie frame stops short of the screen
+static _Atomic unsigned long g_obs_tex_w, g_obs_tex_fail;
+unsigned long dm_obs_tex_w(void) { return atomic_load(&g_obs_tex_w); }
+unsigned long dm_obs_tex_fail(void) { return atomic_load(&g_obs_tex_fail); }
+#endif
 int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, size_t row, int *tw, int *th) {
     const tex_t *t = nvntex;
     uint32_t mg = 0; vm_size_t got = 0;   // the value the client gives is not necessarily a pointer: test-read first
-    if (!t || (uintptr_t)t & 7 || vm_read_overwrite(mach_task_self(), (vm_address_t)t, 4, (vm_address_t)&mg, &got) != KERN_SUCCESS || got != 4) return -1;
-    if (t->magic != MAGIC('T', 'E', 'X', 0)) return -1;
+    if (!t || (uintptr_t)t & 7 || vm_read_overwrite(mach_task_self(), (vm_address_t)t, 4, (vm_address_t)&mg, &got) != KERN_SUCCESS || got != 4) {
+#ifdef DM_LINUX
+        atomic_fetch_add(&g_obs_tex_fail, 1);
+#endif
+        return -1;
+    }
+    if (t->magic != MAGIC('T', 'E', 'X', 0)) {
+#ifdef DM_LINUX
+        atomic_fetch_add(&g_obs_tex_fail, 1);
+#endif
+        return -1;
+    }
+#ifdef DM_LINUX
+    if (src) atomic_fetch_add(&g_obs_tex_w, 1);   // a real write, not the client's size probe (src NULL)
+#endif
     if (tw) *tw = (int)t->d.width;
     if (th) *th = (int)t->d.height;
     if (src) { NVNcopyRegion r = {0, 0, 0, w, h, 1}; write_texels(t, NULL, &r, src, row, 0); }
