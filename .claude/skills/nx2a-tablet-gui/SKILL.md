@@ -144,6 +144,22 @@ $ADB -s "$T" shell "sh /data/local/tmp/guest.sh sh -c \
 
 ## 7. 坑（全部实测）
 
+### 7a. 会话 rootfs 的构建依赖包（2026-11-28，一次装齐）
+
+```sh
+# host 阶段编译要的开发头（运行库 libSDL3.so.0 系统已带，头没带）：
+DEBIAN_FRONTEND=noninteractive /usr/bin/apt-get install -y -qq \
+  libsdl3-dev libavcodec-dev libswscale-dev libavutil-dev pkg-config
+```
+- `libsdl3-dev`：没有它 host 阶段 4 个文件死在 `'SDL3/SDL.h' file not found`
+- **libav 三件套必须一起装**：`pkg-config --cflags libavcodec libavutil libswscale`
+  是**原子**的——只装 libavcodec 时这条整体 rc=1、输出空，movie_ffmpeg.c 照样进
+  编译列表（探测只查 libavcodec）却没有头路径，死在 `'libavcodec/avcodec.h' not found`（2026-11-28 实测）
+- `TMPDIR` adb 链会带 `/data/local/tmp`（proot 里不存在）→ clang "unable to make
+  temporary file"；GUI 启动脚本已固定 `TMPDIR=/root/.local/share/nx2a/tmp`
+- 装完依赖后重跑构建即可：build.py 的 flags.stamp 含 INC（FF_CFLAGS 变了），
+  对象缓存自动全量重编，不用清 work
+
 | 坑 | 事实与修法 |
 |---|---|
 | native userland 模式构建必死 | 三件套死刑（§15 老结论的适用条件）；**开 proot 模式全活**。判断：`ps -A | grep libproot` 见 `libproot.so` 进程 |
