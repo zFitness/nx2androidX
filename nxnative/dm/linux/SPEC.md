@@ -397,8 +397,9 @@ v1 的性能结论不能靠猜——先拿真机数据再决定 v2 投入。
 
 ## 7. 风险与开放问题
 
-1. anland 桥的 Wayland 协议覆盖（xdg-shell/decoration）——SDL3 清屏已过 ✓，
-   全功能窗口（resize/maximize）待验
+1. anland 桥的 Wayland 协议覆盖（xdg-shell/decoration）——SDL3 清屏 ✓、全屏窗口+
+   交换链+最小化/合成器恢复 ✓（§8.1/8.2）。产品改定全屏运行：resize/maximize 不做
+   （实测 SDL_MaximizeWindow 在此 KWin 上不改几何，SDL 的 deadline 自己发假事件）
 2. freedreno 对交换链 present mode（FIFO ✓）与格式（BG8R8A8 ✓）已验；
    游戏着色器在 freedreno 上的编译正确性 = M3 后的实测项
 3. udmabuf 内核配置未确认（§5 v2 的开关）；缺则 v1 copied-pool 顶上
@@ -408,3 +409,81 @@ v1 的性能结论不能靠猜——先拿真机数据再决定 v2 投入。
 6. turnip/freedreno 的 HOST_CACHED 与导出支持 = v2 前置探测（§5）
 7. VK_GOOGLE_display_timing 缺失（Mesa wayland）→ pacing 精度降级，非阻塞
 8. adrenotools 分支在 Linux 上 dlopen 失败 → [RED] 噪音日志，可 DM_ANDROID 静音
+
+## 8. 验证状态（2026-11-27 深夜）
+
+本轮把「GPU→屏幕」链路做稳。范围收缩：**游戏全屏运行**——窗口创建即
+`SDL_WINDOW_FULLSCREEN`，无缩放/最大化/拖动，窗口测试脚本只保留"最小化→等合成器
+恢复"。开发闭环统一走 `devtools/droidspaces_dev.py`（sync/build/run/collect/stop/
+selftest；证据在 `.gamedump/MarioVsDonkeyKong/linux-dev/<测试号>/`，构建在容器里
+后台跑、短连接轮询，参数走文件不走长命令行）。
+
+### 8.1 彩条：已验证 ✓
+
+- 全屏（B20261127T152636Z/run-03）：交换链 1216x762 = 整个输出（窗口化时
+  1216x674 = 去掉标题栏+面板），整屏无边框；帧号 42→142（10 fps）持续更新；虚线
+  活动条移动。`DM_VK_VALIDATE=1` 全程 0 validation error / 0 VUID / 0 hazard /
+  0 [RED] / 0 CRASH。截图 t+005/015/025。
+- 校验层 = 容器 apt 的 vulkan-validationlayers；同步校验
+  （VK_LAYER_ENABLES=…SYNCHRONIZATION_VALIDATION_EXT）单独跑过 0 hazard。
+- 切后台/返回（run-06）：HOME 切走的是**安卓侧的 anland 应用**，不是 Linux 的
+  后台——Linux 侧无任何事件（无 occluded、无暂停，帧全程 10 fps，校验干净，42 s
+  后 graceful exit）。Linux 线今天没有后台化事件通道（KWin 不挂起窗口、桥继续应答
+  帧回调）；要不要在 anland 后台化时暂停渲染是开放的产品问题，需要事件路径，本轮
+  不做。
+
+### 8.2 窗口生命周期：最小化→恢复已验证；缩放/最大化出范围
+
+- run-02（--script）：6 s 脚本最小化 → `window occluded`（KWin 的 xdg-shell
+  suspended，SDL 映射为 OCCLUDED）→ 前端给后端 0x0 → "presenting is paused"，屏幕
+  上窗口消失；进程外点 anland 任务栏条目 → KWin 带 activated 的 configure → SDL 发
+  RESTORED 并清 MINIMIZED → "presenting goes on"、交换链重建、帧继续。
+  SDL_RestoreWindow 对单纯最小化的窗口是空操作（Wayland 无 un-minimize 请求），
+  恢复只能由合成器做——SDL 3.4.18 源码注释与实测一致。
+- 最大化：实测 `SDL_MaximizeWindow` 不改几何（KWin 未最大化，SDL 的
+  maximized-deadline 到点自己发假 MAXIMIZED 事件）；产品全屏，此路已撤。
+
+### 8.3 游戏呈现：呈现链路工作；解码帧到不了消费者 = 下一处阻塞
+
+- run-04/05（--mode game）：访客启动、NVN 帧提交并呈现、交换链 1216x762 全屏、audren
+  渲染；DM_VK_SHOT 第 5/30 帧出图且屏幕镜像一致——**呈现路径端到端工作**（这两帧内
+  容为黑：游戏自身此刻画的就是黑）。
+- [longframe] 是**相对近期均值的条件日志，且延迟 8 帧输出**（hle_nvn.c：先存 16 深
+  环、GPU 时间晚 8 帧才到）——「最后一条在 37 帧」不等于帧停在 37。run-04 原始日志
+  46 s 还有两个 960×1080 解码器创建并持续送包。**弃用"片头起渲染停摆"的旧结论。**
+- DM_OBSERVE=1（linux/observe.c，前端线程每秒一行）：qpt（访客
+  QueuePresentTexture）、vkpres（真正递交 vkQueuePresentKHR 的帧）逐秒同步增长；
+  movie_in/pic/dec = 电影的包进、图出、存活解码器；tex_w/tex_fail =
+  nvn_host_write_texture 的写/拒。
+- run-09/10（movie_ffmpeg 接入后）：qpt 0→170 全程增长**从未停**；movie_pic =
+  movie_in − 2（FFmpeg 软解每包出图，2113 帧/90 s）；解码器存活、无关闭。
+- **下一处阻塞（有计数与 trace 证据）**：消费者的
+  `movie::Decoder::GetOutputBuffer` **一次都没被调用**（MD_TRACE 无环境变量也记录
+  每槽前 12 次，全程 0 条；tex_w/tex_fail=0 连纹理探测都没发生）——解码图写进
+  `out[slot].frm`（pic=1、事件 1 有信号路径）后没人来取。该游戏的 SDK 消费者走的
+  导出没有被 HLE 覆盖（tex 模式这条路对 Metroid Dread 是通的）。下一轮：对照
+  subsdk0 符号表与 HLE 注册表，找到消费者实际调用的 movie::* 导出并接上。
+- 485 ms 慢帧（submit+present 0.6–16 ms、GPU 0.2–0.3 ms）**独立测量**，不与电影黑
+  屏同源假设。
+### 8.4 本轮修复（最小实现；无重试框架）
+
+1. acquire 信号量/fence 的失败恢复：SUBOPTIMAL 先把本帧走完（合法消费）再择机重建
+   交换链；acquire 没交出图像、或 submit 没发生 → 二元信号量与 fence **销毁重建**
+   （fence 无法从主机置位；原先误用 vkWaitSemaphores 清理二元信号量、且
+   VkSemaphoreWaitInfo 缺 pValues；reset 后提交失败会让下一帧永久等待）。OUT_OF_DATE
+   → 重建交换链。
+2. `VK_ERROR_DEVICE_LOST` → 记录清楚后 `dm_host_shutdown` 结束运行。
+3. 窗口线程身份：`dm_front_vk_window_thread()` 在游戏线程启动前由前端注册（弱符
+   号，null 构建无实现），release/acquire 读写；去掉"首次 dm_front_tick 才记录"的
+   竞争。
+
+### 8.5 环境（顺带证实）
+
+- 运行 dmhost **不需要** APK 线的 rootfs 库：readelf（NEEDED libz/libm/libvulkan/
+  libSDL3/libc，解释器 /lib/ld-linux-aarch64.so.1，无 RPATH）+ /proc/<pid>/maps
+  （干净环境 58 个库全部来自 /usr/lib/aarch64-linux-gnu；彩条在该环境全屏验证）。
+  反例：带 rootfs 的 LD_LIBRARY_PATH 会让 libc 从 payload 的 pylibs 加载，与系统的
+  SDL3/Vulkan 混搭——已弃用。
+- 构建：/opt/nx2a（扁平 payload）的 clang+glslc（两份 payload 的工具链逐字节相同，
+  sha256 核对）+ 容器自己的 python3/链接器/库；首次构建 5.8 s，零变化增量 0.4 s，
+  两个源文件的增量 0.9 s；产物逐位可复现（两次全建 sha256 相同）。
