@@ -148,6 +148,7 @@ def port_files():
             FF_CFLAGS.extend(subprocess.run(['pkg-config', '--cflags', 'libavcodec', 'libavutil', 'libswscale'], capture_output=True, text=True).stdout.split())
             FF_LIBS.extend(subprocess.run(['pkg-config', '--libs', 'libavcodec', 'libavutil', 'libswscale'], capture_output=True, text=True).stdout.split())
             INC.extend(FF_CFLAGS)   # INC is a global from before; the compiles read it here
+            INC.append('-DHAVE_LIBAV=1')   # audio_null.c: the movie's AAC decoded by libavcodec too (same libs)
         else:
             print('[build] linux: no libavcodec via pkg-config: movie_null.c stands in for the movie decoder (no pictures)')
         out += [p for p in srcs('android/compat/*.c')
