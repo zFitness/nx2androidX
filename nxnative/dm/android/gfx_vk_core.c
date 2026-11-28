@@ -244,7 +244,7 @@ void vk_init(void) {
     VkExtensionProperties *ex = calloc(ne, sizeof *ex); vkEnumerateDeviceExtensionProperties(V.pd, NULL, &ne, ex);
     const char *want[] = {"VK_KHR_swapchain", "VK_ANDROID_external_memory_android_hardware_buffer", "VK_EXT_queue_family_foreign", "VK_EXT_custom_border_color",
                           "VK_EXT_robustness2", "VK_EXT_depth_clip_control", "VK_EXT_provoking_vertex", "VK_EXT_index_type_uint8", "VK_EXT_transform_feedback",
-                          "VK_GOOGLE_display_timing"};
+                          "VK_GOOGLE_display_timing", "VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf"};   // the last two: SPEC §5 v2's dma-buf pool buffers (DM_LINUX; harmless where absent)
     const char *on[64]; uint32_t non = 0;
     for (unsigned i = 0; i < sizeof want / sizeof *want; i++) if (has_ext(ex, ne, want[i])) on[non++] = want[i]; else VKLOG("device has no %s", want[i]);
     // NVN vertex streams step per N instances (gfx_vk_exec.c build_pipeline's divisor state): VK_EXT_vertex_attribute_divisor, or the KHR one (core in Vulkan 1.4, the same
@@ -707,6 +707,9 @@ static uint64_t zc_unplace(uint8_t *mem, uint64_t n, int lazy, const zcin_t *in)
 // lazy: a pool given its buffer when the GPU first uses it (pool_back). 0 on success; 1: lazy, and the dirty-page tracker does not hold the pages (nothing done); 2: lazy, and
 // the host wrote into them lately (nothing done, try later). On a failure p->left is the bytes from mem still on a dropped buffer's pages (zc_unplace). in: the pools
 // inside a lazy one, whose pages stay their own (pool_back; NULL: none); such a pool takes no slab's slot, which would go back to its slab half mapped if a piece failed
+#ifdef DM_LINUX
+static int dmabuf_zc(void); static int dmabuf_type(uint32_t bits);   // below zc_off (SPEC §5 v2)
+#endif
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, const zcin_t *in) {
     slab_t *sl; uint32_t si; size_t done = 0;
     // lazy: the tracker's answer before a slab's slot, a kept buffer or a new one is taken. Asked only inside the swap, a pool the host keeps writing into (the game's
@@ -721,6 +724,31 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
         if (rc != -5 && rc != -6) return rc == 1 || rc == 2 ? rc : -1;   // the tracker's answer, the same for a buffer of its own
         mem_diag_zc(11, "mmap-fixed slab", size, "errno", errno);   // (the old pages are still there: a buffer of its own)
     }
+#ifdef DM_LINUX
+    if (dmabuf_zc()) {   // SPEC §5 v2: the buffer is a VkDeviceMemory dma-buf export (probe 2026-11-28: cached mmap, coherent MAP_FIXED)
+        VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+        if (vkCreateBuffer(V.dev, &bi, NULL, &p->buf)) { VKLOG("[RED] dma-buf pool %llu KB: vkCreateBuffer failed", (unsigned long long)(size >> 10)); return -1; }
+        VkMemoryRequirements mr; vkGetBufferMemoryRequirements(V.dev, p->buf, &mr);
+        int t = dmabuf_type(mr.memoryTypeBits);
+        if (t < 0) { VKLOG("[RED] dma-buf pool %llu KB: no exportable type for the buffer's memoryTypeBits %#x", (unsigned long long)(size >> 10), mr.memoryTypeBits); vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; return -1; }
+        VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};
+        VkExportMemoryAllocateInfo ema = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &ded, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ema, mr.size, (uint32_t)t};
+        if (vkAllocateMemory(V.dev, &ai, NULL, &p->mem)) { VKLOG("[RED] dma-buf pool %llu KB: vkAllocateMemory failed", (unsigned long long)(size >> 10)); vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; return -1; }
+        if (vkBindBufferMemory(V.dev, p->buf, p->mem, 0)) { VKLOG("[RED] dma-buf pool %llu KB: vkBindBufferMemory failed", (unsigned long long)(size >> 10)); vkFreeMemory(V.dev, p->mem, NULL); vkDestroyBuffer(V.dev, p->buf, NULL); p->mem = VK_NULL_HANDLE; p->buf = VK_NULL_HANDLE; return -1; }
+        PFN_vkGetMemoryFdKHR getFd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(V.dev, "vkGetMemoryFdKHR");
+        int fd = -1; VkMemoryGetFdInfoKHR gf = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, NULL, 0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        gf.memory = p->mem;
+        if (!getFd || getFd(V.dev, &gf, &fd) || fd < 0) { VKLOG("[RED] dma-buf pool %llu KB: vkGetMemoryFdKHR failed", (unsigned long long)(size >> 10)); vkFreeMemory(V.dev, p->mem, NULL); vkDestroyBuffer(V.dev, p->buf, NULL); p->mem = VK_NULL_HANDLE; p->buf = VK_NULL_HANDLE; return -1; }
+        // copy the pool's current contents into the buffer's pages (zc_fill maps the fd per slice), then those pages ARE the pool's
+        zcfill_t f = {fd, 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
+        close(fd);   // the MAP_FIXED mappings live on without the fd
+        if (rc) { mem_diag_zc(6, "mmap-fixed dmabuf", size, "errno", errno); p->left = zc_unplace(mem, done, lazy, in); vkFreeMemory(V.dev, p->mem, NULL); vkDestroyBuffer(V.dev, p->buf, NULL); p->mem = VK_NULL_HANDLE; p->buf = VK_NULL_HANDLE; return rc == 1 || rc == 2 ? rc : -1; }
+        p->ahb = NULL; p->boff = 0; p->slab = NULL; p->slot = 0; p->zero_copy = 1;
+        return 0;
+    }
+#endif
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
         AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) { mem_diag_zc(0, "size", size, "limit", -1); return -1; }
@@ -914,9 +942,54 @@ static int zc_uncached(void) {
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
+#ifdef DM_LINUX
+// SPEC §5 v2: the pools' buffers are VkDeviceMemory dma-buf exports instead of AHardwareBuffers. Probed on this
+// device 2026-11-28 (turnip kgsl, Adreno 830v1): both extensions present; all three HOST_VISIBLE memory types export
+// fds; the exported memory's mmap reads at malloc speed (20.4 vs 20.3 GB/s = truly cached; the RP5 AHB precedent
+// read 1.7-1.9 GB/s); MAP_FIXED over a live mapping is GPU→CPU coherent with no sync ioctl (20/20, mean 589 us) and
+// CPU→GPU coherent (zc_fill's direction); DMA_BUF_IOCTL_SYNC works as a fallback. The device-only memory type's
+// vkGetMemoryFdKHR SIGSEGVs in kgsl_bo_export_dmabuf — never asked there (probed in probe/dmabuf_probe.c).
+static uint32_t g_dmabuf_types_ok; static int g_dmabuf_types_done;
+static void dmabuf_types(void) {   // which HOST_VISIBLE memory types export dma-buf fds, probed once (1 MiB each)
+    if (g_dmabuf_types_done) return; g_dmabuf_types_done = 1;
+    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(V.pd, &mp);
+    PFN_vkGetMemoryFdKHR getFd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(V.dev, "vkGetMemoryFdKHR");
+    if (!getFd) return;
+    for (uint32_t t = 0; t < mp.memoryTypeCount && t < 32; t++) {
+        uint32_t f = mp.memoryTypes[t].propertyFlags;
+        if (!(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) continue;   // the device-only type: getFd is the driver's SIGSEGV
+        VkExportMemoryAllocateInfo ema = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ema, 1 << 20, t};
+        VkDeviceMemory m;
+        if (vkAllocateMemory(V.dev, &ai, NULL, &m)) continue;
+        int fd = -1; VkMemoryGetFdInfoKHR gf = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, NULL, 0, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+        gf.memory = m;
+        if (!getFd(V.dev, &gf, &fd) && fd >= 0) { g_dmabuf_types_ok |= 1u << t; close(fd); }
+        vkFreeMemory(V.dev, m, NULL);
+    }
+    if (!g_dmabuf_types_ok) VKLOG("[RED] dma-buf: no HOST_VISIBLE memory type exports an fd (SPEC §5 v2 stays off)");
+}
+static int dmabuf_type(uint32_t bits) {   // best exportable host-visible type for a buffer's requirements: cached, then plain visible
+    dmabuf_types();
+    VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(V.pd, &mp);
+    int cached = -1, vis = -1;
+    for (uint32_t t = 0; t < mp.memoryTypeCount && t < 32; t++) {
+        if (!(bits & (1u << t)) || !(g_dmabuf_types_ok & (1u << t))) continue;
+        uint32_t f = mp.memoryTypes[t].propertyFlags;
+        if (f & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) { if (cached < 0) cached = (int)t; }
+        else if (vis < 0) vis = (int)t;
+    }
+    return cached >= 0 ? cached : vis;
+}
+// DM_VK_DMABUF_ZC=1: pools' buffers become dma-buf exports (v2). Default off — the switch flips only after the
+// visual acceptance run (no shadow, no merge for these pools: coherence is the mapping's, per the probe)
+static int dmabuf_zc(void) {
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DMABUF_ZC"); v = e && atoi(e); } return v;
+}
+#endif
 static int zc_off(void) {
 #ifdef DM_LINUX
-    return 1;   // no AHardwareBuffers off Android: every pool is a copied one, refreshed from the game's pages before each submission (v1; SPEC §5 v2 = dma-buf export)
+    return !dmabuf_zc();   // v1 copied pools until DM_VK_DMABUF_ZC=1 turns the dma-buf v2 on (SPEC §5); Android keeps the AHB route
 #else
     static int v = -1; if (v < 0) v = getenv("DM_VK_NO_ZEROCOPY") != NULL; return v;
 #endif
