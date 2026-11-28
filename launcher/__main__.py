@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         os.kill(os.getpid(), signum)
 
     signal.signal(signal.SIGSYS, _sigsys)
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import Qt, QTimer
     from launcher.ui.app import LauncherApp
     application = QtWidgets.QApplication([])
     window = LauncherApp()
