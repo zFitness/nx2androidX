@@ -250,6 +250,15 @@ class Options(pipeline.Options):
     vulkan_driver_dir: Path = None     # a folder of arm64 Vulkan drivers: the pack carries them all and the game's configuration panel lets the player pick one
 
 
+def linux_host_args(game, out, jobs, release=True):
+    """build.py's line for the launcher's host: the Linux ELF with the machine's own compiler
+    and dm/linux's front (SDL3's window, the Vulkan backend — the shape the machine runs the
+    games in). One command for a port's host and a runtime rebuild, so the two cannot build
+    different shapes; the headless tools pass their own --gfx null through build_cmd."""
+    return [PY, DM / 'android/build.py', '--game', game, '--out', out, '--jobs', str(jobs),
+            '--os', 'linux', '--gfx', 'vk', '--exe'] + (['--release'] if release else [])
+
+
 class PhonePort(pipeline.Port):
     def sync_profile(self, tid):
         """The player's imported profile into the tool tree's dm/games (profiles_layer.copy_to_games): the rewriter's patches.py and the host's profile header are looked up
@@ -281,7 +290,7 @@ class PhonePort(pipeline.Port):
         cmd = [PY, DM / 'android/build.py', '--game', self.g.id, '--out', out, '--jobs', str(self.o.jobs)]
         if on_linux():
             cmd += ['--os', 'linux']
-            if '--gfx' not in extra: cmd += ['--gfx', 'null']   # the headless line: the null device until dm/linux grows a window (the VK files' window path is Android's)
+            if '--gfx' not in extra: cmd += ['--gfx', 'null']   # the headless line: the tools' hosts (the shader capture, the Oodle decoder); the real host passes --gfx itself
             return cmd + extra
         return cmd + ['--ndk', str(self.tools['ndk'])] + extra
 
@@ -1005,7 +1014,7 @@ class PhonePort(pipeline.Port):
         out = self.aw / ('host-debug' if self.o.debug else 'host')
         if on_linux():   # the launcher's line: a Linux ELF the launcher runs itself (dm/linux/'s front, the machine's compiler), no NDK anywhere
             PROG.stage('host', step="the machine's own compiler")
-            nsp.run(self.build_cmd(out, ['--exe']) + ([] if self.o.debug else ['--release']),
+            nsp.run(linux_host_args(self.g.id, out, self.o.jobs, release=not self.o.debug),
                     self.logs / 'linux_host.log', env=self.env)
             self.so = out / 'dmhost'
         else:

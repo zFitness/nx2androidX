@@ -580,6 +580,139 @@ class Window(unittest.TestCase):
         page.append('rewriting the game')
         self.assertIn('rewriting the game', page.log.toPlainText())
 
+    def test_saving_the_settings_does_not_stop_a_running_build(self):
+        """A port runs with the settings it started with: saving the settings rebuilds the
+        page only after the build has ended (it used to kill the porter silently)."""
+        page = self.app.build_page
+        cancelled = []
+
+        class Running:
+            running = True
+
+            def cancel(self):
+                cancelled.append(1)
+
+        running = Running()
+        page.porter = running
+        self.app.reload_settings()
+        self.assertIs(page.porter, running)   # the build keeps its porter
+        self.assertFalse(cancelled)
+        self.assertTrue(page.pending_rebuild)   # the page waits for the end
+        page.finish(0)   # no result event: a failed run
+        self.assertFalse(cancelled)   # the build ended, it was never cancelled
+        self.assertFalse(page.pending_rebuild)   # the deferred rebuild ran
+        self.assertIsNone(page.porter)
+
+    def test_the_form_options_belong_to_the_game(self):
+        """One game's name, font or headroom never builds another's pack: another game in
+        the file field starts clean; the same game re-read keeps what the player typed."""
+        page = self.app.build_page
+        game_a = {'title_id': '0100000000010000', 'supported': True, 'name': 'A'}
+        game_b = {'title_id': '0100000000010001', 'supported': True, 'name': 'B'}
+        page.folder.setText('/games/a.nsp')
+        page.inspect_done('/games/a.nsp', game_a, 0, '')
+        page.name.setText('My build')
+        page.font.setText('/tmp/font.ttf')
+        page.headroom.setText('8')
+        page.folder.setText('/games/b.nsp')
+        page.inspect_done('/games/b.nsp', game_b, 0, '')
+        self.assertEqual(page.name.text(), '')
+        self.assertEqual(page.font.text(), '')
+        self.assertEqual(page.headroom.text(), '')
+        page.name.setText('Kept')
+        page.inspect_done('/games/b.nsp', game_b, 0, '')
+        self.assertEqual(page.name.text(), 'Kept')   # the same game keeps the edits
+
+    def test_the_remembered_port_replays_on_the_form(self):
+        """The library's re-port: the remembered file and the options of the last port go
+        back on the form, and start_build builds exactly that."""
+        page = self.app.build_page
+        self.app.settings['library'] = str(Path(self.folder.name) / 'library')
+        started = []
+
+        class FakePorter:
+            running = False
+
+            def __init__(self, root, pack_dir=None):
+                pass
+
+            def start(self, args):
+                started.append(list(args))
+
+            def cancel(self):
+                pass
+
+        original = runner.Porter
+        runner.Porter = FakePorter
+        self.addCleanup(setattr, runner, 'Porter', original)
+        page.prefill_for_port('/games/mario.nsp', {
+            'source': '/games/mario.nsp', 'name': 'Mario', 'language': 'zh-Hans',
+            'headroom': 8, 'font': '/tmp/f.ttf', 'fps60': True, 'touch': True,
+            'no_menu': True, 'mt_replay': True, 'debug': True, 'experimental': True})
+        self.assertEqual(page.folder.text(), '/games/mario.nsp')
+        self.assertTrue(page.start_build())
+        args = started[0]
+        self.assertEqual(args[:4], ['port', '/games/mario.nsp', '--progress', 'json'])
+        self.assertIn('--app', args)
+        self.assertEqual(args[args.index('--app-name') + 1], 'Mario')
+        self.assertEqual(args[args.index('--language') + 1], 'zh-Hans')
+        self.assertEqual(args[args.index('--alias-headroom') + 1], '8')
+        self.assertEqual(args[args.index('--shared-font') + 1], '/tmp/f.ttf')
+        for flag in ('--fps60', '--touch', '--no-menu-button', '--mt-replay', '--debug', '--experimental'):
+            self.assertIn(flag, args)
+
+    def test_a_finished_port_is_remembered_for_the_re_port(self):
+        original = settings.SOURCES_FILE
+        settings.SOURCES_FILE = Path(self.folder.name) / 'sources.json'
+        self.addCleanup(lambda: setattr(settings, 'SOURCES_FILE', original))
+        self.app.settings['library'] = str(Path(self.folder.name) / 'library')
+        page = self.app.build_page
+        page.built_from = '/games/mario.nsp'
+        page.built_options = {'name': 'Mario', 'language': 'ja', 'headroom': None,
+                              'font': '', 'fps60': False, 'touch': True, 'no_menu': False,
+                              'mt_replay': False, 'debug': False, 'experimental': False}
+        page.result = {'data': str(Path(self.folder.name) / 'library/Game-data'),
+                       'title_id': '0100000000010000'}
+        page.finish(0)   # the porter said done
+        remembered = settings.port_source_of('0100000000010000')
+        self.assertIsNotNone(remembered)
+        self.assertEqual(remembered['source'], '/games/mario.nsp')
+        self.assertEqual(remembered['name'], 'Mario')
+        self.assertEqual(remembered['language'], 'ja')
+        self.assertEqual(remembered['touch'], True)
+
+    def test_a_runtime_rebuild_and_its_drift_retry(self):
+        """The library's runtime rebuild: the same porter machinery on the build page, and a
+        drifted profile comes back as a question, not a dead end."""
+        page = self.app.build_page
+        started = []
+
+        class FakePorter:
+            running = False
+
+            def __init__(self, root, pack_dir=None):
+                pass
+
+            def start(self, args):
+                started.append(list(args))
+
+            def cancel(self):
+                pass
+
+        original_porter, original_confirm = runner.Porter, dialogs.confirm
+        runner.Porter = FakePorter
+        dialogs.confirm = lambda *a, **k: True
+        self.addCleanup(setattr, runner, 'Porter', original_porter)
+        self.addCleanup(setattr, dialogs, 'confirm', original_confirm)
+        self.assertTrue(page.start_rebuild_runtime(Path('/lib/Game-data')))
+        self.assertEqual(started[0][:3], ['rebuild-runtime', '/lib/Game-data', '--progress'])
+        self.assertNotIn('--allow-profile-drift', started[0])
+        page.handle({'ev': 'profile-drift', 'msg': 'the game profile changed'})
+        self.assertEqual(page.profile_drift, 'the game profile changed')
+        page.finish(1)   # the porter answered an error: the drift question goes out
+        self.assertEqual(len(started), 2)
+        self.assertIn('--allow-profile-drift', started[1])   # the retry uses the profile the game has now
+
 
 class SmallScreen(unittest.TestCase):
     """The rules of a phone-sized screen, without a phone."""

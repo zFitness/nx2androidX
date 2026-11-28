@@ -162,5 +162,40 @@ class Cancel(unittest.TestCase):
             self.assertFalse(porter.running, 'the cancel did not stop the process')
 
 
+class TheHome(unittest.TestCase):
+    """One porter config for the launcher itself and its children: the package names
+    NX2A_HOME before anything asks the porter for its settings (prod.keys among them)."""
+
+    def test_the_package_names_the_porters_home(self):
+        from launcher import settings as launcher_settings
+        original = os.environ.get('NX2A_HOME')
+        os.environ.pop('NX2A_HOME', None)
+        try:
+            import importlib
+            import launcher
+            importlib.reload(launcher)   # a fresh import, as a process that just started
+            self.assertEqual(os.environ.get('NX2A_HOME'),
+                             str(launcher_settings.CONFIG_DIR / 'porter'))
+        finally:
+            if original is None:
+                os.environ.pop('NX2A_HOME', None)
+            else:
+                os.environ['NX2A_HOME'] = original
+
+    def test_an_named_home_is_kept(self):
+        original = os.environ.get('NX2A_HOME')
+        os.environ['NX2A_HOME'] = '/somewhere/else'
+        try:
+            import importlib
+            import launcher
+            importlib.reload(launcher)
+            self.assertEqual(os.environ['NX2A_HOME'], '/somewhere/else')   # the player's own home wins
+        finally:
+            if original is None:
+                os.environ.pop('NX2A_HOME', None)
+            else:
+                os.environ['NX2A_HOME'] = original
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -12,12 +12,14 @@ count and the scroll bounds are the same numbers by construction.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QUrl, QSize, Qt, QRectF
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from launcher import launch, library, scale, settings, steam
+from launcher import launch, library, runner, scale, settings, steam
 from launcher.ui import clear_layout, dialogs, theme
 from launcher.ui.widgets import ActionPanel, CoverTile
 
@@ -210,8 +212,7 @@ class LibraryPage(QWidget):
 
     def _goto_build(self) -> None:
         """The empty library's one action: over to the Build page."""
-        self.app.titlebar.nav_seg.set_selected('build')
-        self.app._goto_page('build')
+        self.app.goto_build()
 
     def reflow(self, content_width: int) -> None:
         """The cards again, in the columns that fit now (the cards themselves are
@@ -373,14 +374,24 @@ class LibraryPage(QWidget):
     # ---- the manage menu (the desktop launcher's own shape) ----------------------------
 
     def _show_manage_menu(self) -> None:
-        """The chosen game's manage menu: open the folder, remove from the
-        library (rename away, nothing deleted), delete the pack for good."""
+        """The chosen game's manage menu: the runtime and the game again (the two ways an old
+        pack follows a new engine), the folder, the removal from the library (rename away,
+        nothing deleted), the pack's deletion for good."""
         from PySide6.QtWidgets import QMenu
         game = self.selected_game()
         if game is None:
             return
         words = self.app.words
         menu = QMenu(self)
+        if runner.porter_root(str(self.app.settings.get('porter_dir') or '')) is not None:
+            busy = self.build_page_busy() is not None
+            runtime_act = menu.addAction(words['manage_rebuild_runtime'])
+            runtime_act.setEnabled(not busy)
+            runtime_act.triggered.connect(lambda: self.rebuild_runtime(game))
+            again_act = menu.addAction(words['manage_report'])
+            again_act.setEnabled(not busy)
+            again_act.triggered.connect(lambda: self.rebuild_game(game))
+            menu.addSeparator()
         open_act = menu.addAction(words['manage_open_folder'])
         open_act.triggered.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(game.path))))
@@ -391,6 +402,50 @@ class LibraryPage(QWidget):
         delete_act.triggered.connect(lambda: self._delete_game(game))
         menu.exec(self.panel.manage_button.mapToGlobal(
             self.panel.manage_button.rect().bottomLeft()))
+
+    def build_page_busy(self) -> str | None:
+        """The message when a porter command already runs (one at a time), or None."""
+        page = self.app.build_page
+        if page.porter is not None and page.porter.running:
+            return self.app.words['build_busy']
+        return None
+
+    def rebuild_runtime(self, game: library.Game) -> None:
+        """The pack's runtime, built again without the game's files (the engine or the game's
+        profile moved on). The run itself is the build page's, so over there."""
+        busy = self.build_page_busy()
+        if busy:
+            dialogs.message(self, self.app.words['app_title'], busy)
+            return
+        if self.app.build_page.start_rebuild_runtime(game.path):
+            self.app.goto_build()
+
+    def rebuild_game(self, game: library.Game) -> None:
+        """The game, ported again from the file it was ported from, with the options the last
+        port used; the build page shows the run. A pack that was imported (not ported here)
+        has no remembered file: the player is sent to pick one."""
+        words = self.app.words
+        busy = self.build_page_busy()
+        if busy:
+            dialogs.message(self, words['app_title'], busy)
+            return
+        remembered = settings.port_source_of(game.title_id)
+        if not remembered:
+            dialogs.message(self, words['app_title'], words['report_no_source'])
+            return
+        source = Path(str(remembered.get('source') or ''))
+        if not source.is_file():
+            dialogs.message(self, words['app_title'], words['report_source_gone'].format(path=source))
+            return
+        if not dialogs.danger_confirm(self, words['manage_report'],
+                                      words['report_confirm'].format(name=game.name),
+                                      words['report_note'].format(path=source),
+                                      words['manage_report']):
+            return
+        page = self.app.build_page
+        page.prefill_for_port(str(source), remembered)
+        if page.start_build():
+            self.app.goto_build()
 
     def _remove_from_library(self, game: library.Game) -> None:
         """Rename the pack folder to a dot-name the scan passes by — nothing is

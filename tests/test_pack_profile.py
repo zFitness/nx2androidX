@@ -94,6 +94,36 @@ class PackProfileTest(unittest.TestCase):
         self.assertEqual(fingerprint, 'abc123')
         self.assertTrue(found)
 
+    def test_build_args_on_the_launcher_line(self):
+        """启动器线（NX2A_HOST_OS=linux）：重建构建的是 pack 自己的 Linux ELF —
+        与完整移植的 host() 同一条 build.py 命令（linux_host_args），无 NDK、无 loader hooks。"""
+        from porter import runtime_update as ru
+        from porter import phone_port
+        self._env['NX2A_HOST_OS'] = os.environ.get('NX2A_HOST_OS')
+        os.environ['NX2A_HOST_OS'] = 'linux'
+        args = ru.build_args(self.tid, Path('/out/host'), 4)
+        self.assertEqual(args, phone_port.linux_host_args(self.tid, Path('/out/host'), 4))
+        self.assertNotIn('--ndk', args)
+        self.assertNotIn('--play', args)
+        self.assertNotIn('--adrenotools', args)
+        self.assertEqual(args[args.index('--os') + 1], 'linux')
+        self.assertEqual(args[args.index('--gfx') + 1], 'vk')
+        self.assertIn('--exe', args)
+        self.assertIn('--release', args)
+
+    def test_build_args_on_the_app_line(self):
+        """手机 App 线：与从前完全一致 — NDK 的 --play、release、需要时 --adrenotools。"""
+        from porter import runtime_update as ru
+        from porter import toolchain
+        if 'NX2A_HOST_OS' not in self._env:
+            self._env['NX2A_HOST_OS'] = os.environ.get('NX2A_HOST_OS')
+        os.environ.pop('NX2A_HOST_OS', None)
+        with patch.object(toolchain, 'find_ndk', return_value=(Path('/ndk'), None)):
+            args = ru.build_args(self.tid, Path('/out/host'), 4)
+        self.assertEqual(args[args.index('--ndk') + 1], '/ndk')
+        self.assertIn('--play', args)
+        self.assertIn('--release', args)
+
     def test_the_drift_path_uses_the_imported_profile_the_re_port_would_use(self):
         """档案漂移时重建用导入层的那份：完整重移植用的也是它（它把导入的档案拷进 dm/games）。
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get('XDG_CONFIG_HOME') or (Path.home() / '.config')) / 'nx2a'
 SETTINGS_FILE = CONFIG_DIR / 'launcher.json'
+SOURCES_FILE = CONFIG_DIR / 'sources.json'   # every game's last port (title ID → {source, options})
 DATA_DIR = Path(os.environ.get('XDG_DATA_HOME') or (Path.home() / '.local' / 'share')) / 'nx2a'
 DEFAULT_LIBRARY = DATA_DIR / 'library'
 DEFAULT_WORK = DATA_DIR / 'work'        # porter's unpacked resources; the games' RomFS lives here (referenced, not copied)
@@ -67,3 +68,43 @@ def library_dir(settings: dict) -> Path:
 def library_set(settings: dict) -> bool:
     """Whether the player has named the data directory themselves."""
     return bool(str(settings.get('library') or '').strip())
+
+
+# The option fields a re-port replays from the form (launcher/ui/build_page.py writes them,
+# prefill_for_port reads them back). game changes go through a new port, not this memory.
+PORT_OPTIONS = ('name', 'language', 'headroom', 'font', 'fps60', 'touch',
+                'no_menu', 'mt_replay', 'debug', 'experimental')
+
+
+def port_sources() -> dict:
+    """Every game's last port: title ID → {'source': the game file, the option fields}. A broken
+    or missing file means nothing was remembered, never an error."""
+    try:
+        data = json.loads(SOURCES_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {key: value for key, value in data.items()
+            if isinstance(key, str) and isinstance(value, dict) and str(value.get('source') or '').strip()}
+
+
+def port_source_of(title_id: str) -> dict | None:
+    """The remembered port of one game, or None when it was never ported here."""
+    return port_sources().get(str(title_id or '').strip().upper())
+
+
+def remember_port(title_id: str, source: str, options: dict) -> None:
+    """Record a game's finished port — where its file was, the options it used — so the library's
+    re-port button replays exactly that. The file is replaced atomically, as the settings are."""
+    if not str(title_id or '').strip() or not str(source or '').strip():
+        return
+    data = port_sources()
+    data[str(title_id).strip().upper()] = {
+        'source': str(source),
+        **{key: options[key] for key in PORT_OPTIONS if key in options},
+    }
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SOURCES_FILE.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    tmp.replace(SOURCES_FILE)

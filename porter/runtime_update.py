@@ -102,6 +102,26 @@ class ProfileDrift(ValueError):
     """The pack was built with a profile that no longer exists; the player may choose the profile the game has now."""
 
 
+def build_args(title_id: str, output: Path, jobs=None) -> list[str]:
+    """build.py's command line for the rebuilt runtime. The launcher's line (NX2A_HOST_OS=linux)
+    builds the pack's Linux ELF — the very same command a full port builds its host with
+    (phone_port.linux_host_args), no NDK and no loader hooks, for Linux runs the system's
+    Vulkan driver. The app's line builds libdmhost.so with the NDK, statically linked with the
+    app's JNI adapter."""
+    jobs = jobs or os.cpu_count() or 8
+    if os.environ.get('NX2A_HOST_OS') == 'linux':
+        from porter.phone_port import linux_host_args
+        return linux_host_args(title_id, output, jobs)
+    ndk, _ = toolchain.find_ndk(config.load())
+    if ndk is None:
+        raise ValueError('The Android compiler is unavailable. Prepare the environment and retry.')
+    args = [sys.executable, str(DM / 'android/build.py'), '--game', title_id,
+            '--ndk', str(ndk), '--out', str(output), '--play', '--release', '--jobs', str(jobs)]
+    if not all((DM.parent.parent / 'tools' / 'adrenotools' / name).is_file() for name in HOOKS):
+        args.append('--adrenotools')
+    return args
+
+
 def profile_candidates(pack, title_id):
     """Where the profile this pack was built with may live: the pack's own copy first (the two tsv files travel
     with the pack, so a rebuild on another device - or after the workspace is gone - finds them), then the build
@@ -217,9 +237,6 @@ def rebuild(pack, *, jobs=None, allow_profile_drift=False, emit=print):
         if not found:
             raise ValueError('No game profile for this game. Port the game again from its original files.')
         raise ProfileDrift('The game profile changed since this pack was built.')
-    ndk, _ = toolchain.find_ndk(config.load())
-    if ndk is None:
-        raise ValueError('The Android compiler is unavailable. Prepare the environment and retry.')
     root = Path(os.environ.get('NX2A_WORK') or tempfile.gettempdir()) / 'runtime'
     root.mkdir(parents=True, exist_ok=True)
     stage = None
@@ -240,12 +257,8 @@ def rebuild(pack, *, jobs=None, allow_profile_drift=False, emit=print):
             if fingerprint is not None and chosen != fingerprint:
                 emit('The game profile changed since this pack was built. Rebuilding the runtime with the current profile.')
             output = scratch / 'host'
-            prebuilt = DM.parent.parent / 'tools' / 'adrenotools'
-            use_prebuilt = all((prebuilt / name).is_file() for name in HOOKS)
-            args = [sys.executable, str(DM / 'android/build.py'), '--game', title_id,
-                    '--ndk', str(ndk), '--out', str(output), '--play', '--release',
-                    '--jobs', str(jobs or os.cpu_count() or 8)]
-            if not use_prebuilt: args.append('--adrenotools')
+            android = os.environ.get('NX2A_HOST_OS') != 'linux'   # the launcher's line builds the pack's own Linux ELF
+            args = build_args(title_id, output, jobs)
             env = dict(os.environ, DM_GAME=title_id, DM_GAMES_DIR=str(profile_root), DM_GAMES_FIRST='1')
             tc_lib = toolchain.toolchain_lib_dirs()
             if tc_lib: env['LD_LIBRARY_PATH'] = str(tc_lib[0]) + os.pathsep + env.get('LD_LIBRARY_PATH', '')
@@ -253,20 +266,24 @@ def rebuild(pack, *, jobs=None, allow_profile_drift=False, emit=print):
             with subprocess.Popen(args, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace') as process:
                 for line in process.stdout: emit(line.rstrip())
                 if process.wait(): raise RuntimeError('Runtime compilation failed. Retry, or port the game again from its original files.')
-            host = output / 'libdmhost.so'
+            host = output / ('libdmhost.so' if android else 'dmhost')
             with host.open('rb') as stream: header = stream.read(20)
             if len(header) < 20 or header[:5] != b'\x7fELF\x02' or struct.unpack_from('<H', header, 18)[0] != 183:
-                raise ValueError('The compiler did not produce an Android ARM64 runtime.')
-            hooks = prebuilt if use_prebuilt else output
-            for name in HOOKS:
-                if not (hooks / name).is_file(): raise ValueError(f'Missing runtime component: {name}')
+                raise ValueError('The compiler did not produce a' + ('n Android' if android else '') + ' ARM64 runtime.')
             stage = Path(tempfile.mkdtemp(prefix='.runtime-', dir=pack))
-            for source in [host, *[hooks / name for name in HOOKS]]:
+            components = [host]
+            if android:
+                prebuilt = DM.parent.parent / 'tools' / 'adrenotools'
+                hooks = prebuilt if all((prebuilt / name).is_file() for name in HOOKS) else output
+                for name in HOOKS:
+                    if not (hooks / name).is_file(): raise ValueError(f'Missing runtime component: {name}')
+                components += [hooks / name for name in HOOKS]
+            for source in components:
                 with source.open('rb') as src, (stage / source.name).open('wb') as dst:
                     shutil.copyfileobj(src, dst)
                     dst.flush()
                     os.fsync(dst.fileno())
-            target_root = runtimes_root()
+            target_root = runtimes_root() if android else None   # the managed runtimes folder is the app's layout
             if target_root is not None:
                 # The runtime goes to the app's private folder, one folder per title ID, with its build
                 # marker beside it (the marker is written last: a runtime without one is rebuilt, never
@@ -288,7 +305,7 @@ def rebuild(pack, *, jobs=None, allow_profile_drift=False, emit=print):
                 manifest['player_api_revision'] = PLAYER_API_REVISION
                 manifest['profile_h'] = chosen
                 embed_profile(pack, title_id, staged_profile)
-            else:
+            elif android:
                 # No runtimes folder given (the desktop tool, the upstream engine): the runtime lives in
                 # the pack's own places, the way it always has. The hooks go in first and the host last
                 # (the host is the one that loads them); each one is a single rename, so a file is never
@@ -300,6 +317,20 @@ def rebuild(pack, *, jobs=None, allow_profile_drift=False, emit=print):
                 manifest['player_api_revision'] = PLAYER_API_REVISION
                 manifest['profile_h'] = chosen   # the profile this runtime was built from (a pack without one gets it now)
                 manifest.pop('host_front', None)
+                embed_profile(pack, title_id, staged_profile)
+            else:
+                # The launcher's line: the runtime is the pack's own executable (the manifest's 'exe',
+                # the file the launcher looks for with its exec bit) and nothing else — Linux runs the
+                # system's Vulkan driver, so there are no loader hooks to refresh. The game data,
+                # env.txt and saves are not touched; the profile a full re-port would use goes into
+                # the pack for the next rebuild, as on the app's line.
+                install(stage / 'dmhost', pack / 'host/dmhost')
+                os.chmod(pack / 'host/dmhost', 0o755)   # the launcher runs it: a plain copy carries no exec bit
+                manifest.pop('host', None)
+                manifest.pop('host_front', None)
+                manifest['exe'] = 'host/dmhost'
+                manifest['player_api_revision'] = PLAYER_API_REVISION
+                manifest['profile_h'] = chosen
                 embed_profile(pack, title_id, staged_profile)
             pending = stage / 'manifest.json'
             with pending.open('w', encoding='utf-8') as stream:

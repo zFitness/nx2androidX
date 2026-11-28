@@ -65,6 +65,12 @@ class BuildPage(QWidget):
         self.inspected = ''
         self.inspecting = False
         self.started_at = 0.0
+        self.last_title_id = ''      # whose options the form holds (P2-1: they belong to the game)
+        self.built_from = ''         # the file this port reads (the re-port memory's source)
+        self.built_options: dict = {}
+        self.rebuild_pack: Path | None = None   # the pack a runtime rebuild is about (the drift retry)
+        self.profile_drift = ''      # the porter's profile-drift answer, shown as a question
+        self.pending_rebuild = False  # the settings changed mid-build: the page waits for the end
         QVBoxLayout(self)   # the page's own column; build() fills it (again)
         self.build()
 
@@ -268,7 +274,15 @@ class BuildPage(QWidget):
                                      else self.words['build_advanced_show'])
 
     def rebuild(self) -> None:
-        """The page is built again (the settings changed)."""
+        """The page is built again (the settings changed).
+
+        A running port keeps its page: the stages, the log and the result belong to the
+        port, and the porter already runs with the settings it was started with (its root
+        and its environment were taken when it began). The rebuild waits for the end
+        (finish); the words and the scale of a running page stay as they were until then."""
+        if self.porter is not None and self.porter.running:
+            self.pending_rebuild = True
+            return
         self.words = self.app.words   # the language may have changed with the settings
         user = scale.user_scale(self.app.settings.get('ui_scale'))
         self.headline.setText(self.words['tab_build'])
@@ -396,9 +410,24 @@ class BuildPage(QWidget):
             self.set_card([[(words['card_error'].format(message=str(document['error'])), 'bad')]])
             return
         self.info = document
+        self.adopt_game_options(document)
         self.set_card(self.card_lines(document))
         self.set_name_label(str(document.get('name') or ''))
         self.update_port_button()
+
+    def adopt_game_options(self, document: dict) -> None:
+        """The form's per-game options belong to the game: another game in the file field starts
+        clean, so one game's name, font or headroom never builds another's pack. The same game
+        re-read keeps what the player typed.
+        """
+        title_id = str(document.get('title_id') or '')
+        if not title_id or title_id == self.last_title_id:
+            return
+        if self.last_title_id:
+            self.name.clear()
+            self.font.clear()
+            self.headroom.clear()
+        self.last_title_id = title_id
 
     def set_name_label(self, game_name: str) -> None:
         """The name row says which name the game carries by itself."""
@@ -444,28 +473,28 @@ class BuildPage(QWidget):
 
     # ---- the build --------------------------------------------------------------------
 
-    def start_build(self) -> None:
+    def start_build(self) -> bool:
         words = self.words
         if self.porter is not None and self.porter.running:
-            return   # a build is running; editing the game path must not orphan it
+            return False   # a build is running; editing the game path must not orphan it
         folder = self.folder.text().strip()
         if not folder:
             dialogs.message(self, words['app_title'], words['build_need_file'])
-            return
+            return False
         if not settings.library_set(self.app.settings):
             dialogs.message(self, words['app_title'], words['build_need_data_dir'])
-            return
+            return False
         # The keys are the porter's own setting (shared with the desktop tool and the
         # CLI); without them the port would fail deep inside the pipeline.
         if not porter_config.load().get('keys'):
             dialogs.message(self, words['app_title'], words['build_need_keys'])
             self.app.goto_settings()
-            return
+            return False
         root = self.porter_root()
         if not root:
             dialogs.message(self, words['app_title'], words['build_no_porter'].format(path=folder),
                             'error')
-            return
+            return False
         # --app: the app's mode — the pack is the only artifact (no APK), it carries the
         # host, the icon and the gamepad's theme.  The porter writes it straight into the
         # library (NX2A_PACK_DIR): an atomic rename that replaces an older pack of the
@@ -496,8 +525,67 @@ class BuildPage(QWidget):
             args.append('--debug')
         if self.experimental.isChecked() and not (self.info or {}).get('supported'):
             args.append('--experimental')
+        # What this port reads and the options it runs with: the library's re-port button
+        # replays exactly this (settings.remember_port / prefill_for_port).
+        self.built_from = folder
+        self.built_options = {
+            'name': name, 'language': language, 'headroom': headroom,
+            'font': self.font.text().strip(),
+            'fps60': self.fps60.isChecked(), 'touch': self.touch.isChecked(),
+            'no_menu': self.no_menu.isChecked(), 'mt_replay': self.mt_replay.isChecked(),
+            'debug': self.debug.isChecked(), 'experimental': self.experimental.isChecked(),
+        }
+        self._run_porter(root, args)
+        return True
+
+    def start_rebuild_runtime(self, pack: Path, allow_drift: bool = False) -> bool:
+        """Rebuild a pack's runtime without the original game files (the porter's
+        rebuild-runtime): the same stages, log and cancel as a port, on this page. The
+        pack's game data, its env.txt and its saves are untouched — only the host (and
+        the manifest's fingerprint rows) changes, each by an atomic rename."""
+        words = self.words
+        if self.porter is not None and self.porter.running:
+            return False
+        root = self.porter_root()
+        if not root:
+            dialogs.message(self, words['app_title'], words['build_no_porter'].format(path=str(pack)),
+                            'error')
+            return False
+        args = ['rebuild-runtime', str(pack), '--progress', 'json']
+        if allow_drift:
+            args.append('--allow-profile-drift')
+        self.built_from = ''   # not a port: the re-port memory keeps what the last port wrote
+        self._run_porter(root, args)
+        self.rebuild_pack = Path(pack)
+        return True
+
+    def prefill_for_port(self, source: str, options: dict) -> None:
+        """The library's re-port puts the remembered file and the last port's options back on
+        the form (start_build builds from the form, so the form says what will run)."""
+        self.folder.setText(source)
+        self.name.setText(str(options.get('name') or ''))
+        for index, (code, _label) in enumerate(GAME_LANGUAGES):
+            if code == str(options.get('language') or ''):
+                self.language.setCurrentIndex(index)
+                break
+        else:
+            self.language.setCurrentIndex(0)
+        headroom = options.get('headroom')
+        self.headroom.setText('' if headroom is None else str(headroom))
+        self.font.setText(str(options.get('font') or ''))
+        for box, key in ((self.fps60, 'fps60'), (self.touch, 'touch'), (self.no_menu, 'no_menu'),
+                         (self.mt_replay, 'mt_replay'), (self.debug, 'debug'),
+                         (self.experimental, 'experimental')):
+            box.setChecked(bool(options.get(key)))
+
+    def _run_porter(self, root: Path, args: list[str]) -> None:
+        """One porter command on this page — a port or a runtime rebuild, the same machinery:
+        the stages, the log and the buttons all follow it."""
+        words = self.words
         self.result = None
         self.cancelled = False
+        self.profile_drift = ''
+        self.rebuild_pack = None
         self.started_at = time.time()
         self.clear_stages()
         self.log.clear()
@@ -508,7 +596,7 @@ class BuildPage(QWidget):
         self.start_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.open_button.setEnabled(False)
-        self.porter = runner.Porter(root, library_dir)
+        self.porter = runner.Porter(root, settings.library_dir(self.app.settings))
         self.porter.start(args)
         self.poll_timer.start()
 
@@ -611,6 +699,10 @@ class BuildPage(QWidget):
             self.append(str(event.get('msg') or ''))
         elif kind == 'result':
             self.result = event
+        elif kind == 'profile-drift':
+            # the runtime rebuild's answer: the pack was built with a profile that has
+            # changed; finish asks the player what to do with it
+            self.profile_drift = str(event.get('msg') or 'the game profile changed')
 
     def append(self, message: str) -> None:
         self.log.appendPlainText(message)
@@ -635,13 +727,24 @@ class BuildPage(QWidget):
         self.cancel_button.setEnabled(False)
         if self.cancelled or code == 130:
             self.set_step(words['build_cancelled'], 'dim')
-            return
-        if code != 0:
+        elif code != 0:
             self.set_step(words['build_failed'], 'bad')
-            return
-        if not (self.result or {}).get('data'):
+            pack = self.rebuild_pack
+            if self.profile_drift and pack is not None and dialogs.confirm(
+                    self, words['rebuild_drift_title'], words['rebuild_drift_msg']):
+                # the profile the game has now — the same one a full re-port would use
+                self.start_rebuild_runtime(pack, allow_drift=True)
+        elif not (self.result or {}).get('data'):
             self.set_step(words['build_failed'], 'bad')
-            return
-        self.set_step(words['build_done'], 'done')
-        self.open_button.setEnabled(True)
-        self.app.refresh_library()
+        else:
+            self.set_step(words['build_done'], 'done')
+            self.open_button.setEnabled(True)
+            title_id = str((self.result or {}).get('title_id') or '')
+            if title_id and self.built_from:
+                settings.remember_port(title_id, self.built_from, self.built_options or {})
+            self.app.refresh_library()
+        if self.pending_rebuild:
+            # the settings changed while this porter ran: the page rebuilds now that its
+            # stages and its log are history
+            self.pending_rebuild = False
+            self.rebuild()

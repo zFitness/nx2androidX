@@ -214,6 +214,12 @@ class LauncherApp(QMainWindow):
     def refresh_library(self) -> None:
         self.library_page.refresh()
 
+    def goto_build(self) -> None:
+        """Over to the build page: the library's runtime rebuild and re-port run there,
+        where the stages and the log live."""
+        self.titlebar.nav_seg.set_selected('build')
+        self._goto_page('build')
+
     def goto_settings(self) -> None:
         """Open the settings dialog: a prerequisite is missing and the dialog names it.
         The settings come back in force when the dialog closes."""
