@@ -108,6 +108,7 @@ static int g_guest_on;   // the guest thread is up: there is a game to hold (the
 static int dmui_key_of(uint64_t bit);   // a DM_BTN bit → the UI's semantic key (defined in the menu block below)
 #include "dmui.h"       // menu/dmui.h: the shared ImGui menu (openspec overlay-menu)
 #include "dm_menu.h"    // menu/dm_menu.h: hold / quit / the persisted setting
+#include "dm_fps_opts.h"   // android/dm_fps_opts.h: the FPSO_* encoding dm_fps_opts() packs for the backend
 
 static void key_apply(SDL_Keycode k, int down) {
     uint64_t b = g_kbd_btn;
@@ -291,6 +292,21 @@ static void pad_relay_tick(void) {
 // on this thread — the same lifecycle the window's close takes. One persisted setting (fps) rides in
 // the pack's settings.txt through menu/dm_menu.c, the app's KEY=VALUE format.
 int dm_overlay_fps(void) { return dm_menu_setting_get("fps", 0); }   // the counter's switch: the menu's persisted setting (read through the cache)
+int dm_overlay_sr(void) { return dm_menu_setting_get("sr", 0); }   // super resolution: the present pass upscales with SGSR 1.0 when the picture grows
+int dm_overlay_sharp(void) {   // its Sharpness, percent; the runtime value is a multiple of 25, as the app's
+    int v = dm_menu_setting_get("sharpness", 0);
+    return (v + 12) / 25 * 25;
+}
+// the counter's options, packed in the FPSO_* encoding (dm_fps_opts.h) the backend unpacks: the five
+// persisted settings, each read through the cache. SOC/BAT stay in fps_rows' default but the backend
+// draws neither on Linux (no temperature source), so only FPS / driver / graph show.
+int dm_fps_opts(void) {
+    return fpso_pack(dm_menu_setting_get("fps_rows", FPSO_ROWS_DEFAULT),
+                     dm_menu_setting_get("fps_pos", FPSO_TL),
+                     dm_menu_setting_get("fps_colour", FPSO_WHITE),
+                     dm_menu_setting_get("fps_outline", FPSO_BOX),
+                     dm_menu_setting_get("fps_size", FPSO_NORMAL));
+}
 
 // a pad state's DM_BTN bit → the UI's semantic key (-1: the menu does not use it)
 static int dmui_key_of(uint64_t bit) {
@@ -520,6 +536,7 @@ void front_run(void (*guest)(void)) {
         dm_observe_tick();
         padcmd_tick();   // the pad relay (SDL gamepad context) is unused in this environment: its state never varies here
         menu_pad_tick();   // the gamepads, polled: R3+L2 opens the shared menu, its keys go to it while it is open
+        pad_publish_pub();   // and the game hears them every frame: SDL's Wayland gamepad events stop arriving after init in this environment, so the events alone leave the pad dead
         {   // the hold follows the menu's open state; its actions (quit) run here, never on the UI thread
             int open = dmui_open();
             if (open != g_menu_held) {

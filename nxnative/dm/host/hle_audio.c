@@ -228,8 +228,8 @@ static void backend_stop(aout *a) {
     if (a->backend == BK_AU) { AudioOutputUnitStop(a->au); a->backend = BK_NONE; }
     else if (a->backend == BK_NULL) null_stop(a);
 }
-#ifdef __ANDROID__
-#define DM_AUDIO_DEFAULT 1   // the Android app plays through AAudio (android/compat/audiotoolbox_aaudio.c) like the iOS app through RemoteIO
+#if defined(__ANDROID__) || defined(DM_LINUX)
+#define DM_AUDIO_DEFAULT 1   // the Android app plays through AAudio (android/compat/audiotoolbox_aaudio.c) like the iOS app through RemoteIO; Linux through SDL3's audio (the container's own pipewire/pulse/alsa)
 #else
 #define DM_AUDIO_DEFAULT TARGET_OS_IPHONE
 #endif
