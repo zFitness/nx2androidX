@@ -105,8 +105,16 @@ def write_script(game: Game) -> Path:
 
 
 def environment(game: Game) -> dict:
-    """The environment the runtime is started with."""
+    """The environment the runtime is started with.
+
+    The launcher's own payload path (pylibs: its Qt, its ABI modules) is dropped — the
+    game runs on the machine's own loader, libc, SDL3 and Vulkan, exactly as the pack's
+    run.sh does it on the container. The desktop's display stays: the game window comes
+    up on the same screen the launcher is on."""
     env = dict(os.environ)
+    for gone in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'PYTHONPATH', 'PYTHONHOME',
+                 'PYTHONUNBUFFERED', 'QT_QPA_PLATFORM'):
+        env.pop(gone, None)
     env['DM_ROOT'] = str(game.path)
     return env
 

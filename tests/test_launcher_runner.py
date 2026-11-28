@@ -197,5 +197,30 @@ class TheHome(unittest.TestCase):
                 os.environ['NX2A_HOME'] = original
 
 
+class TheGameEnvironment(unittest.TestCase):
+    """The game runs on the machine's own loader and libraries: the launcher's payload
+    path (its Qt, its ABI modules) never reaches the game's process."""
+
+    def test_the_payloads_library_path_does_not_reach_the_game(self):
+        from launcher import launch, library
+        game = library.Game(title_id='0100000000010000', name='game', version='v0',
+                            path=Path('/games/game-data'))
+        original = dict(os.environ)
+        os.environ.update(LD_LIBRARY_PATH='/opt/nx2a/pylibs', LD_PRELOAD='/hook.so',
+                          PYTHONPATH='/opt/nx2a', WAYLAND_DISPLAY='wayland-0',
+                          XDG_RUNTIME_DIR='/run/user/1000')
+        try:
+            env = launch.environment(game)
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+        self.assertNotIn('LD_LIBRARY_PATH', env)
+        self.assertNotIn('LD_PRELOAD', env)
+        self.assertNotIn('PYTHONPATH', env)
+        self.assertEqual(env['DM_ROOT'], '/games/game-data')
+        self.assertEqual(env['WAYLAND_DISPLAY'], 'wayland-0')   # the game window comes up on the same screen
+        self.assertEqual(env['XDG_RUNTIME_DIR'], '/run/user/1000')
+
+
 if __name__ == '__main__':
     unittest.main()
