@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy   # noqa: E402
 from PySide6.QtCore import QEvent, QPointF, Qt   # noqa: E402
 from PySide6.QtGui import QMouseEvent   # noqa: E402
 
-from launcher import runner, scale, settings      # noqa: E402
+from launcher import packenv, runner, scale, settings      # noqa: E402
 from launcher.ui import dialogs, theme, widgets   # noqa: E402
 from launcher.ui.app import LauncherApp           # noqa: E402
 from porter import config as porter_config        # noqa: E402
@@ -149,6 +149,50 @@ class Window(unittest.TestCase):
                                             Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
         self.assertEqual(picked, ['build'])
         self.assertEqual(capsule.selected(), 'build')
+
+    def test_the_experimental_port_sits_with_the_everyday_options(self):
+        """Not behind the advanced toggle: the Android build page's own order."""
+        page = self.app.build_page
+        self.assertFalse(page._advanced_group.isAncestorOf(page.experimental))
+        self.assertFalse(page._advanced_group.isVisible())
+        self.assertTrue(page.experimental.isVisibleTo(page))
+
+    def test_a_game_without_a_profile_gets_the_experimental_port_ticked(self):
+        """The porter has no profile for the game: the option is ticked for the player
+        and the card says why (the Android build page does the same)."""
+        page = self.app.build_page
+        folder = str(Path(self.folder.name) / 'game.nsp')
+        page.folder.setText(folder)
+        self.assertFalse(page.experimental.isChecked())
+        page.inspect_done(folder, {'title_id': '0100000000010000', 'name': 'Game',
+                                   'supported': False, 'experimental': True,
+                                   'android': {'status': 'not supported'}}, 0, '')
+        self.assertTrue(page.experimental.isChecked())
+        self.assertIn(self.app.words['build_experimental_auto'], page.card.text())
+        self.assertTrue(page.start_button.isEnabled())   # ticked: the port may be tried
+
+    def test_the_library_picks_a_games_language_into_its_pack(self):
+        """The manage menu's language choice is written into the pack's env.txt (DM_LANG),
+        the row the host reads at its start; the pack's other rows stay."""
+        library_dir = Path(self.folder.name) / 'library'
+        pack = make_pack(library_dir, '0100000000010000', 'Game')
+        (pack / 'languages.txt').write_text('ja\tJapanese\nzh-Hans\tChinese (Simplified)\n',
+                                            encoding='utf-8')
+        (pack / 'env.txt').write_text('DM_ROMFS=/x\nDM_LANG=system\n', encoding='utf-8')
+        self.app.settings['library'] = str(library_dir)
+        page = self.app.library_page
+        page.refresh()
+        page.pick(page.cards[0])
+        game = page.selected_game()
+        self.assertEqual(packenv.languages(game.path),
+                         [('ja', 'Japanese'), ('zh-Hans', 'Chinese (Simplified)')])
+        self.assertEqual(packenv.current_language(game.path), 'system')
+        page._pick_language(game, 'zh-Hans')
+        self.assertEqual(packenv.current_language(game.path), 'zh-Hans')
+        text = (game.path / 'env.txt').read_text(encoding='utf-8')
+        self.assertIn('DM_ROMFS=/x', text)   # the pack's other rows stay
+        page._pick_language(game, packenv.SYSTEM)
+        self.assertEqual(packenv.current_language(game.path), 'system')
 
     def test_zero_one_two_and_many_games_all_lay_out(self):
         """0, 1, 2, 4 and 8 games: the count changes, the formula does not."""
@@ -687,7 +731,9 @@ class Window(unittest.TestCase):
         self.assertEqual(args[:4], ['port', '/games/mario.nsp', '--progress', 'json'])
         self.assertIn('--app', args)
         self.assertEqual(args[args.index('--app-name') + 1], 'Mario')
-        self.assertEqual(args[args.index('--language') + 1], 'zh-Hans')
+        # The game's language is not a build option any more: it lives in the pack and is
+        # picked per game in the library (a remembered 'language' from an old port is ignored).
+        self.assertNotIn('--language', args)
         self.assertEqual(args[args.index('--alias-headroom') + 1], '8')
         self.assertEqual(args[args.index('--shared-font') + 1], '/tmp/f.ttf')
         for flag in ('--fps60', '--touch', '--no-menu-button', '--mt-replay', '--debug', '--experimental'):
@@ -700,7 +746,7 @@ class Window(unittest.TestCase):
         self.app.settings['library'] = str(Path(self.folder.name) / 'library')
         page = self.app.build_page
         page.built_from = '/games/mario.nsp'
-        page.built_options = {'name': 'Mario', 'language': 'ja', 'headroom': None,
+        page.built_options = {'name': 'Mario', 'headroom': None,
                               'font': '', 'fps60': False, 'touch': True, 'no_menu': False,
                               'mt_replay': False, 'debug': False, 'experimental': False}
         page.result = {'data': str(Path(self.folder.name) / 'library/Game-data'),
@@ -710,7 +756,7 @@ class Window(unittest.TestCase):
         self.assertIsNotNone(remembered)
         self.assertEqual(remembered['source'], '/games/mario.nsp')
         self.assertEqual(remembered['name'], 'Mario')
-        self.assertEqual(remembered['language'], 'ja')
+        self.assertNotIn('language', remembered)   # the pack owns the language now
         self.assertEqual(remembered['touch'], True)
 
     def test_a_runtime_rebuild_and_its_drift_retry(self):

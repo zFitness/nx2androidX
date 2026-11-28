@@ -26,6 +26,7 @@ DEFAULTS = {
     'language': 'zh',
     'ui_scale': 1.0,        # the player's own multiplier on top of the automatic one
     'porter_dir': '',       # where the porter package is; empty = the checkout next to this launcher
+    'firmware_name': '',    # the imported firmware zip's name ('' = none); the files live in DATA_DIR/firmware
 }
 
 

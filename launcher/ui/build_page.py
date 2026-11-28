@@ -16,7 +16,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+from PySide6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QScrollArea,
                                QSizePolicy, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
                                QWidget)
@@ -26,13 +26,6 @@ from launcher.ui import clear_layout, dialogs, theme
 from launcher.ui.cards import CardGroup, CenteredColumn, page_note_font, page_title_font
 from launcher.ui.widgets import FlatButton
 from porter import config as porter_config
-
-GAME_LANGUAGES = [
-    ('', 'English (default)'), ('ja', 'Japanese'), ('fr', 'French'), ('de', 'German'),
-    ('it', 'Italian'), ('es', 'Spanish'), ('nl', 'Dutch'), ('pt', 'Portuguese'),
-    ('ru', 'Russian'), ('ko', 'Korean'), ('zh-Hans', 'Chinese (Simplified)'),
-    ('zh-Hant', 'Chinese (Traditional)'), ('system', 'Follow the system'),
-]
 
 # The tone of the state line: one colour per state of a build.
 STEP_TONES = {'busy': 'busy', 'done': 'ready', 'bad': 'bad', 'dim': 'dim'}
@@ -148,29 +141,35 @@ class BuildPage(QWidget):
         self.name_label = QLabel(words['opt_name'])
         self.name_label.setObjectName('rowTitle')
         self.name = QLineEdit()
-        self.language = QComboBox()
-        for _code, language_name in GAME_LANGUAGES:
-            self.language.addItem(language_name)
-        self.language.setCurrentIndex(0)
         self.headroom = QLineEdit()
         self.headroom.setPlaceholderText(words['headroom_auto'])
         for index, (label, widget) in enumerate((
-                (self.name_label, self.name), (QLabel(words['opt_language']), self.language),
+                (self.name_label, self.name),
                 (QLabel(words['opt_headroom']), self.headroom))):
             grid.addWidget(label, index, 0)
             grid.addWidget(widget, index, 1)
         headroom_hint = QLabel(words['opt_headroom_hint'])
         headroom_hint.setProperty('dim', True)
         headroom_hint.setWordWrap(True)
-        grid.addWidget(headroom_hint, 3, 1, 1, 2)
+        grid.addWidget(headroom_hint, 2, 1, 1, 2)
         self.fps60 = QCheckBox(words['opt_fps60'])
         self.touch = QCheckBox(words['opt_touch'])
+        # The experimental port sits with the everyday options (the Android build page's
+        # own order: touch, 60 fps, experimental) — not hidden behind the advanced toggle.
+        self.experimental = QCheckBox(words['opt_experimental'])
+        self.experimental.toggled.connect(lambda _on: self.update_port_button())
         checks = QHBoxLayout()
         checks.setSpacing(18)
         checks.addWidget(self.fps60)
         checks.addWidget(self.touch)
+        checks.addWidget(self.experimental)
         checks.addStretch(1)
-        grid.addLayout(checks, 4, 0, 1, 2)
+        grid.addLayout(checks, 3, 0, 1, 2)
+        # The firmware is the machine's own (the settings page keeps it): the build page
+        # only says where it stands and points there.
+        self.firmware_line = QLabel()
+        self.firmware_line.setProperty('dim', True)
+        grid.addWidget(self.firmware_line, 4, 0, 1, 2)
         options.card.layout().addLayout(grid)
 
         # The advanced options: behind one quiet toggle.
@@ -191,10 +190,7 @@ class BuildPage(QWidget):
         self.no_menu = QCheckBox(words['opt_no_menu'])
         self.mt_replay = QCheckBox(words['opt_mt_replay'])
         self.debug = QCheckBox(words['opt_debug'])
-        self.experimental = QCheckBox(words['opt_experimental'])
-        self.experimental.toggled.connect(lambda _on: self.update_port_button())
-        for index, check in enumerate((self.no_menu, self.mt_replay, self.debug,
-                                       self.experimental)):
+        for index, check in enumerate((self.no_menu, self.mt_replay, self.debug)):
             adv.addWidget(check, index + 1, 0, 1, 2)
         advanced.card.layout().addLayout(adv)
         advanced.hide()
@@ -256,6 +252,7 @@ class BuildPage(QWidget):
         column.addStretch(1)
 
         self.set_card([[(words['build_card_idle'], 'dim')]])
+        self.refresh_firmware_line()
         # The porter's events come in on a queue the interface drains; the tick keeps
         # the running stage's time (both run only while their work is on).
         self.poll_timer = QTimer(self)
@@ -305,6 +302,14 @@ class BuildPage(QWidget):
         self.build()
 
     # ---- the card ---------------------------------------------------------------------
+
+    def refresh_firmware_line(self) -> None:
+        """The firmware is the machine's own (the settings page keeps it): the build page
+        only says where it stands and points there."""
+        from launcher import firmware
+        name = firmware.imported_name() if firmware.nca_folder() else ''
+        self.firmware_line.setText(self.words['build_firmware_ok'].format(name=name)
+                                   if name else self.words['build_firmware_none'])
 
     def set_card(self, lines: list[list[tuple[str, str]]]) -> None:
         """The card: what the game is.  Rich text on a label; the tags are the same
@@ -411,9 +416,23 @@ class BuildPage(QWidget):
             return
         self.info = document
         self.adopt_game_options(document)
-        self.set_card(self.card_lines(document))
+        lines = self.card_lines(document)
+        if self.auto_tick_experimental(document):
+            lines.append([(words['build_experimental_auto'], 'warn')])
+        self.set_card(lines)
         self.set_name_label(str(document.get('name') or ''))
         self.update_port_button()
+
+    def auto_tick_experimental(self, document: dict) -> bool:
+        """A game the porter has no profile for can only run as an experimental port: the
+        option is ticked for the player (the Android build page does the same) and the card
+        says why. True when this call did the ticking."""
+        if document.get('supported') or not document.get('experimental'):
+            return False
+        if self.experimental.isChecked():
+            return False
+        self.experimental.setChecked(True)
+        return True
 
     def adopt_game_options(self, document: dict) -> None:
         """The form's per-game options belong to the game: another game in the file field starts
@@ -504,10 +523,9 @@ class BuildPage(QWidget):
         name = self.name.text().strip()
         if name:
             args += ['--app-name', name]
-        index = self.language.currentIndex()
-        language = GAME_LANGUAGES[index][0] if index >= 0 else ''
-        if language:
-            args += ['--language', language]
+        # No language here: the pack lists the game's languages and the player picks one
+        # per game in the library (the manage menu writes the pack's env.txt) — the same
+        # shape as the Android app.
         headroom = self.headroom_value()
         if headroom is not None:
             args += ['--alias-headroom', str(headroom)]
@@ -529,7 +547,7 @@ class BuildPage(QWidget):
         # replays exactly this (settings.remember_port / prefill_for_port).
         self.built_from = folder
         self.built_options = {
-            'name': name, 'language': language, 'headroom': headroom,
+            'name': name, 'headroom': headroom,
             'font': self.font.text().strip(),
             'fps60': self.fps60.isChecked(), 'touch': self.touch.isChecked(),
             'no_menu': self.no_menu.isChecked(), 'mt_replay': self.mt_replay.isChecked(),
@@ -561,15 +579,10 @@ class BuildPage(QWidget):
 
     def prefill_for_port(self, source: str, options: dict) -> None:
         """The library's re-port puts the remembered file and the last port's options back on
-        the form (start_build builds from the form, so the form says what will run)."""
+        the form (start_build builds from the form, so the form says what will run). The
+        game's language is not one of them: it lives in the pack, picked in the library."""
         self.folder.setText(source)
         self.name.setText(str(options.get('name') or ''))
-        for index, (code, _label) in enumerate(GAME_LANGUAGES):
-            if code == str(options.get('language') or ''):
-                self.language.setCurrentIndex(index)
-                break
-        else:
-            self.language.setCurrentIndex(0)
         headroom = options.get('headroom')
         self.headroom.setText('' if headroom is None else str(headroom))
         self.font.setText(str(options.get('font') or ''))

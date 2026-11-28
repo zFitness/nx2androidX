@@ -19,7 +19,7 @@ from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea,
                                QSizePolicy, QVBoxLayout, QWidget)
 
-from launcher import launch, library, runner, scale, settings, steam
+from launcher import launch, library, packenv, runner, scale, settings, steam
 from launcher.ui import clear_layout, dialogs, theme
 from launcher.ui.widgets import ActionPanel, CoverTile
 
@@ -401,6 +401,23 @@ class LibraryPage(QWidget):
         open_act = menu.addAction(words['manage_open_folder'])
         open_act.triggered.connect(lambda: QDesktopServices.openUrl(
             QUrl.fromLocalFile(str(game.path))))
+        # The game's language: the pack lists what the game supports (languages.txt), the
+        # pick is written into the pack's env.txt (DM_LANG) and holds from the next run —
+        # the host reads the row itself at its start. The Android app's game detail page
+        # keeps the same choice in the same place.
+        langs = packenv.languages(game.path)
+        if langs:
+            from PySide6.QtGui import QActionGroup
+            current = packenv.current_language(game.path) or packenv.SYSTEM
+            sub = menu.addMenu(words['manage_language'])
+            group = QActionGroup(sub)
+            group.setExclusive(True)
+            for code, name in [(packenv.SYSTEM, words['manage_language_system'])] + langs:
+                act = sub.addAction(name)
+                act.setCheckable(True)
+                act.setChecked(code == current)
+                group.addAction(act)
+                act.triggered.connect(lambda _checked=False, c=code: self._pick_language(game, c))
         menu.addSeparator()
         remove_act = menu.addAction(words['manage_remove'])
         remove_act.triggered.connect(lambda: self._remove_from_library(game))
@@ -408,6 +425,11 @@ class LibraryPage(QWidget):
         delete_act.triggered.connect(lambda: self._delete_game(game))
         menu.exec(self.panel.manage_button.mapToGlobal(
             self.panel.manage_button.rect().bottomLeft()))
+
+    def _pick_language(self, game: library.Game, code: str) -> None:
+        """The manage menu's language pick: written into the pack's env.txt, it holds from
+        the game's next run (the host reads the row itself)."""
+        packenv.set_language(game.path, code)
 
     def build_page_busy(self) -> str | None:
         """The message when a porter command already runs (one at a time), or None."""

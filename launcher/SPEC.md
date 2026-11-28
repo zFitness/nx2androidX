@@ -74,6 +74,13 @@ Rules the whole code holds to:
   the desktop keeps Steam alive, so refusing would mean never being able to add a game; the
   player is told it appears at Steam's next start (Steam reads `shortcuts.vdf` when it
   quits/starts).
+- **Machine-level vs per-game settings, the Android app's split**: the firmware (one zip,
+  optional) lives on the Settings page, unpacked flat into `DATA_DIR/firmware/` and handed
+  to the porter through its own config's `firmware` key — the Build page only shows where
+  it stands. The game's language is not a build option: the pack lists the game's languages
+  (`languages.txt`) and the library's manage menu writes the pick into the pack's `env.txt`
+  (`DM_LANG`, `launcher/packenv.py`), effective from the next run. A game with no profile
+  gets the experimental port ticked for the player, with the reason on the card.
 
 ## The four steps (each anchored on: MvDK runs with one click)
 

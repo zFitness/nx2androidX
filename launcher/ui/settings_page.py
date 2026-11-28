@@ -6,6 +6,8 @@ existing ones, unchanged.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QGridLayout, QGroupBox,
                                QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QVBoxLayout, QWidget)
@@ -77,14 +79,33 @@ class SettingsPage(QWidget):
         keys_hint.setProperty('dim', True)
         keys_hint.setWordWrap(True)
         grid.addWidget(keys_hint, 1, 1, 1, 2)
-        grid.addWidget(QLabel(words['set_profiles']), 2, 0)
+
+        # The firmware: one zip for the machine (the emulator kind), unpacked into the
+        # data folder; the porter reads it from its own config, the way it reads keys.
+        self.firmware_name = QLabel()
+        self.firmware_name.setProperty('dim', True)
+        grid.addWidget(QLabel(words['set_firmware']), 2, 0)
+        grid.addWidget(self.firmware_name, 2, 1)
+        self.firmware_button = FlatButton(words['set_firmware_import'], 'quiet')
+        self.firmware_button.clicked.connect(self.pick_firmware)
+        grid.addWidget(self.firmware_button, 2, 2)
+        self.firmware_clear = FlatButton(words['set_firmware_clear'], 'quiet')
+        self.firmware_clear.clicked.connect(self.clear_firmware)
+        grid.addWidget(self.firmware_clear, 2, 3)
+        firmware_hint = QLabel(words['set_firmware_hint'])
+        firmware_hint.setProperty('dim', True)
+        firmware_hint.setWordWrap(True)
+        grid.addWidget(firmware_hint, 3, 1, 1, 3)
+        self.refresh_firmware()
+
+        grid.addWidget(QLabel(words['set_profiles']), 4, 0)
         self.profiles_button = FlatButton(words['browse'], 'quiet')
         self.profiles_button.clicked.connect(self.pick_profiles)
-        grid.addWidget(self.profiles_button, 2, 1)
+        grid.addWidget(self.profiles_button, 4, 1)
         profiles_hint = QLabel(words['set_profiles_hint'])
         profiles_hint.setProperty('dim', True)
         profiles_hint.setWordWrap(True)
-        grid.addWidget(profiles_hint, 3, 1, 1, 2)
+        grid.addWidget(profiles_hint, 5, 1, 1, 2)
 
         # The interface: the language and the scale.
         face = QGroupBox(words['set_ui'])
@@ -130,6 +151,42 @@ class SettingsPage(QWidget):
                                      [('All files', '*')])
         if chosen:
             self.keys.setText(chosen)
+
+    def refresh_firmware(self) -> None:
+        """The firmware row says what is imported (the zip's name) and whether there is
+        anything to clear."""
+        from launcher import firmware
+        name = firmware.imported_name() if firmware.nca_folder() else ''
+        words = self.words
+        self.firmware_name.setText(name or words['set_firmware_none'])
+        self.firmware_button.setText(words['set_firmware_reimport'] if name
+                                     else words['set_firmware_import'])
+        self.firmware_clear.setVisible(bool(name))
+
+    def pick_firmware(self) -> None:
+        chosen = dialogs.choose_file(self, self.words['set_firmware'], self.words,
+                                     [('Firmware zip', '*.zip'), ('All files', '*')])
+        if chosen:
+            self.import_firmware(chosen)
+
+    def import_firmware(self, path: str) -> None:
+        from launcher import firmware
+        words = self.words
+        try:
+            count = firmware.import_zip(Path(path))
+        except (OSError, ValueError) as error:
+            dialogs.message(self, words['app_title'],
+                            words['set_firmware_failed'].format(error=error), 'error')
+            return
+        dialogs.message(self, words['app_title'],
+                        words['set_firmware_imported'].format(name=Path(path).name, count=count))
+        self.refresh_firmware()
+
+    def clear_firmware(self) -> None:
+        from launcher import firmware
+        firmware.clear()
+        dialogs.message(self, self.words['app_title'], self.words['set_firmware_cleared'])
+        self.refresh_firmware()
 
     def pick_profiles(self) -> None:
         """Import a package of game profiles (the thin package needs them to port)."""
