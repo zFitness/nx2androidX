@@ -63,7 +63,8 @@ static double present_time_get(uint64_t ticket) {
     return t;
 }
 #ifdef DM_LINUX
-static void surface_retire(VkSurfaceKHR s);   // a surface for the window's thread to destroy (the handshake block below swap_destroy)
+static void surface_retire(VkSurfaceKHR s);
+static _Atomic unsigned long g_obs_pres; unsigned long dm_obs_vk_pres(void) { return atomic_load(&g_obs_pres); }   // defined here, the getters may be absent in the null build   // a surface for the window's thread to destroy (the handshake block below swap_destroy)
 static int swap_make(void);              // the test card, ahead of its definition, presents through it
 #endif
 static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
@@ -198,7 +199,11 @@ uint64_t dm_front_vk_px(void);   // front_linux.c: the window's size in pixels, 
 // request is never reused while a surface of an earlier one may still turn up, and a late surface always dies on the window's thread
 enum { SR_IDLE, SR_REQ, SR_ANS, SR_CANCEL };
 static _Atomic int g_sreq_state;
-static pthread_t g_front_tid; static int g_front_tid_known;   // the window's thread, learned on its first pass (dm_front_tick)
+static pthread_t g_front_tid; static _Atomic int g_front_tid_known;   // the window's thread, registered before any other thread exists
+// The one place a surface is made is on the window's thread: whoever calls this. Registered with a release store before the guest, whose
+// present thread asks for surfaces, exists; read with an acquire load, so what a caller sees is either "not registered" (it uses the
+// handshake) or a complete registration -- never a half one
+void dm_front_vk_window_thread(void) { g_front_tid = pthread_self(); atomic_store(&g_front_tid_known, 1); }
 // The one place a surface is made: on the window's thread, which is whoever calls this
 static VkSurfaceKHR surface_create(ANativeWindow *w, VkResult *r) {
     VkSurfaceKHR s = VK_NULL_HANDLE;
@@ -217,7 +222,6 @@ static void surface_retire(VkSurfaceKHR s) {
     pthread_mutex_unlock(&g_retire_mu);
 }
 void dm_front_tick(void) {   // the SDL main thread, every pass of its event loop (dm/linux/front_linux.c)
-    if (!g_front_tid_known) { g_front_tid = pthread_self(); g_front_tid_known = 1; }
     for (unsigned i = 0; i < 8; i++) {
         int st = atomic_load(&g_sreq_state);
         if (st == SR_REQ) {
@@ -247,7 +251,7 @@ static int surface_take(int *state) {
 }
 static int surface_make(ANativeWindow *w) {
     // The window's thread asking for itself (the test card runs on it): made on the spot -- the handshake would wait for itself
-    if (g_front_tid_known && pthread_equal(pthread_self(), g_front_tid)) {
+    if (atomic_load(&g_front_tid_known) && pthread_equal(pthread_self(), g_front_tid)) {
         VkResult r; g_surf = surface_create(w, &r);
         if (r != VK_SUCCESS || g_surf == VK_NULL_HANDLE) { VKRED_ONCE(145, "the window's surface could not be made: %d", r); g_surf = VK_NULL_HANDLE; return 0; }
         return 1;
@@ -279,82 +283,153 @@ static uint64_t g_tc_next; static uint32_t g_tc_n;
 static VkBuffer g_tc_buf; static VkDeviceMemory g_tc_mem; static uint8_t *g_tc_px; static VkDeviceSize g_tc_cap; static int g_tc_coherent;
 static VkCommandPool g_tc_pool; static VkCommandBuffer g_tc_cb; static VkSemaphore g_tc_sem; static VkFence g_tc_fence; static int g_tc_res;
 static void tc_resources_drop(void) {
-    if (!g_tc_res) return;
-    vkDeviceWaitIdle(V.dev);
-    vkDestroyFence(V.dev, g_tc_fence, NULL); vkDestroySemaphore(V.dev, g_tc_sem, NULL); vkDestroyCommandPool(V.dev, g_tc_pool, NULL);
-    vkDestroyBuffer(V.dev, g_tc_buf, NULL); vkFreeMemory(V.dev, g_tc_mem, NULL);
-    g_tc_res = 0; g_tc_buf = VK_NULL_HANDLE; g_tc_mem = VK_NULL_HANDLE; g_tc_px = NULL; g_tc_cap = 0;
+    // All that the card owns goes, and every handle with it: the next tc_resources_make makes the whole of it again. A drop that kept a handle
+    // (a pool whose objects were destroyed) would have the next make skip that part and use what is gone; one that returned early because nothing
+    // was made whole yet (a make that failed half way) would leak what was
+    if (V.dev) {
+        vkDeviceWaitIdle(V.dev);   // the command buffer's submit is over, and the semaphore's wait with it
+        vkDestroyFence(V.dev, g_tc_fence, NULL); vkDestroySemaphore(V.dev, g_tc_sem, NULL);
+        vkDestroyCommandPool(V.dev, g_tc_pool, NULL);   // with its command buffer
+        vkDestroyBuffer(V.dev, g_tc_buf, NULL); vkFreeMemory(V.dev, g_tc_mem, NULL);   // unmapped with it
+    }
+    g_tc_fence = VK_NULL_HANDLE; g_tc_sem = VK_NULL_HANDLE; g_tc_pool = VK_NULL_HANDLE; g_tc_cb = VK_NULL_HANDLE;
+    g_tc_buf = VK_NULL_HANDLE; g_tc_mem = VK_NULL_HANDLE; g_tc_px = NULL; g_tc_res = 0; g_tc_cap = 0;
 }
 static int tc_resources_make(void) {
     VkDeviceSize need = (VkDeviceSize)g_sext.width * g_sext.height * 4;
-    if (g_tc_res && need <= g_tc_cap) return 1;
+    if (g_tc_res && need <= g_tc_cap) return 1;   // a smaller swapchain fits what is made
     tc_resources_drop();
-    if (!g_tc_pool) {   // once: the command pool, its buffer, the semaphore and the fence (the pool is not reset with the swapchain: its buffer is)
-        VkCommandPoolCreateInfo pi = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf};
-        VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_tc_pool = VK_NULL_HANDLE, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
-        if (vkCreateCommandPool(V.dev, &pi, NULL, &g_tc_pool)) goto fail;
-        ai.commandPool = g_tc_pool;
-        if (vkAllocateCommandBuffers(V.dev, &ai, &g_tc_cb)) goto fail;
-        VkSemaphoreCreateInfo si = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0};
-        VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
-        if (vkCreateSemaphore(V.dev, &si, NULL, &g_tc_sem) || vkCreateFence(V.dev, &fi, NULL, &g_tc_fence)) goto fail;
-    }
-    { VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, need, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
-      if (vkCreateBuffer(V.dev, &bi, NULL, &g_tc_buf)) goto fail;
-      VkMemoryRequirements mr; memset(&mr, 0, sizeof mr); vkGetBufferMemoryRequirements(V.dev, g_tc_buf, &mr);
-      VKLOG("test card: staging buffer %llu bytes (swapchain %ux%u, format %d); its memory: %llu bytes, type bits %#x", (unsigned long long)need, g_sext.width, g_sext.height, g_sfmt, (unsigned long long)mr.size, mr.memoryTypeBits);
-      uint32_t mt = ~0u; for (uint32_t i = 0; i < V.mem.memoryTypeCount; i++) if ((mr.memoryTypeBits >> i & 1) && (V.mem.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { mt = i; break; }
-      if (mt == ~0u) { VKRED_ONCE(151, "test card: no host-visible memory for the staging buffer"); goto fail; }
-      g_tc_coherent = (V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
-      VkMemoryAllocateInfo mi = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, mt};   // sType, pNext, allocationSize, memoryTypeIndex
-      if (!mr.size || (vkAllocateMemory(V.dev, &mi, NULL, &g_tc_mem) || vkBindBufferMemory(V.dev, g_tc_buf, g_tc_mem, 0) || vkMapMemory(V.dev, g_tc_mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_tc_px))) goto fail;
-      VKLOG("test card: staging memory type %u (%s), mapped at %p", mt, g_tc_coherent ? "host coherent" : "host visible, flushed by hand", (void *)g_tc_px); }
+    // Every structure is initialized field by field: by position, one field too many is dropped without a word and every field after it shifts
+    VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = V.qf};
+    VkCommandBufferAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+    if (vkCreateCommandPool(V.dev, &pi, NULL, &g_tc_pool)) goto fail;
+    ai.commandPool = g_tc_pool;
+    if (vkAllocateCommandBuffers(V.dev, &ai, &g_tc_cb)) goto fail;
+    if (vkCreateSemaphore(V.dev, &si, NULL, &g_tc_sem) || vkCreateFence(V.dev, &fi, NULL, &g_tc_fence)) goto fail;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = need, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT, .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    if (vkCreateBuffer(V.dev, &bi, NULL, &g_tc_buf)) goto fail;
+    VkMemoryRequirements mr; memset(&mr, 0, sizeof mr); vkGetBufferMemoryRequirements(V.dev, g_tc_buf, &mr);
+    uint32_t mt = ~0u;
+    for (uint32_t i = 0; i < V.mem.memoryTypeCount; i++) if ((mr.memoryTypeBits >> i & 1) && (V.mem.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) { mt = i; break; }
+    VKLOG("test card: staging buffer %llu bytes for the %ux%u swapchain (format %d); its memory %llu bytes, type bits %#x",
+          (unsigned long long)need, g_sext.width, g_sext.height, g_sfmt, (unsigned long long)mr.size, mr.memoryTypeBits);
+    if (!mr.size || mt == ~0u) { VKRED_ONCE(151, "test card: no host-visible memory for the staging buffer (size %llu, type bits %#x)", (unsigned long long)mr.size, mr.memoryTypeBits); goto fail; }
+    g_tc_coherent = (V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    VkMemoryAllocateInfo mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+    if (vkAllocateMemory(V.dev, &mi, NULL, &g_tc_mem) || vkBindBufferMemory(V.dev, g_tc_buf, g_tc_mem, 0) || vkMapMemory(V.dev, g_tc_mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_tc_px)) goto fail;
+    VKLOG("test card: staging memory type %u (%s), mapped at %p", mt, g_tc_coherent ? "host coherent" : "host visible, flushed by hand", (void *)g_tc_px);
     g_tc_res = 1; g_tc_cap = need;
     return 1;
 fail:
-    VKRED_ONCE(152, "test card: its staging buffer could not be made"); tc_resources_drop(); return 0;
+    VKRED_ONCE(152, "test card: its resources could not be made"); tc_resources_drop(); return 0;
 }
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to);
+const uint8_t *dm_overlay_font(void);   // overlay_theme.c, the Linux overlay stub
+// The card's ink, in the swapchain's byte order
+typedef struct { uint8_t *px; uint32_t w, h; const uint8_t *c; } tc_ink;
+static void tc_put(uint8_t *px, uint32_t w, uint32_t h, int x, int y, const uint8_t *c) {
+    if (x < 0 || y < 0 || (uint32_t)x >= w || (uint32_t)y >= h) return;
+    uint8_t *p = px + 4 * ((size_t)y * w + x); p[0] = c[0]; p[1] = c[1]; p[2] = c[2]; p[3] = 255;
+}
+static void tc_plot(void *u, int x, int y) { tc_ink *k = u; tc_put(k->px, k->w, k->h, x, y, k->c); }
+static void tc_rect(uint8_t *px, uint32_t w, uint32_t h, int x0, int y0, int x1, int y1, const uint8_t *c) {
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) tc_put(px, w, h, x, y, c);
+}
+// One frame into the acquired image and onto the screen: VK_SUCCESS, or the error of what failed. The caller drops the swapchain for any error
+static VkResult tc_present(uint32_t idx) {
+    VkResult r;
+    if ((r = vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX)) || (r = vkResetFences(V.dev, 1, &g_tc_fence))) return r;   // the device lost surfaces here
+    // The picture: eight bars (white, yellow, cyan, green, magenta, red, blue, black); across the middle a bar in dashes of white and black, a
+    // pixel longer each frame (a still picture is told from a live one; dashes, to be seen on every bar); and in a box at the top left, in the
+    // pixel font, this frame's number and the swapchain's size -- so a screenshot of the screen itself says which frame it shows, and of what size
+    static const uint8_t bars[8][3] = {{255, 255, 255}, {255, 255, 0}, {0, 255, 255}, {0, 255, 0}, {255, 0, 255}, {255, 0, 0}, {0, 0, 255}, {0, 0, 0}};
+    static const uint8_t black[3] = {0, 0, 0}, white[3] = {255, 255, 255};
+    uint32_t w = g_sext.width, h = g_sext.height, grow = g_tc_n % w;
+    int bgra = g_sfmt == VK_FORMAT_B8G8R8A8_UNORM || g_sfmt == VK_FORMAT_B8G8R8A8_SRGB;
+    for (uint32_t y = 0; y < h; y++) {
+        uint8_t *row = g_tc_px + 4 * (size_t)y * w;
+        int bar = y >= h / 2 && y < h / 2 + 16;
+        for (uint32_t x = 0; x < w; x++) {
+            const uint8_t *c = bars[x * 8 / w];
+            if (bar && x < grow) c = x / 16 & 1 ? white : black;
+            row[0] = bgra ? c[2] : c[0]; row[1] = c[1]; row[2] = bgra ? c[0] : c[2]; row[3] = 255; row += 4;
+        }
+    }
+    { char s[64]; snprintf(s, sizeof s, "frame %u  %ux%u", g_tc_n + 1, w, h);
+      const int sc = w >= 800 ? 4 : 3, x = 16, base = 16 + PF_CAP * sc, tw = pf_width(dm_overlay_font(), s) * sc;
+      tc_rect(g_tc_px, w, h, x - 8, 8, x + tw + 8, base + 8, black);
+      tc_ink k = {g_tc_px, w, h, white}; pf_draw(dm_overlay_font(), s, x, base, sc, tc_plot, &k); }
+    if (!g_tc_coherent) { VkMappedMemoryRange rg = {.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = g_tc_mem, .offset = 0, .size = VK_WHOLE_SIZE}; vkFlushMappedMemoryRanges(V.dev, 1, &rg); }
+    if ((r = vkResetCommandBuffer(g_tc_cb, 0))) return r;
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if ((r = vkBeginCommandBuffer(g_tc_cb, &bi))) return r;
+    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkBufferImageCopy cp = {.bufferOffset = 0, .bufferRowLength = w, .bufferImageHeight = h,
+                            .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1},
+                            .imageOffset = {.x = 0, .y = 0, .z = 0}, .imageExtent = {.width = w, .height = h, .depth = 1}};
+    vkCmdCopyBufferToImage(g_tc_cb, g_tc_buf, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if ((r = vkEndCommandBuffer(g_tc_cb))) return r;
+    // The image is first touched by the copy, a transfer: the acquire is waited on at that stage
+    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &g_tc_sem, .pWaitDstStageMask = &ws, .commandBufferCount = 1, .pCommandBuffers = &g_tc_cb};
+    extern pthread_mutex_t g_vk_queue_mu;
+    pthread_mutex_lock(&g_vk_queue_mu);
+    r = vkQueueSubmit(V.q, 1, &si, g_tc_fence);
+    if (!r) { vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX);   // the copy is done before the present is asked for
+              r = vkQueuePresentKHR(V.q, &(VkPresentInfoKHR){.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .swapchainCount = 1, .pSwapchains = &g_swap, .pImageIndices = &idx}); }
+    pthread_mutex_unlock(&g_vk_queue_mu);
+    return r;
+}
+// The acquire's semaphore and the fence, made anew. After an acquire that did not hand out an image, or a submit that did not happen,
+// neither's state is something to reason about: a binary semaphore may sit signaled and be waited on signaled at the next submit (an
+// error), a fence reset for a submit that never came would leave the next frame waiting for ever. There is no way to set a fence from the
+// host, and no way to ask a binary semaphore its state -- made anew costs nothing and cannot be reasoned wrong
+static int tc_sem_fence_remake(void) {
+    vkDestroySemaphore(V.dev, g_tc_sem, NULL);
+    vkDestroyFence(V.dev, g_tc_fence, NULL);
+    g_tc_sem = VK_NULL_HANDLE; g_tc_fence = VK_NULL_HANDLE;
+    VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT};
+    if (vkCreateSemaphore(V.dev, &si, NULL, &g_tc_sem) || vkCreateFence(V.dev, &fi, NULL, &g_tc_fence)) {
+        VKRED_ONCE(154, "test card: its semaphore and fence could not be made again"); return 0;
+    }
+    return 1;
+}
 int vk_testcard_step(uint64_t now_ns, int period_ms) {
     if (now_ns < g_tc_next) return 1;
     if (!V.inst) vk_init();   // the instance and the device, on this thread: the test card's own (nothing of the game is loaded)
+    if (!V.dev) return 1;
     if (!swap_make()) return dm_front_window() != NULL;   // the surface is asked for here and answered a pass later; minimized: nothing to present
     if (!tc_resources_make()) return 1;
     g_tc_next = now_ns + (uint64_t)(period_ms > 0 ? period_ms : 16) * 1000000ull;
     uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_tc_sem, VK_NULL_HANDLE, &idx);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) { swap_destroy(); return 1; }
-    if (r < 0) { VKRED_ONCE(150, "test card: vkAcquireNextImageKHR %d", r); return 1; }
-    if (vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX) || vkResetFences(V.dev, 1, &g_tc_fence)) return 1;
-    // The picture: eight bars (white, yellow, cyan, green, magenta, red, blue, black) and, along the top, a white stripe one pixel longer each frame
-    static const uint8_t bars[8][3] = {{255, 255, 255}, {255, 255, 0}, {0, 255, 255}, {0, 255, 0}, {255, 0, 255}, {255, 0, 0}, {0, 0, 255}, {0, 0, 0}};
-    int bgra = g_sfmt == VK_FORMAT_B8G8R8A8_UNORM || g_sfmt == VK_FORMAT_B8G8R8A8_SRGB;
-    uint32_t grow = g_tc_n % g_sext.width;
-    for (uint32_t y = 0; y < g_sext.height; y++) {
-        uint8_t *row = g_tc_px + 4 * (size_t)y * g_sext.width;
-        for (uint32_t x = 0; x < g_sext.width; x++) {
-            const uint8_t *c = bars[x * 8 / g_sext.width]; int stripe = y < 16 && x < grow;
-            row[0] = stripe ? 255 : bgra ? c[2] : c[0]; row[1] = stripe ? 255 : c[1]; row[2] = stripe ? 255 : bgra ? c[0] : c[2]; row[3] = 255; row += 4;
-        }
-    }
-    if (!g_tc_coherent) { VkMappedMemoryRange rg = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, g_tc_mem, 0, VK_WHOLE_SIZE}; vkFlushMappedMemoryRanges(V.dev, 1, &rg); }
-    vkResetCommandBuffer(g_tc_cb, 0);
-    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    if (vkBeginCommandBuffer(g_tc_cb, &bi)) return 1;
-    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkBufferImageCopy cp = {0, g_sext.width, g_sext.height, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}};
-    vkCmdCopyBufferToImage(g_tc_cb, g_tc_buf, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
-    barrier(g_tc_cb, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    vkEndCommandBuffer(g_tc_cb);
-    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_tc_sem, &ws, 1, &g_tc_cb, 0, NULL};
-    extern pthread_mutex_t g_vk_queue_mu;
-    pthread_mutex_lock(&g_vk_queue_mu);
-    r = vkQueueSubmit(V.q, 1, &si, g_tc_fence);
-    if (!r) { vkWaitForFences(V.dev, 1, &g_tc_fence, 1, UINT64_MAX); r = vkQueuePresentKHR(V.q, &(VkPresentInfoKHR){VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 0, NULL, 1, &g_swap, &idx, NULL}); }
-    pthread_mutex_unlock(&g_vk_queue_mu);
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) r = tc_present(idx);
+    // SUBOPTIMAL still handed out an image and signaled the semaphore: shown this frame through the ordinary path, which consumes the
+    // signal -- the swapchain is made again before the next frame, at the size the compositor has now
     g_tc_n++;
-    if (r) { VKRED_ONCE(153, "test card: submit or present %d (frame %u)", r, g_tc_n); if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy(); return 1; }
-    if (!(g_tc_n % 20)) VKLOG("test card: frame %u on the screen, swapchain %ux%u format %d", g_tc_n, g_sext.width, g_sext.height, g_sfmt);
+    if (r == VK_SUCCESS || r == VK_SUBOPTIMAL_KHR) {
+        if (r == VK_SUBOPTIMAL_KHR) swap_destroy();
+        else if (!(g_tc_n % 20)) VKLOG("test card: frame %u presented (vkQueuePresentKHR returned success), swapchain %ux%u format %d", g_tc_n, g_sext.width, g_sext.height, g_sfmt);
+        return 1;
+    }
+    // Nothing of this frame goes to the screen, and what the failed calls left behind is not something to reason about: the swapchain is
+    // dropped, and the semaphore and the fence are made anew (above). OUT_OF_DATE from acquire or present is the swapchain's own news, and
+    // no error. The device lost is not come back from: the run is ended through the host's orderly stop, with what happened in the log
+    if (r == VK_ERROR_DEVICE_LOST) {
+        VKRED_ONCE(155, "test card: the device was lost (frame %u): ending the run", g_tc_n);
+        dm_host_shutdown("the GPU device was lost");
+        return 1;
+    }
+    if (!tc_sem_fence_remake()) {
+        VKRED_ONCE(156, "test card: its semaphore and fence could not be made anew (frame %u): ending the run", g_tc_n);
+        dm_host_shutdown("the test card could not recover its semaphore and fence");
+        return 1;
+    }
+    swap_destroy();
+    if (r != VK_ERROR_OUT_OF_DATE_KHR) VKRED_ONCE(153, "test card: acquire, submit or present returned %d (frame %u)", r, g_tc_n);
     return 1;
 }
 #endif
@@ -1498,6 +1573,9 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
+#ifdef DM_LINUX
+    if (r >= VK_SUCCESS) atomic_fetch_add(&g_obs_pres, 1);   // DM_OBSERVE=1 (linux/observe.c): frames actually handed to the present
+#endif
     if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket);
     pthread_mutex_unlock(&g_vk_queue_mu);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
