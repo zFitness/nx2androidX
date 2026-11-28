@@ -79,8 +79,12 @@ def build_qss() -> str:
     /* The surfaces: the ground everywhere, panels a step above it. */
     QMainWindow {{ background: {BG}; }}
     QDialog {{ background: {SURFACE}; }}
-    QFrame#titlebar {{ background: {BG}; border-bottom: 1px solid {HAIRLINE}; }}
-    QStackedWidget, QWidget#page {{ background: transparent; }}
+    QFrame#titlebar {{ background-color: {BG}; border-bottom: 1px solid {HAIRLINE}; }}
+    /* Opaque ground on the stack and every page: a transparent page on a
+       compositor without a window background flashes one frame of desktop
+       while a flip is in flight — exactly the KWin flicker on this tablet. */
+    QStackedWidget {{ background-color: {BG}; }}
+    QWidget#page {{ background-color: {BG}; }}
 
     /* Words. */
     QLabel {{ color: {TEXT}; background: transparent; }}
@@ -189,8 +193,10 @@ def build_qss() -> str:
     QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 
     /* Scrolling: thin handles on transparent rails. */
-    QScrollArea {{ background: transparent; border: none; }}
-    QScrollArea > QWidget > QWidget {{ background: transparent; }}
+    QScrollArea {{ background-color: {BG}; border: none; }}
+    QScrollArea > QWidget > QWidget {{ background-color: {BG}; }}
+    QAbstractScrollArea {{ background-color: {BG}; }}
+    QAbstractScrollArea > QWidget > QWidget {{ background-color: {BG}; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 4px 2px 4px 0; }}
     QScrollBar::handle:vertical {{ background: rgba(255, 255, 255, 0.18);
                                    border-radius: 3px; min-height: 28px; }}

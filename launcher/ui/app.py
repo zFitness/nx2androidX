@@ -73,17 +73,29 @@ class LauncherApp(QMainWindow):
             theme.apply(application)   # the look goes on before the first widget
 
         self.titlebar = TitleBar(self, self.words)
-        self.stack = QStackedWidget()
         self.library_page = LibraryPage(self)
         self.build_page = BuildPage(self)
         self.settings_page = SettingsPage(self)   # lives in the settings dialog
-        self.pages = ((self.library_page, 'tab_library'), (self.build_page, 'tab_build'))
+        self.pages = ((self.library_page, 'library'), (self.build_page, 'build'))
         for page, _key in self.pages:
             page.setObjectName('page')
+            # Every page paints its own opaque ground (the stylesheet's
+            # QWidget#page rule): a plain child QWidget does not paint a QSS
+            # background on its own, so the attribute goes on each page —
+            # verified by rendering, not assumed.
+            page.setAttribute(Qt.WA_StyledBackground, True)
+
+        # One persistent stack, both pages created once.  A flip is Qt's own
+        # setCurrentIndex and nothing else — no rebuild, no hide/show of the
+        # window, no forced repaints: Qt merges the update into the next frame
+        # on its own.
+        self.stack = QStackedWidget()
+        for page, _key in self.pages:
             self.stack.addWidget(page)
 
         shell = theme.styled_background(QWidget())
         shell.setObjectName('shell')
+        shell.setAutoFillBackground(True)
         column = QVBoxLayout(shell)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
@@ -106,8 +118,12 @@ class LauncherApp(QMainWindow):
         self._apply_scale()
 
     def _goto_page(self, key: str) -> None:
-        """The stack follows the capsule (the capsule speaks in keys)."""
+        """The stack follows the capsule: setCurrentIndex, and nothing else —
+        the pages are persistent, their state (form inputs, logs, scroll)
+        survives every flip, and Qt schedules the paint its own way."""
         index = {'library': 0, 'build': 1}.get(key, 0)
+        if index == self.stack.currentIndex():
+            return
         self.stack.setCurrentIndex(index)
 
     def open_settings(self) -> None:

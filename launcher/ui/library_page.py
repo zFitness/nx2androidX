@@ -12,10 +12,10 @@ count and the scroll bounds are the same numbers by construction.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QUrl, QSize, Qt
-from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtCore import QUrl, QSize, Qt, QRectF
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QScrollArea,
-                               QVBoxLayout, QWidget)
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from launcher import launch, library, scale, settings, steam
 from launcher.ui import clear_layout, dialogs, theme
@@ -35,6 +35,8 @@ class LibraryPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.scroller = QScrollArea()
+        self.scroller.viewport().setAutoFillBackground(True)   # the viewport
+        # paints the ground itself — QSS on a QScrollArea does not reach it
         self.scroller.setWidgetResizable(True)
         self.scroller.setFrameShape(QScrollArea.NoFrame)
         outer.addWidget(self.scroller)
@@ -44,7 +46,8 @@ class LibraryPage(QWidget):
         column.setContentsMargins(scale.MARGIN, 18, scale.MARGIN, scale.MARGIN)
         column.setSpacing(2)
 
-        # The headline: the desktop launcher's pageTitle (25px, 800) and its note.
+        # The headline: hidden on the empty library (the welcome badge IS the
+        # page then); shown once games exist.
         user = scale.user_scale(self.app.settings.get('ui_scale'))
         self.headline = QLabel(self.words['library_headline'])
         self.headline.setObjectName('pageTitle')
@@ -58,8 +61,11 @@ class LibraryPage(QWidget):
         column.addSpacing(10)
 
         self.grid_host = QWidget()
-        column.addWidget(self.grid_host)
-        column.addStretch(1)
+        self.grid_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        column.addWidget(self.grid_host, 1)   # takes the room the cards or the
+        # empty state live in — a fixed-height host once clipped the empty
+        # welcome to a sliver that read as "a line of grey text"
+        column.addStretch(0)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, scale.DOCK_RESERVE)
         self.grid.setHorizontalSpacing(scale.gap(user))
@@ -79,7 +85,8 @@ class LibraryPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self.reflow(self.content_width())
+        if self.cards:   # the empty state holds the whole page; only a grid of
+            self.reflow(self.content_width())   # cards follows the width
         self.panel.reposition()
 
     def content_width(self) -> int:
@@ -106,21 +113,22 @@ class LibraryPage(QWidget):
         clear_layout(self.grid)
         self.cards = []
         games = library.scan(settings.library_dir(self.app.settings))
-        if not games:
+        empty = not games
+        # The page title yields to the welcome: the badge, the word and the
+        # one action are the page when there is nothing to list.
+        self.headline.setVisible(not empty)
+        self.subline.setVisible(not empty)
+        if empty:
             self.selected_id = ''
             self.panel.hide()
-            empty = QLabel(self.words['library_empty'])
-            empty.setProperty('dim', True)
-            empty.setWordWrap(True)
-            empty.setAlignment(Qt.AlignHCenter)
-            holder = QWidget()
-            column = QVBoxLayout(holder)
-            column.setContentsMargins(24, 24, 24, 24)
-            column.addStretch(2)
-            column.addWidget(empty, 0, Qt.AlignHCenter)
-            column.addStretch(3)
-            self.grid.addWidget(holder, 0, 0, 1, 1)
+            self.grid.setContentsMargins(0, 0, 0, 0)   # no dock reserve: the
+            # welcome centres in the whole page; the reserve exists for cards
+            # that the panel could overlap — there are none here
+            self.grid.addWidget(self.empty_state(), 0, 0, 1, 1)
+            self.grid.setRowStretch(0, 1)
+            self.grid.setColumnStretch(0, 1)
             return
+        self.grid.setContentsMargins(0, 0, 0, scale.DOCK_RESERVE)
         if self.selected_id not in {game.title_id for game in games}:
             self.selected_id = ''
         for game in games:
@@ -133,12 +141,86 @@ class LibraryPage(QWidget):
         return scale.columns(content_width, scale.user_scale(self.app.settings.get('ui_scale')),
                              self.app.small)
 
+    def empty_state(self) -> QWidget:
+        """The empty library, the desktop launcher's own welcome: a round cream
+        badge with the gamepad, the welcome title, the note, and the one
+        action — centred in the air, saying what to do first."""
+        words = self.words
+        page = QWidget()
+        page.setStyleSheet('background: transparent;')
+        page.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        column = QVBoxLayout(page)
+        column.setContentsMargins(40, 40, 40, 40)
+        column.setSpacing(12)
+        column.addStretch(10)   # the welcome floats dead-centre in the page
+
+        # The badge: a circle of faint cream holding the brand's gamepad.
+        badge = QFrame()
+        badge.setObjectName('emptyBadge')
+        badge.setFixedSize(84, 84)
+        badge.setStyleSheet(
+            '#emptyBadge { background: rgba(255, 240, 214, 0.08);'
+            ' border: 1px solid rgba(255, 240, 214, 0.22);'
+            ' border-radius: 42px; }')
+        badge.setAttribute(Qt.WA_StyledBackground, True)
+        badge_layout = QVBoxLayout(badge)
+        badge_layout.setContentsMargins(0, 0, 0, 0)
+        mark = QLabel()
+        mark.setAlignment(Qt.AlignCenter)
+        mark.setStyleSheet('background: transparent; border: none;')
+        mark.setPixmap(self.gamepad_mark(42))
+        badge_layout.addWidget(mark)
+        column.addWidget(badge, 0, Qt.AlignHCenter)
+
+        # The welcome: large and centred, the note under it.
+        user = scale.user_scale(self.app.settings.get('ui_scale'))
+        title = QLabel(words['library_welcome'])
+        title.setAlignment(Qt.AlignHCenter)
+        title.setFont(theme.headline(user))
+        note = QLabel(words['library_empty'])
+        note.setProperty('dim', True)
+        note.setAlignment(Qt.AlignHCenter)
+        note.setWordWrap(True)
+        note.setFont(theme.subhead(user))
+        column.addWidget(title, 0, Qt.AlignHCenter)
+        column.addWidget(note, 0, Qt.AlignHCenter)
+        column.addSpacing(8)
+
+        # The one action: go and build the first game.
+        row = QHBoxLayout()
+        row.addStretch(1)
+        from launcher.ui.widgets import FlatButton
+        first = FlatButton(words['library_first_build'], 'primary')
+        first.clicked.connect(self._goto_build)
+        row.addWidget(first)
+        row.addStretch(1)
+        column.addLayout(row)
+        column.addStretch(10)   # mirrors the top: the block sits dead-centre
+        return page
+
+    def gamepad_mark(self, side: int) -> QPixmap:
+        """The gamepad mark of the badge, drawn on the cream accent."""
+        pixmap = QPixmap(side, side)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        from launcher.ui.widgets import draw_icon
+        draw_icon(painter, 'gamepad', QRectF(0, 0, side, side), QColor(theme.ACCENT))
+        painter.end()
+        return pixmap
+
+    def _goto_build(self) -> None:
+        """The empty library's one action: over to the Build page."""
+        self.app.titlebar.nav_seg.set_selected('build')
+        self.app._goto_page('build')
+
     def reflow(self, content_width: int) -> None:
         """The cards again, in the columns that fit now (the cards themselves are
         kept: only their places in the grid change)."""
         count = max(1, self.columns(content_width))
         while self.grid.count():
             self.grid.takeAt(0)
+        self.grid.setRowStretch(0, 0)
+        self.grid.setColumnStretch(0, 0)
         for index, card in enumerate(self.cards):
             self.grid.addWidget(card, index // count, index % count)
 
