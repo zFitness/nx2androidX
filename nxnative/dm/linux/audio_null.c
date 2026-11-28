@@ -102,7 +102,17 @@ static void sdl_pull(void *ud, SDL_AudioStream *st, int additional, int total) {
         } else memset(u->pull, 0, bytes);
         SDL_PutAudioStreamData(st, u->pull, (int)bytes);
         u->cb_n++;
-        if (SDL_GetAudioStreamAvailable(st) == 0) u->underruns++;   // asked and had nothing queued: the mix was late
+        for (int r = 0; r < 5 && SDL_GetAudioStreamAvailable(st) < total; r++) {   // audren renders one block per release (~5 ms lag)
+            struct timespec wt = { 0, 3000000 }; nanosleep(&wt, NULL);
+            if (u->cb) {
+                AudioUnitRenderActionFlags flags = 0;
+                AudioBufferList out2 = { .mNumberBuffers = 1,
+                                         .mBuffers = { { u->fmt.mChannelsPerFrame, bytes, u->pull } } };
+                u->cb(u->ref, &flags, NULL, 0, frames, &out2);
+            } else memset(u->pull, 0, bytes);
+            SDL_PutAudioStreamData(st, u->pull, (int)bytes);
+        }
+        if (SDL_GetAudioStreamAvailable(st) == 0) u->underruns++;   // still nothing: the game's mix was genuinely late
         if (u->cb_n % 1000 == 0)   // ~10 s at 10 ms calls: the health line (no underrun pile-up is the acceptance)
             fprintf(stderr, "[audio] callbacks %llu, underruns %llu\n", (unsigned long long)u->cb_n, (unsigned long long)u->underruns);
     }
@@ -218,8 +228,10 @@ static int pend_frames(AudioConverterRef c) {   // decoded s16 bytes → frames 
 
 // one AAC packet (the proc's buffer) → decoded interleaved s16 into the pending buffer
 static void decode_packet(AudioConverterRef c, const uint8_t *data, UInt32 len) {
-    if (av_packet_from_data(c->pkt, (uint8_t *)data, len) < 0) return;
+    if (av_new_packet(c->pkt, len) < 0) return;   // av_malloc'd with padding; av_packet_from_data would take
+    memcpy(c->pkt->data, data, len);              // ownership of hle_movie's plain malloc pointer and av_free it
     if (avcodec_send_packet(c->ctx, c->pkt) < 0) return;
+    av_packet_unref(c->pkt);
     while (avcodec_receive_frame(c->ctx, c->frm) >= 0) {
         int n = c->frm->nb_samples, ch = c->frm->ch_layout.nb_channels;
         if (n <= 0 || ch <= 0) { av_frame_unref(c->frm); continue; }
