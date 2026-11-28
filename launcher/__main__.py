@@ -84,8 +84,13 @@ def main(argv: list[str] | None = None) -> int:
     application = QtWidgets.QApplication([])
     window = LauncherApp()
     window.showMaximized()   # under Qt showing and the maximized state are one call
-    # and once more when the loop is up, for compositors that need it late
-    QTimer.singleShot(0, window.showMaximized)
+    # and once more when the loop is up, for compositors that need it late — but
+    # only if the first one did not take (a second ask over an already-maximized
+    # window made the window shrink and grow again on the tablet's KWin)
+    def _ensure_maximized() -> None:
+        if not (window.windowState() & Qt.WindowMaximized):
+            window.showMaximized()
+    QTimer.singleShot(0, _ensure_maximized)
     return application.exec()
 
 

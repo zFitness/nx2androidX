@@ -15,10 +15,12 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from PySide6.QtWidgets import QApplication, QLabel   # noqa: E402
+from PySide6.QtWidgets import QApplication, QLabel, QSizePolicy   # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, Qt   # noqa: E402
+from PySide6.QtGui import QMouseEvent   # noqa: E402
 
 from launcher import runner, scale, settings      # noqa: E402
-from launcher.ui import dialogs, theme            # noqa: E402
+from launcher.ui import dialogs, theme, widgets   # noqa: E402
 from launcher.ui.app import LauncherApp           # noqa: E402
 from porter import config as porter_config        # noqa: E402
 
@@ -117,6 +119,36 @@ class Window(unittest.TestCase):
         first = page.grid.cellRect(0, 0)
         second = page.grid.cellRect(0, 1)
         self.assertLess(second.x() - first.x(), 400)  # neighbours, not half a window apart
+
+    def test_a_card_does_not_stretch_to_the_row(self):
+        """The selection frame hugs the card. The grid's rows used to stretch the
+        card's frame far past its content (the tablet's tall rows made the box
+        much longer than the card it marked)."""
+        library_dir = Path(self.folder.name) / 'library'
+        make_pack(library_dir, '0100000000010000', 'Game')
+        self.app.settings['library'] = str(library_dir)
+        page = self.app.library_page
+        page.refresh()
+        page.reflow(1400)
+        card = page.cards[0]
+        self.assertEqual(card.sizePolicy().verticalPolicy(), QSizePolicy.Maximum)
+        item = page.grid.itemAtPosition(0, 0)
+        self.assertTrue(item.alignment() & Qt.AlignTop)   # top-anchored, never stretched
+
+    def test_the_pages_capsule_answers_the_press(self):
+        """One press switches the page. On a touch screen a release often never
+        arrives (the finger moved), and the tab only answered a double click."""
+        capsule = widgets.FlatSegmented(
+            [('library', 'Library', ''), ('build', 'Build', '')], selected='library')
+        capsule.resize(int(capsule.sizeHint().width()), 40)
+        picked = []
+        capsule.changed.connect(picked.append)
+        rect = capsule._segment_rects()[1][3]
+        point = QPointF(rect.center().x(), rect.center().y())
+        capsule.mousePressEvent(QMouseEvent(QEvent.MouseButtonPress, point, point,
+                                            Qt.LeftButton, Qt.LeftButton, Qt.NoModifier))
+        self.assertEqual(picked, ['build'])
+        self.assertEqual(capsule.selected(), 'build')
 
     def test_zero_one_two_and_many_games_all_lay_out(self):
         """0, 1, 2, 4 and 8 games: the count changes, the formula does not."""

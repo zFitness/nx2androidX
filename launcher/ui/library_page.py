@@ -222,8 +222,10 @@ class LibraryPage(QWidget):
             self.grid.takeAt(0)
         self.grid.setRowStretch(0, 0)
         self.grid.setColumnStretch(0, 0)
+        self.grid.setRowStretch(1, 0)   # no row grows: a card keeps its own height
         for index, card in enumerate(self.cards):
-            self.grid.addWidget(card, index // count, index % count)
+            self.grid.addWidget(card, index // count, index % count,
+                                Qt.AlignTop | Qt.AlignHCenter)
 
     def card(self, game: library.Game) -> QWidget:
         """One game: its rounded cover, its name (up to two lines, the full
@@ -241,6 +243,10 @@ class LibraryPage(QWidget):
         box.setCursor(Qt.PointingHandCursor)
         box.setProperty('selected', game.title_id == self.selected_id)
         box.setFixedWidth(cell)
+        # The card's height is its content's (cover + name + state), not whatever
+        # the grid's row was stretched to: a stretched frame drew a selection box
+        # far taller than the card itself (the tablet's tall rows made it plain).
+        box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
 
         layout = QVBoxLayout(box)
         pad = round(scale.CARD_PAD * user)
@@ -565,9 +571,12 @@ class LibraryPage(QWidget):
         if steam.steam_root() is None:
             dialogs.message(self, words['app_title'], words['steam_missing'])
             return
-        if steam.steam_running():
-            dialogs.message(self, words['app_title'], words['steam_running'], 'warning')
-            return
+        # Steam on this device is run by the desktop itself (DroidDeck keeps it
+        # alive): asking the player to close it does not apply here. The shortcut
+        # is written anyway — Steam reads the file when it starts (a restart of
+        # the desktop, or of Steam on an ordinary machine, brings it in) — and the
+        # player is told that, exactly as the desktop Steam's own behaviour is.
+        steam_later = steam.steam_running()
         try:
             script = launch.write_script(game)
             entry = steam.shortcut_entry(game.name, str(script), str(game.path),
@@ -580,7 +589,8 @@ class LibraryPage(QWidget):
             dialogs.message(self, words['app_title'], words['steam_failed'].format(error=error),
                             'error')
             return
-        dialogs.message(self, words['app_title'], words['steam_added'])
+        dialogs.message(self, words['app_title'],
+                        words['steam_added_later'] if steam_later else words['steam_added'])
         self.refresh()
 
     def toggle_desktop(self, game: library.Game) -> None:

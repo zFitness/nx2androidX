@@ -434,6 +434,20 @@ class FlatSegmented(QFrame):
             return
         super().keyPressEvent(event)
 
+    def mousePressEvent(self, event) -> None:
+        # The pick happens on the press, not the release: a touch press that
+        # moves a few pixels (a finger landing, a stylus drag) never delivers a
+        # release to the segment, and on a touch screen the tab then only
+        # answered a double click — the second press of the pair.
+        if event.button() == Qt.LeftButton and self.isEnabled() and self._items:
+            position = float(event.position().x())
+            for key, _label, _icon, rect in self._segment_rects():
+                if rect.left() - 3 <= position <= rect.right() + 3:
+                    self._pick(key)
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:
         if event.button() != Qt.LeftButton or not self.isEnabled() or not self._items:
             return
